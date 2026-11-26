@@ -199,7 +199,7 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     assert init_kwargs == []  # lazy init
     text, conf = engine.recognize_roi(_make_bgr(64, 160))
     assert (text, conf) == ("回退成功", pytest.approx(0.92))
-    assert init_kwargs == [{}]
+    assert init_kwargs == [{"det_limit_type": "max", "det_limit_side_len": 960}]
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
     # When DmlExecutionProvider is listed but RapidOCR init fails, still fall back to CPU with warning
@@ -214,10 +214,22 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     text2, conf2 = engine2.recognize_roi(_make_bgr(64, 160))
     assert (text2, conf2) == ("回退成功", pytest.approx(0.92))
     assert init_kwargs == [
-        {"det_use_dml": True, "cls_use_dml": True, "rec_use_dml": True},
-        {},
+        {
+            "det_limit_type": "max",
+            "det_limit_side_len": 960,
+            "det_use_dml": True,
+            "cls_use_dml": True,
+            "rec_use_dml": True,
+        },
+        {"det_limit_type": "max", "det_limit_side_len": 960},
     ]
     assert any("directml" in rec.message.lower() for rec in caplog.records)
+
+    # Default CPU provider also passes calibrated det_limit_* kwargs
+    init_kwargs.clear()
+    cpu_engine = OcrEngine(provider="cpu")
+    assert cpu_engine.recognize_roi(_make_bgr(64, 160)) == ("回退成功", pytest.approx(0.92))
+    assert init_kwargs == [{"det_limit_type": "max", "det_limit_side_len": 960}]
 
 
 @pytest.mark.parametrize(

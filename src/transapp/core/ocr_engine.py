@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 _MIN_OCR_HEIGHT = 48
 _BORDER_PAD_PX = 10
+_DET_LIMIT_TYPE = "max"
+_DET_LIMIT_SIDE_LEN = 960
 _SUPPORTED_PROVIDERS = ("cpu", "directml")
 
 
@@ -108,7 +110,6 @@ class OcrEngine:
         if normalized not in _SUPPORTED_PROVIDERS:
             raise ValueError(f"Unsupported OCR provider: {provider!r}")
         self.provider = normalized
-        self._ocr_callable = ocr_callable
         self._engine: Callable[[np.ndarray], Any] | None = ocr_callable
 
     @staticmethod
@@ -128,21 +129,27 @@ class OcrEngine:
             providers.append("directml")
         return providers
 
-    def _get_engine(self) -> Callable[[np.ndarray], Any]:
+    def _ensure_engine(self) -> Callable[[np.ndarray], Any]:
         if self._engine is not None:
             return self._engine
 
         import rapidocr_onnxruntime
+
+        det_kwargs: dict[str, Any] = {
+            "det_limit_type": _DET_LIMIT_TYPE,
+            "det_limit_side_len": _DET_LIMIT_SIDE_LEN,
+        }
 
         if self.provider == "directml":
             if "directml" not in self.available_providers():
                 logger.warning(
                     "DirectML execution provider is unavailable; falling back to CPU OCR."
                 )
-                self._engine = rapidocr_onnxruntime.RapidOCR()
+                self._engine = rapidocr_onnxruntime.RapidOCR(**det_kwargs)
                 return self._engine
             try:
                 self._engine = rapidocr_onnxruntime.RapidOCR(
+                    **det_kwargs,
                     det_use_dml=True,
                     cls_use_dml=True,
                     rec_use_dml=True,
@@ -154,7 +161,7 @@ class OcrEngine:
                     exc,
                 )
 
-        self._engine = rapidocr_onnxruntime.RapidOCR()
+        self._engine = rapidocr_onnxruntime.RapidOCR(**det_kwargs)
         return self._engine
 
     def recognize_roi(self, bgr_roi: np.ndarray) -> tuple[str, float]:
@@ -163,7 +170,7 @@ class OcrEngine:
             return ("", 0.0)
 
         prepared = _prepare_roi_for_ocr(bgr_roi)
-        engine = self._get_engine()
+        engine = self._ensure_engine()
         raw_output = engine(prepared)
         return _group_and_format_boxes(raw_output)
 
