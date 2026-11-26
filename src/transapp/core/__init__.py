@@ -10,6 +10,12 @@ from transapp.core.models import (
     SubtitleEvent,
 )
 from transapp.core.presets import PresetStore, RoiPreset
+from transapp.core.subtitle_mask import (
+    build_stroke_mask,
+    frame_sharpness,
+    mask_fg_ratio,
+    mask_iou,
+)
 from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 
 __all__ = [
@@ -25,4 +31,8 @@ __all__ = [
     "SubtitleEvent",
     "VideoMetadata",
     "VideoReader",
+    "build_stroke_mask",
+    "frame_sharpness",
+    "mask_fg_ratio",
+    "mask_iou",
 ]
