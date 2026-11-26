@@ -10,6 +10,7 @@ from transapp.core.models import (
     RoiRect,
     SubtitleEvent,
 )
+from transapp.core.ocr_engine import OcrEngine
 from transapp.core.presets import PresetStore, RoiPreset
 from transapp.core.segmenter import segment_roi_frames
 from transapp.core.subtitle_mask import (
@@ -26,6 +27,7 @@ __all__ = [
     "ExtractResult",
     "FrameSlice",
     "FrameTestResult",
+    "OcrEngine",
     "OcrSegment",
     "PresetStore",
     "RawSegment",
