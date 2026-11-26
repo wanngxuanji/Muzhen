@@ -483,3 +483,124 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
     # Smoke-test transapp.app.main() without blocking on event loop
     monkeypatch.setattr(QApplication, "exec", lambda _self: 0)
     assert app_mod.main() == 0
+
+
+def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_stale_worker(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+    from transapp.ui.main_window import MainWindow, _ExtractionWorker
+
+    ep1 = tmp_path / "active_ep1.mp4"
+    ep2 = tmp_path / "active_ep2.mp4"
+    _make_synthetic_subtitle_mp4(ep1, duration_sec=1.2, cues=((200, 900, "第一集"),))
+    _make_synthetic_subtitle_mp4(ep2, duration_sec=1.0, cues=((200, 800, "第二集"),))
+
+    ocr_entered = threading.Event()
+
+    def quick_cancel_ocr(_img: np.ndarray):
+        ocr_entered.set()
+        time.sleep(0.05)
+        return ([[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一集", 0.90]], [0.01])
+
+    pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=quick_cancel_ocr))
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep1)
+
+    window.btn_start.click()
+    assert ocr_entered.wait(timeout=5.0)
+
+    # Switching video while worker is active must quit & join QThread quickly (< 2s, never 5s stall)
+    t0 = time.perf_counter()
+    window.load_video(ep2)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0
+    assert window._worker_thread is None
+    assert window._worker is None
+    assert window.current_result is None
+    assert window.review_table.events() == []
+    assert window.status_label.text() == "Sẵn sàng"
+
+    # Queued/stale signals from an old worker must be ignored when sender is not self._worker
+    critical_calls: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda _parent, _title, text: critical_calls.append(text),
+    )
+    stale_worker = _ExtractionWorker(
+        pipeline=pipeline,
+        video_path=ep1,
+        roi=RoiRect(0.1, 0.7, 0.8, 0.2),
+        config=window.build_config(),
+        cancel_event=threading.Event(),
+    )
+    stale_worker.progress.connect(window._on_worker_progress)
+    stale_worker.finished.connect(window._on_worker_finished)
+    stale_worker.cancelled.connect(window._on_worker_cancelled)
+    stale_worker.failed.connect(window._on_worker_failed)
+
+    stale_result = ExtractResult(
+        video_path=ep1,
+        width=640,
+        height=360,
+        duration_ms=1000,
+        events=[SubtitleEvent(1, 100, 500, "STALE", 0.99, False, _make_png_bytes())],
+        elapsed_sec=0.1,
+    )
+    stale_worker.progress.emit("ocr", 1, 1)
+    stale_worker.finished.emit(stale_result)
+    stale_worker.cancelled.emit()
+    stale_worker.failed.emit("stale error")
+
+    assert window.current_result is None
+    assert window.review_table.events() == []
+    assert window.status_label.text() == "Sẵn sàng"
+    assert critical_calls == []
+    window.close()
+
+
+def test_main_window_export_oserror_shows_warning_without_crashing(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+    import transapp.ui.main_window as mw_mod
+    from transapp.ui.main_window import MainWindow
+
+    video_path = tmp_path / "locked_ep.mp4"
+    _make_synthetic_subtitle_mp4(video_path, duration_sec=1.2, cues=((200, 900, "锁定测试"),))
+
+    pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "锁定测试", 0.95]],
+                [0.01],
+            )
+        )
+    )
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(video_path)
+
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=8000)
+
+    def raise_locked(*_args, **_kwargs):
+        raise PermissionError("Locked by another process")
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(mw_mod, "export_srt", raise_locked)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, text: warnings.append((title, text)),
+    )
+
+    assert window.export_subtitles() is False
+    assert len(warnings) == 1
+    assert "Locked by another process" in warnings[0][1]
+    assert "Locked by another process" in window.status_label.text()
+    window.close()

@@ -464,11 +464,7 @@ class MainWindow(QMainWindow):
 
     def load_video(self, video_path: Path | str) -> None:
         """Load a single video episode, clearing any previous episode's memory state."""
-        if self._is_running():
-            self.stop_extraction()
-            if self._worker_thread is not None:
-                self._worker_thread.wait(5000)
-                self._cleanup_worker()
+        self._stop_and_wait_worker()
 
         self._clear_session_results()
         self.roi_canvas.set_frame(None)
@@ -651,8 +647,11 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_worker_progress)
         worker.finished.connect(self._on_worker_finished)
+        worker.finished.connect(thread.quit)
         worker.cancelled.connect(self._on_worker_cancelled)
+        worker.cancelled.connect(thread.quit)
         worker.failed.connect(self._on_worker_failed)
+        worker.failed.connect(thread.quit)
 
         self._cancel_event = cancel_event
         self._worker_thread = thread
@@ -669,6 +668,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str, int, int)
     def _on_worker_progress(self, stage: str, current: int, total: int) -> None:
+        if self.sender() is not self._worker:
+            return
         if stage == "scan":
             pct = int(round(70.0 * current / max(1, total)))
             self.progress_bar.setValue(max(0, min(70, pct)))
@@ -685,6 +686,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_worker_finished(self, result: ExtractResult) -> None:
+        if self.sender() is not self._worker:
+            return
         self._cleanup_worker()
         self._extract_result = result
         self.review_table.set_events(result.events)
@@ -696,6 +699,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_worker_cancelled(self) -> None:
+        if self.sender() is not self._worker:
+            return
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
@@ -704,6 +709,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_worker_failed(self, message: str) -> None:
+        if self.sender() is not self._worker:
+            return
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
@@ -711,20 +718,24 @@ class MainWindow(QMainWindow):
         self._update_controls_state()
         QMessageBox.critical(self, "Lỗi tách phụ đề", message)
 
+    def _stop_and_wait_worker(self) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        self._cleanup_worker()
+
     def _cleanup_worker(self) -> None:
         thread = self._worker_thread
         worker = self._worker
+        if thread is not None:
+            thread.quit()
+            thread.wait(5000)
+            thread.deleteLater()
         if worker is not None:
             for sig in (worker.progress, worker.finished, worker.cancelled, worker.failed):
                 try:
                     sig.disconnect()
                 except (RuntimeError, TypeError):
                     pass
-        if thread is not None:
-            thread.quit()
-            thread.wait(5000)
-            thread.deleteLater()
-        if worker is not None:
             worker.deleteLater()
         self._worker_thread = None
         self._worker = None
@@ -795,16 +806,21 @@ class MainWindow(QMainWindow):
             return False
 
         events = self.review_table.events()
-        if want_ass:
-            export_ass(
-                events,
-                ass_path,
-                video_width=self._extract_result.width,
-                video_height=self._extract_result.height,
-                template_path=template_path,
-            )
-        if want_srt:
-            export_srt(events, srt_path)
+        try:
+            if want_ass:
+                export_ass(
+                    events,
+                    ass_path,
+                    video_width=self._extract_result.width,
+                    video_height=self._extract_result.height,
+                    template_path=template_path,
+                )
+            if want_srt:
+                export_srt(events, srt_path)
+        except Exception as exc:
+            self.status_label.setText(f"Lỗi xuất file: {exc}")
+            QMessageBox.warning(self, "Lỗi xuất phụ đề", str(exc))
+            return False
 
         self.status_label.setText(
             "Đã xuất: " + ", ".join(p.name for p in targets)
@@ -813,12 +829,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background extraction, close open readers, and clear review memory."""
-        if self._cancel_event is not None:
-            self._cancel_event.set()
-        if self._worker_thread is not None:
-            self._worker_thread.quit()
-            self._worker_thread.wait(5000)
-        self._cleanup_worker()
+        self._stop_and_wait_worker()
         self._close_preview_reader()
         self._clear_session_results()
         self.roi_canvas.set_frame(None)
