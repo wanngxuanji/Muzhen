@@ -10,10 +10,12 @@ from transapp.core.models import (
     SubtitleEvent,
 )
 from transapp.core.presets import PresetStore, RoiPreset
+from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 
 __all__ = [
     "ExtractConfig",
     "ExtractResult",
+    "FrameSlice",
     "FrameTestResult",
     "OcrSegment",
     "PresetStore",
@@ -21,4 +23,6 @@ __all__ = [
     "RoiPreset",
     "RoiRect",
     "SubtitleEvent",
+    "VideoMetadata",
+    "VideoReader",
 ]
