@@ -68,6 +68,45 @@ def test_unbordered_blank_bright_orange_and_white_sky_are_suppressed():
         assert mask_fg_ratio(mask) < 0.002
 
 
+def test_unbordered_white_strokes_on_midtone_and_bright_bg_are_suppressed():
+    cfg = ExtractConfig()
+    h, w = 96, 480
+
+    for bg_bgr in ((140, 140, 140), (35, 145, 245)):
+        canvas = np.full((h, w, 3), bg_bgr, dtype=np.uint8)
+        # Draw white strokes directly WITHOUT dark outline so white_bin > 0 and ring_px > 0,
+        # forcing rejection via outline_ratio < _MIN_OUTLINE_RATIO.
+        cv2.putText(canvas, "NO BORDER", (40, 65), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (245, 245, 245), 2, cv2.LINE_AA)
+        mask = build_stroke_mask(canvas, cfg)
+        assert mask_fg_ratio(mask) < 0.002
+
+
+def test_tightly_cropped_tall_outlined_glyphs_are_preserved():
+    cfg = ExtractConfig()
+    roi_h, roi_w = 56, 200
+    canvas = np.full((roi_h, roi_w, 3), (35, 145, 245), dtype=np.uint8)
+
+    # Tall narrow vertical stroke ('I'/'1') exceeding 0.85 * roi_h (50 > 47.6) with dark outline
+    glyph = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    glyph[3:53, 30:38] = 255
+    # Dense square CJK-like character ('田') exceeding 0.85 * roi_h (50 > 47.6, w=44 > 0.5*roi_h)
+    glyph[3:53, 80:124] = 255
+    glyph[10:25, 87:99] = 0
+    glyph[10:25, 105:117] = 0
+    glyph[31:46, 87:99] = 0
+    glyph[31:46, 105:117] = 0
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    border = cv2.dilate(glyph, kernel)
+    canvas[border > 0] = (10, 10, 10)
+    canvas[glyph > 0] = (250, 250, 250)
+
+    mask = build_stroke_mask(canvas, cfg)
+    # Both tall narrow glyph and tall dense glyph must be preserved
+    assert np.count_nonzero(mask[3:53, 30:38]) == 50 * 8
+    assert np.count_nonzero(mask[3:53, 80:124]) == int(np.count_nonzero(glyph[3:53, 80:124]))
+
+
 def test_shifting_bright_orange_circle_behind_outlined_text_preserves_mask_iou():
     cfg = ExtractConfig()
     h, w = 100, 640

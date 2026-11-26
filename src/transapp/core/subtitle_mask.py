@@ -9,8 +9,9 @@ from transapp.core.models import ExtractConfig
 
 _MIN_OUTLINE_RATIO = 0.12
 _GIANT_BLOB_HEIGHT_RATIO = 0.85
+_GIANT_BLOB_WIDTH_RATIO = 0.50
 _GIANT_BLOB_OUTLINE_RATIO = 0.35
-_GIANT_BLOB_FILL_RATIO = 0.55
+_GIANT_BLOB_FILL_RATIO = 0.75
 
 
 def _outline_radius(roi_h: int) -> int:
@@ -68,7 +69,10 @@ def build_stroke_mask(bgr_roi: np.ndarray, config: ExtractConfig) -> np.ndarray:
 
         if h > _GIANT_BLOB_HEIGHT_RATIO * roi_h:
             fill_ratio = area / float(max(1, w * h))
-            if outline_ratio < _GIANT_BLOB_OUTLINE_RATIO or fill_ratio > _GIANT_BLOB_FILL_RATIO:
+            is_wide_solid = (
+                w > _GIANT_BLOB_WIDTH_RATIO * roi_h and fill_ratio > _GIANT_BLOB_FILL_RATIO
+            )
+            if outline_ratio < _GIANT_BLOB_OUTLINE_RATIO or is_wide_solid:
                 continue
 
         if outline_ratio >= _MIN_OUTLINE_RATIO:
