@@ -11,6 +11,7 @@ from transapp.core.models import (
     SubtitleEvent,
 )
 from transapp.core.ocr_engine import OcrEngine
+from transapp.core.pipeline import ExtractionPipeline
 from transapp.core.postprocess import (
     normalize_cjk_text,
     postprocess_segments,
@@ -29,6 +30,7 @@ from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 __all__ = [
     "ExtractConfig",
     "ExtractionCancelled",
+    "ExtractionPipeline",
     "ExtractResult",
     "FrameSlice",
     "FrameTestResult",
