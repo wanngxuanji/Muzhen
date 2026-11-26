@@ -11,6 +11,11 @@ from transapp.core.models import (
     SubtitleEvent,
 )
 from transapp.core.ocr_engine import OcrEngine
+from transapp.core.postprocess import (
+    normalize_cjk_text,
+    postprocess_segments,
+    text_similarity,
+)
 from transapp.core.presets import PresetStore, RoiPreset
 from transapp.core.segmenter import segment_roi_frames
 from transapp.core.subtitle_mask import (
@@ -40,5 +45,8 @@ __all__ = [
     "frame_sharpness",
     "mask_fg_ratio",
     "mask_iou",
+    "normalize_cjk_text",
+    "postprocess_segments",
     "segment_roi_frames",
+    "text_similarity",
 ]
