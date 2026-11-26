@@ -8,6 +8,10 @@ from pathlib import Path
 import numpy as np
 
 
+class ExtractionCancelled(Exception):
+    """Raised when frame segmentation or extraction is cancelled via cancel_check."""
+
+
 @dataclass(frozen=True, slots=True)
 class RoiRect:
     """Normalized region of interest with coordinates in [0.0, 1.0]."""

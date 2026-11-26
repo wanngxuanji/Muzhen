@@ -2,6 +2,7 @@
 
 from transapp.core.models import (
     ExtractConfig,
+    ExtractionCancelled,
     ExtractResult,
     FrameTestResult,
     OcrSegment,
@@ -10,6 +11,7 @@ from transapp.core.models import (
     SubtitleEvent,
 )
 from transapp.core.presets import PresetStore, RoiPreset
+from transapp.core.segmenter import segment_roi_frames
 from transapp.core.subtitle_mask import (
     build_stroke_mask,
     frame_sharpness,
@@ -20,6 +22,7 @@ from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 
 __all__ = [
     "ExtractConfig",
+    "ExtractionCancelled",
     "ExtractResult",
     "FrameSlice",
     "FrameTestResult",
@@ -35,4 +38,5 @@ __all__ = [
     "frame_sharpness",
     "mask_fg_ratio",
     "mask_iou",
+    "segment_roi_frames",
 ]
