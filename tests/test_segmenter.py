@@ -268,7 +268,7 @@ def test_segmenter_gradual_fade_in_and_fade_out_do_not_split():
         FrameSlice(7, 280, solid),
         FrameSlice(8, 320, solid),      # coarse: full solid
         FrameSlice(9, 360, solid),
-        FrameSlice(10, 400, mid_fade),  # coarse: slow fade-out (>= fg_ratio_min, IoU < 0.55)
+        FrameSlice(10, 400, edge_fade), # coarse: soft edge-band fade-out
         FrameSlice(11, 440, edge_fade), # edge-band fade-out
         FrameSlice(12, 480, bg),        # coarse: blank
         FrameSlice(13, 520, bg),
@@ -313,3 +313,63 @@ def test_segmenter_long_cue_decimation_picks_interior_peak():
     assert (segs[0].start_ms, segs[0].end_ms) == (0, 6000)
     assert 45 <= segs[0].frame_index <= 105
     assert frame_sharpness(segs[0].peak_bgr) > frame_sharpness(blurred)
+
+
+def _draw_two_line_cue(
+    canvas: np.ndarray, top_text: str, bottom_text: str
+) -> np.ndarray:
+    h, w = canvas.shape[:2]
+    glyph = np.zeros((h, w), dtype=np.uint8)
+    cv2.putText(glyph, top_text, (60, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 255, 2, cv2.LINE_AA)
+    cv2.putText(glyph, bottom_text, (60, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 255, 2, cv2.LINE_AA)
+    border = cv2.dilate(glyph, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    out = canvas.copy()
+    out[border > 0] = (10, 10, 10)
+    out[glyph > 127] = (250, 250, 250)
+    return out
+
+
+def _draw_bottom_line_cue(canvas: np.ndarray, bottom_text: str) -> np.ndarray:
+    h, w = canvas.shape[:2]
+    glyph = np.zeros((h, w), dtype=np.uint8)
+    cv2.putText(glyph, bottom_text, (60, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 255, 2, cv2.LINE_AA)
+    border = cv2.dilate(glyph, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    out = canvas.copy()
+    out[border > 0] = (10, 10, 10)
+    out[glyph > 127] = (250, 250, 250)
+    return out
+
+
+def test_segmenter_back_to_back_two_line_to_one_line_splits_without_delay():
+    cfg = ExtractConfig(coarse_step=2)
+    bg = _make_blank_roi(96, 640)
+    two_line = _draw_two_line_cue(bg, "LONGER TOP LINE ONE", "BOTTOM")
+    one_line = _draw_bottom_line_cue(bg, "BOTTOM")
+
+    mask_2 = build_stroke_mask(two_line, cfg)
+    mask_1 = build_stroke_mask(one_line, cfg)
+    fg_2 = mask_fg_ratio(mask_2)
+    fg_1 = mask_fg_ratio(mask_1)
+    # Confirm this hits the exact hazardous regime: fg_1 >= fg_ratio_min, fg_1 < 0.6 * fg_2, IoU < split_iou_min
+    assert fg_1 >= cfg.fg_ratio_min
+    assert fg_1 < fg_2 * 0.6
+
+    # Case A: even-frame transition (0..9 two-line, 10..12 short 3-frame one-line, 13..15 blank)
+    stream_even = [
+        FrameSlice(i, i * 40, two_line if i < 10 else (one_line if i < 13 else bg))
+        for i in range(16)
+    ]
+    segs_even = segment_roi_frames(stream_even, cfg)
+    assert len(segs_even) == 2
+    assert (segs_even[0].start_ms, segs_even[0].end_ms) == (0, 400)
+    assert (segs_even[1].start_ms, segs_even[1].end_ms) == (400, 520)
+
+    # Case B: odd-frame transition (0..8 two-line, 9..16 one-line, 17..19 blank)
+    stream_odd = [
+        FrameSlice(i, i * 40, two_line if i < 9 else (one_line if i < 17 else bg))
+        for i in range(20)
+    ]
+    segs_odd = segment_roi_frames(stream_odd, cfg)
+    assert len(segs_odd) == 2
+    assert (segs_odd[0].start_ms, segs_odd[0].end_ms) == (0, 360)
+    assert (segs_odd[1].start_ms, segs_odd[1].end_ms) == (360, 680)

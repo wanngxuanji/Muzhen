@@ -262,9 +262,8 @@ def segment_roi_frames(
             return
 
         is_fade_tail = (
-            curr_fg >= config.fg_ratio_edge
+            config.fg_ratio_edge <= curr_fg < config.fg_ratio_min
             and active.fade_tail_count < _MAX_FADE_TAIL_STEPS
-            and (curr_fg < config.fg_ratio_min or curr_fg < active.anchor_fg * 0.6)
             and (
                 iou >= config.split_iou_min * 0.5
                 or _mask_containment(curr_mask, active.anchor_mask, dilate_px=1) >= 0.70
