@@ -164,3 +164,84 @@ def test_video_reader_monotonic_pts_fallback_on_missing_or_duplicate_ticks(tmp_p
         assert p0 == 200
         assert p1 == 201
         assert p2 > p1
+
+
+def test_video_reader_duration_fallback_and_probe_stops_after_first_frame(tmp_path: Path, monkeypatch):
+    video_path = tmp_path / "probe_check.mp4"
+    _make_synthetic_vfr_mp4(video_path, width=320, height=180, pts_ms_list=(100, 140, 180, 220, 260, 300))
+
+    real_open = av.open
+
+    class _StreamProxy:
+        def __init__(self, real_stream, *, zero_dims: bool):
+            self._real = real_stream
+            self._zero_dims = zero_dims
+            self.duration = 0
+            self.time_base = real_stream.time_base
+            self.start_time = real_stream.start_time
+            self.average_rate = real_stream.average_rate
+            self.guessed_rate = real_stream.guessed_rate
+            self.base_rate = real_stream.base_rate
+            self.frames = real_stream.frames
+            self.thread_type = "AUTO"
+            self.width = 0 if zero_dims else real_stream.width
+            self.height = 0 if zero_dims else real_stream.height
+
+            class _CodecProxy:
+                width = 0 if zero_dims else real_stream.codec_context.width
+                height = 0 if zero_dims else real_stream.codec_context.height
+
+            self.codec_context = _CodecProxy()
+
+    class _ContainerProxy:
+        def __init__(self, real_container, *, zero_dims: bool):
+            self._real = real_container
+            self._stream_proxy = _StreamProxy(real_container.streams.video[0], zero_dims=zero_dims)
+            self.duration = 2_500_000  # 2500 ms in av.time_base
+            self.decoded_count = 0
+
+            class _Streams:
+                def __init__(self, video_stream):
+                    self.video = [video_stream]
+
+            self.streams = _Streams(self._stream_proxy)
+
+        def seek(self, *args, **kwargs):
+            return self._real.seek(*args, **kwargs)
+
+        def decode(self, stream):
+            target = stream._real if isinstance(stream, _StreamProxy) else stream
+            for frame in self._real.decode(target):
+                self.decoded_count += 1
+                yield frame
+
+        def close(self):
+            self._real.close()
+
+    # Case 1: stream.duration == 0 falls back to container.duration without probing frames.
+    proxies: list[_ContainerProxy] = []
+
+    def _open_case1(path, *args, **kwargs):
+        proxy = _ContainerProxy(real_open(path, *args, **kwargs), zero_dims=False)
+        proxies.append(proxy)
+        return proxy
+
+    monkeypatch.setattr(av, "open", _open_case1)
+    with VideoReader(video_path) as reader:
+        assert reader.metadata.duration_ms == 2500
+        assert proxies[0].decoded_count == 0
+
+    # Case 2: missing dimensions with duration_ms > 0 probes ONLY the first frame.
+    proxies.clear()
+
+    def _open_case2(path, *args, **kwargs):
+        proxy = _ContainerProxy(real_open(path, *args, **kwargs), zero_dims=True)
+        proxies.append(proxy)
+        return proxy
+
+    monkeypatch.setattr(av, "open", _open_case2)
+    with VideoReader(video_path) as reader:
+        assert reader.metadata.width == 320
+        assert reader.metadata.height == 180
+        assert reader.metadata.duration_ms == 2500
+        assert proxies[0].decoded_count == 1

@@ -141,16 +141,20 @@ class VideoReader:
         fps = float(rate) if rate is not None and float(rate) > 0.0 else 25.0
 
         duration_ms = 0
-        if stream.duration is not None and stream.time_base is not None:
+        if stream.duration is not None and stream.duration > 0 and stream.time_base is not None:
             duration_ms = max(0, int(round(stream.duration * float(stream.time_base) * 1000.0)))
-        elif container.duration is not None:
+        if duration_ms <= 0 and container.duration is not None and container.duration > 0:
             duration_ms = max(0, int(round(container.duration * 1000.0 / av.time_base)))
 
-        if width <= 0 or height <= 0 or duration_ms == 0:
-            first_dims, scanned_dur = self._probe_stream(container, stream, fps)
-            if width <= 0 or height <= 0:
+        need_dims = width <= 0 or height <= 0
+        need_duration = duration_ms <= 0
+        if need_dims or need_duration:
+            first_dims, scanned_dur = self._probe_stream(
+                container, stream, fps, probe_duration=need_duration
+            )
+            if need_dims:
                 width, height = first_dims
-            if duration_ms == 0:
+            if need_duration:
                 duration_ms = scanned_dur
 
         if width <= 0 or height <= 0:
@@ -177,6 +181,8 @@ class VideoReader:
         container: av.container.InputContainer,
         stream: av.video.stream.VideoStream,
         fps: float,
+        *,
+        probe_duration: bool = True,
     ) -> tuple[tuple[int, int], int]:
         """Fallback probe when container headers lack dimensions or duration."""
         self._seek_to_start(container, stream)
@@ -190,6 +196,8 @@ class VideoReader:
                 if width == 0 or height == 0:
                     width = int(frame.width)
                     height = int(frame.height)
+                if not probe_duration:
+                    break
                 pts_ms = self._raw_pts_ms(frame, stream, count, fps)
                 if first_pts is None:
                     first_pts = pts_ms
