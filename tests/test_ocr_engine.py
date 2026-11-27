@@ -157,9 +157,40 @@ def test_process_segments_emits_progress_and_respects_cancellation():
     assert cancel_progress == [(1, 3)]
 
 
+def test_recognize_roi_parses_rapidocr_v3_output_object():
+    class FakeRapidOCROutput:
+        def __init__(self, boxes, txts, scores):
+            self.boxes = boxes
+            self.txts = txts
+            self.scores = scores
+
+    def fake_v3_ocr(_img: np.ndarray):
+        boxes = np.array(
+            [
+                [[120.0, 50.0], [220.0, 50.0], [220.0, 74.0], [120.0, 74.0]],
+                [[10.0, 52.0], [100.0, 52.0], [100.0, 76.0], [10.0, 76.0]],
+            ],
+            dtype=np.float32,
+        )
+        return FakeRapidOCROutput(boxes=boxes, txts=("米娜", "筱语"), scores=(0.98, 0.94))
+
+    engine = OcrEngine(ocr_callable=fake_v3_ocr)
+    text, conf = engine.recognize_roi(_make_bgr(64, 300))
+    assert text == "筱语 米娜"
+    assert conf == pytest.approx(0.94)
+
+    empty_v3 = OcrEngine(ocr_callable=lambda _img: FakeRapidOCROutput(None, None, None))
+    assert empty_v3.recognize_roi(_make_bgr(64, 300)) == ("", 0.0)
+
+
+def test_ocr_engine_rejects_invalid_model_preset():
+    with pytest.raises(ValueError, match="Unsupported OCR model preset"):
+        OcrEngine(provider="cpu", ocr_model="unknown")
+
+
 def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     import onnxruntime
-    import rapidocr_onnxruntime
+    import rapidocr
 
     monkeypatch.setattr(
         onnxruntime,
@@ -176,18 +207,18 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     assert OcrEngine.available_providers() == ["cpu", "directml"]
 
     # When DmlExecutionProvider is unavailable, directml falls back to CPU with warning
-    init_kwargs: list[dict] = []
+    init_params: list[dict] = []
 
     class FakeRapidOCR:
-        def __init__(self, **kwargs):
-            init_kwargs.append(kwargs)
-            if kwargs.get("det_use_dml"):
+        def __init__(self, params=None):
+            init_params.append(dict(params or {}))
+            if (params or {}).get("EngineConfig.onnxruntime.use_dml"):
                 raise RuntimeError("DirectML init failed")
 
         def __call__(self, _img):
             return ([[[[0, 0], [30, 0], [30, 20], [0, 20]], "回退成功", 0.92]], [0.01])
 
-    monkeypatch.setattr(rapidocr_onnxruntime, "RapidOCR", FakeRapidOCR)
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakeRapidOCR)
     monkeypatch.setattr(
         onnxruntime,
         "get_available_providers",
@@ -196,40 +227,48 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
 
     caplog.set_level(logging.WARNING)
     engine = OcrEngine(provider="directml")
-    assert init_kwargs == []  # lazy init
+    assert init_params == []  # lazy init
     text, conf = engine.recognize_roi(_make_bgr(64, 160))
     assert (text, conf) == ("回退成功", pytest.approx(0.92))
-    assert init_kwargs == [{"det_limit_type": "max", "det_limit_side_len": 960}]
+    assert len(init_params) == 1
+    assert init_params[0]["Global.use_cls"] is False
+    assert init_params[0]["Global.use_vertical_padding"] is True
+    assert init_params[0]["Global.width_height_ratio"] == 4
+    assert init_params[0]["Det.ocr_version"] == rapidocr.OCRVersion.PPOCRV6
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SMALL
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SMALL
+    assert init_params[0]["Det.limit_type"] == "max"
+    assert init_params[0]["Det.limit_side_len"] == 960
+    assert "EngineConfig.onnxruntime.use_dml" not in init_params[0]
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
     # When DmlExecutionProvider is listed but RapidOCR init fails, still fall back to CPU with warning
     caplog.clear()
-    init_kwargs.clear()
+    init_params.clear()
     monkeypatch.setattr(
         onnxruntime,
         "get_available_providers",
         lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
     )
-    engine2 = OcrEngine(provider="directml")
+    engine2 = OcrEngine(provider="directml", ocr_model="accurate")
     text2, conf2 = engine2.recognize_roi(_make_bgr(64, 160))
     assert (text2, conf2) == ("回退成功", pytest.approx(0.92))
-    assert init_kwargs == [
-        {
-            "det_limit_type": "max",
-            "det_limit_side_len": 960,
-            "det_use_dml": True,
-            "cls_use_dml": True,
-            "rec_use_dml": True,
-        },
-        {"det_limit_type": "max", "det_limit_side_len": 960},
-    ]
+    assert len(init_params) == 2
+    assert init_params[0]["EngineConfig.onnxruntime.use_dml"] is True
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.MEDIUM
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.MEDIUM
+    assert "EngineConfig.onnxruntime.use_dml" not in init_params[1]
+    assert init_params[1]["Det.model_type"] == rapidocr.ModelType.MEDIUM
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # Default CPU provider also passes calibrated det_limit_* kwargs
-    init_kwargs.clear()
-    cpu_engine = OcrEngine(provider="cpu")
+    # Default CPU provider passes PP-OCRv6 small params with use_cls disabled
+    init_params.clear()
+    cpu_engine = OcrEngine(provider="cpu", ocr_model="fast")
     assert cpu_engine.recognize_roi(_make_bgr(64, 160)) == ("回退成功", pytest.approx(0.92))
-    assert init_kwargs == [{"det_limit_type": "max", "det_limit_side_len": 960}]
+    assert len(init_params) == 1
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SMALL
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SMALL
+    assert "EngineConfig.onnxruntime.use_dml" not in init_params[0]
 
 
 @pytest.mark.parametrize(

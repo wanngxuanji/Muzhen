@@ -972,6 +972,14 @@ def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monk
     assert cpu_idx >= 0
     window.provider_combo.setCurrentIndex(cpu_idx)
     assert window.build_config().provider == "cpu"
+
+    assert window.ocr_model_combo.count() == 2
+    assert window.ocr_model_combo.currentData() == "fast"
+    assert window.build_config().ocr_model == "fast"
+    acc_idx = window.ocr_model_combo.findData("accurate")
+    assert acc_idx >= 0
+    window.ocr_model_combo.setCurrentIndex(acc_idx)
+    assert window.build_config().ocr_model == "accurate"
     window.close()
 
 

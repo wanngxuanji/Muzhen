@@ -58,6 +58,7 @@ class ExtractConfig:
     merge_similarity: float = 0.85
     conf_threshold: float = 0.85
     provider: str = "cpu"
+    ocr_model: str = "fast"
     filter_non_cjk_low_conf: bool = True
 
 

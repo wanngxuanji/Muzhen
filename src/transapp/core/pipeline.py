@@ -45,12 +45,17 @@ class ExtractionPipeline:
         if self._injected_ocr_engine is not None:
             return self._injected_ocr_engine
         requested_provider = (config.provider or "cpu").strip().lower()
+        requested_model = (config.ocr_model or "fast").strip().lower()
         with self._engine_lock:
             if (
                 self._cached_ocr_engine is None
                 or self._cached_ocr_engine.provider != requested_provider
+                or getattr(self._cached_ocr_engine, "ocr_model", "fast") != requested_model
             ):
-                self._cached_ocr_engine = OcrEngine(provider=requested_provider)
+                self._cached_ocr_engine = OcrEngine(
+                    provider=requested_provider,
+                    ocr_model=requested_model,
+                )
             return self._cached_ocr_engine
 
     def test_frame_bgr(

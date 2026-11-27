@@ -13,7 +13,7 @@ dependencies = [
     "av>=13.0",
     "opencv-python-headless>=4.10",
     "numpy>=1.26",
-    "rapidocr-onnxruntime>=1.4",
+    "rapidocr>=3.10",
     "onnxruntime-directml>=1.19; sys_platform == 'win32'",
     "onnxruntime>=1.19; sys_platform != 'win32'",
 ]

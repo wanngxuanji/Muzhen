@@ -426,11 +426,12 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     init_calls = 0
 
     class _SlowFakeOcrEngine:
-        def __init__(self, provider: str = "cpu"):
+        def __init__(self, provider: str = "cpu", ocr_model: str = "fast"):
             nonlocal init_calls
             time.sleep(0.05)
             init_calls += 1
             self.provider = provider
+            self.ocr_model = ocr_model
 
     monkeypatch.setattr(pipeline_mod, "OcrEngine", _SlowFakeOcrEngine)
     shared_pipeline = ExtractionPipeline()
@@ -442,7 +443,7 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
 
     def worker():
         barrier.wait()
-        eng = shared_pipeline._resolve_ocr_engine(ExtractConfig(provider="cpu"))
+        eng = shared_pipeline._resolve_ocr_engine(ExtractConfig(provider="cpu", ocr_model="fast"))
         with lock:
             resolved.append(eng)
 
@@ -455,4 +456,12 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     assert init_calls == 1
     assert len(resolved) == 4
     assert all(eng is resolved[0] for eng in resolved)
+
+    # Changing ocr_model must rebuild cached engine
+    accurate_eng = shared_pipeline._resolve_ocr_engine(
+        ExtractConfig(provider="cpu", ocr_model="accurate")
+    )
+    assert init_calls == 2
+    assert accurate_eng is not resolved[0]
+    assert accurate_eng.ocr_model == "accurate"
 

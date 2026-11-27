@@ -1,4 +1,4 @@
-"""RapidOCR Chinese text recognition wrapper and PNG thumbnail encoder."""
+"""RapidOCR (v3+ / PP-OCRv6) Chinese text recognition wrapper and PNG thumbnail encoder."""
 
 from __future__ import annotations
 
@@ -17,7 +17,13 @@ _MIN_OCR_HEIGHT = 48
 _BORDER_PAD_PX = 10
 _DET_LIMIT_TYPE = "max"
 _DET_LIMIT_SIDE_LEN = 960
+_VERTICAL_PAD_RATIO = 4
 _SUPPORTED_PROVIDERS = ("cpu", "directml")
+_MODEL_PRESETS: dict[str, tuple[str, str]] = {
+    "fast": ("PP-OCRv6", "small"),
+    "accurate": ("PP-OCRv6", "medium"),
+}
+_SUPPORTED_MODELS = tuple(_MODEL_PRESETS.keys())
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +36,7 @@ class _OcrBox:
 
 
 def _prepare_roi_for_ocr(bgr_roi: np.ndarray) -> np.ndarray:
-    """Upscale and pad small ROIs (<48px tall) so text detection/recognition remain accurate."""
+    """Upscale and pad tiny ROIs (<48px tall) so text detection/recognition remain accurate."""
     h, w = bgr_roi.shape[:2]
     if h >= _MIN_OCR_HEIGHT:
         return bgr_roi
@@ -49,22 +55,46 @@ def _prepare_roi_for_ocr(bgr_roi: np.ndarray) -> np.ndarray:
     )
 
 
+def _extract_raw_items(raw_output: Any) -> list[tuple[Any, str, float]]:
+    """Normalize RapidOCR v3+ RapidOCROutput or legacy (items, elapse) output into (coords, text, score)."""
+    if raw_output is None:
+        return []
+
+    # RapidOCR v3+ returns a RapidOCROutput dataclass with .boxes, .txts, .scores
+    if hasattr(raw_output, "boxes") and hasattr(raw_output, "txts") and hasattr(raw_output, "scores"):
+        boxes_arr = raw_output.boxes
+        txts = raw_output.txts
+        scores = raw_output.scores
+        if boxes_arr is None or not txts or not scores:
+            return []
+        return [
+            (coords, str(txt), float(score))
+            for coords, txt, score in zip(boxes_arr, txts, scores)
+        ]
+
+    # Legacy rapidocr_onnxruntime / mock callable format: ([[coords, text, score], ...], elapse)
+    items = raw_output[0] if isinstance(raw_output, tuple) and len(raw_output) == 2 else raw_output
+    if not items:
+        return []
+
+    parsed: list[tuple[Any, str, float]] = []
+    for item in items:
+        if not item or len(item) < 3:
+            continue
+        parsed.append((item[0], str(item[1]), float(item[2])))
+    return parsed
+
+
 def _group_and_format_boxes(raw_output: Any) -> tuple[str, float]:
     """Group OCR boxes into horizontal lines, sort top-to-bottom/left-to-right, and compute min score."""
-    if raw_output is None:
-        return ("", 0.0)
-
-    items = raw_output[0] if isinstance(raw_output, tuple) and len(raw_output) == 2 else raw_output
+    items = _extract_raw_items(raw_output)
     if not items:
         return ("", 0.0)
 
     boxes: list[_OcrBox] = []
-    for item in items:
-        if not item or len(item) < 3:
-            continue
-        coords, raw_text, raw_score = item[0], item[1], item[2]
-        text = str(raw_text).strip()
-        if not text or not coords:
+    for coords, raw_text, raw_score in items:
+        text = raw_text.strip()
+        if not text or coords is None or len(coords) == 0:
             continue
         xs = [float(pt[0]) for pt in coords]
         ys = [float(pt[1]) for pt in coords]
@@ -98,18 +128,51 @@ def _group_and_format_boxes(raw_output: Any) -> tuple[str, float]:
     return ("\n".join(ordered_lines), confidence)
 
 
+def _build_rapidocr_params(ocr_model: str, *, use_dml: bool) -> dict[str, Any]:
+    from rapidocr import EngineType, ModelType, OCRVersion
+
+    ocr_version_str, model_type_str = _MODEL_PRESETS[ocr_model]
+    ocr_version = OCRVersion(ocr_version_str)
+    model_type = ModelType(model_type_str)
+    params: dict[str, Any] = {
+        "Global.use_cls": False,
+        "Global.use_vertical_padding": True,
+        "Global.width_height_ratio": _VERTICAL_PAD_RATIO,
+        "Global.min_height": _MIN_OCR_HEIGHT,
+        "Global.log_level": "error",
+        "Det.engine_type": EngineType.ONNXRUNTIME,
+        "Det.ocr_version": ocr_version,
+        "Det.model_type": model_type,
+        "Det.limit_type": _DET_LIMIT_TYPE,
+        "Det.limit_side_len": _DET_LIMIT_SIDE_LEN,
+        "Rec.engine_type": EngineType.ONNXRUNTIME,
+        "Rec.ocr_version": ocr_version,
+        "Rec.model_type": model_type,
+    }
+    if use_dml:
+        params["EngineConfig.onnxruntime.use_dml"] = True
+    return params
+
+
 class OcrEngine:
-    """Lazy RapidOCR wrapper with DirectML-to-CPU fallback and PNG thumbnail encoding."""
+    """Lazy RapidOCR v3+ wrapper with PP-OCRv6 model presets, DirectML fallback, and PNG encoding."""
 
     def __init__(
         self,
         provider: str = "cpu",
+        ocr_model: str = "fast",
         ocr_callable: Callable[[np.ndarray], Any] | None = None,
     ) -> None:
-        normalized = (provider or "cpu").strip().lower()
-        if normalized not in _SUPPORTED_PROVIDERS:
+        normalized_provider = (provider or "cpu").strip().lower()
+        if normalized_provider not in _SUPPORTED_PROVIDERS:
             raise ValueError(f"Unsupported OCR provider: {provider!r}")
-        self.provider = normalized
+
+        normalized_model = (ocr_model or "fast").strip().lower()
+        if normalized_model not in _SUPPORTED_MODELS:
+            raise ValueError(f"Unsupported OCR model preset: {ocr_model!r}")
+
+        self.provider = normalized_provider
+        self.ocr_model = normalized_model
         self._engine: Callable[[np.ndarray], Any] | None = ocr_callable
 
     @staticmethod
@@ -129,31 +192,29 @@ class OcrEngine:
             providers.append("directml")
         return providers
 
+    @staticmethod
+    def supported_models() -> tuple[str, ...]:
+        """Return supported OCR model preset keys."""
+        return _SUPPORTED_MODELS
+
     def _ensure_engine(self) -> Callable[[np.ndarray], Any]:
         if self._engine is not None:
             return self._engine
 
-        import rapidocr_onnxruntime
+        import rapidocr
 
-        det_kwargs: dict[str, Any] = {
-            "det_limit_type": _DET_LIMIT_TYPE,
-            "det_limit_side_len": _DET_LIMIT_SIDE_LEN,
-        }
+        cpu_params = _build_rapidocr_params(self.ocr_model, use_dml=False)
 
         if self.provider == "directml":
             if "directml" not in self.available_providers():
                 logger.warning(
                     "DirectML execution provider is unavailable; falling back to CPU OCR."
                 )
-                self._engine = rapidocr_onnxruntime.RapidOCR(**det_kwargs)
+                self._engine = rapidocr.RapidOCR(params=cpu_params)
                 return self._engine
             try:
-                self._engine = rapidocr_onnxruntime.RapidOCR(
-                    **det_kwargs,
-                    det_use_dml=True,
-                    cls_use_dml=True,
-                    rec_use_dml=True,
-                )
+                dml_params = _build_rapidocr_params(self.ocr_model, use_dml=True)
+                self._engine = rapidocr.RapidOCR(params=dml_params)
                 return self._engine
             except Exception as exc:
                 logger.warning(
@@ -161,7 +222,7 @@ class OcrEngine:
                     exc,
                 )
 
-        self._engine = rapidocr_onnxruntime.RapidOCR(**det_kwargs)
+        self._engine = rapidocr.RapidOCR(params=cpu_params)
         return self._engine
 
     def recognize_roi(self, bgr_roi: np.ndarray) -> tuple[str, float]:

@@ -322,6 +322,15 @@ class MainWindow(QMainWindow):
             self.provider_combo.addItem("DirectML (GPU)", "directml")
             self.provider_combo.setCurrentIndex(1)
 
+        lbl_model = QLabel("Model OCR")
+        lbl_model.setProperty("role", "fieldLabel")
+        self.ocr_model_combo = QComboBox()
+        self.ocr_model_combo.addItem("PP-OCRv6 Nhanh (Small)", "fast")
+        self.ocr_model_combo.addItem("PP-OCRv6 Chuẩn xác (Medium)", "accurate")
+        self.ocr_model_combo.setToolTip(
+            "Small: có sẵn offline, tốc độ cao. Medium: chính xác hơn (tự tải model lần đầu)."
+        )
+
         lbl_conf = QLabel("Ngưỡng nghi ngờ")
         lbl_conf.setProperty("role", "fieldLabel")
         self.spin_conf = QDoubleSpinBox()
@@ -332,8 +341,10 @@ class MainWindow(QMainWindow):
 
         ocr_grid.addWidget(lbl_backend, 0, 0)
         ocr_grid.addWidget(self.provider_combo, 0, 1)
-        ocr_grid.addWidget(lbl_conf, 1, 0)
-        ocr_grid.addWidget(self.spin_conf, 1, 1)
+        ocr_grid.addWidget(lbl_model, 1, 0)
+        ocr_grid.addWidget(self.ocr_model_combo, 1, 1)
+        ocr_grid.addWidget(lbl_conf, 2, 0)
+        ocr_grid.addWidget(self.spin_conf, 2, 1)
         ocr_grid.setColumnStretch(1, 1)
         body_layout.addLayout(ocr_grid)
 
@@ -545,6 +556,7 @@ class MainWindow(QMainWindow):
 
         self.btn_test_frame.setEnabled(has_video and not running)
         self.provider_combo.setEnabled(not running)
+        self.ocr_model_combo.setEnabled(not running)
         self.spin_conf.setEnabled(not running)
         self.btn_start.setEnabled(has_video and not running)
         self.btn_stop.setEnabled(running)
@@ -802,9 +814,11 @@ class MainWindow(QMainWindow):
     def build_config(self) -> ExtractConfig:
         """Build an ExtractConfig from the current UI controls."""
         provider = self.provider_combo.currentData() or "cpu"
+        ocr_model = self.ocr_model_combo.currentData() or "fast"
         return ExtractConfig(
             conf_threshold=float(self.spin_conf.value()),
             provider=str(provider),
+            ocr_model=str(ocr_model),
         )
 
     def test_current_frame(self) -> FrameTestResult | None:
