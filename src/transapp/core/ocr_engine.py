@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 from dataclasses import dataclass
@@ -49,25 +50,25 @@ class _OcrBox:
 
 
 def _prepare_roi_for_ocr(bgr_roi: np.ndarray) -> np.ndarray:
-    """Normalize ROI scale for ch_PP-OCRv5 without synthetic black borders that confuse DBNet."""
+    """Normalize ROI scale for ch_PP-OCRv5 in at most one resize pass without synthetic borders."""
     h, w = bgr_roi.shape[:2]
-    inp = bgr_roi
-    if w > _MAX_OCR_WIDTH:
-        scale = _MAX_OCR_WIDTH / float(w)
-        inp = cv2.resize(
-            inp,
-            (_MAX_OCR_WIDTH, max(1, round(h * scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-        h, w = inp.shape[:2]
+    target_w, target_h = w, h
 
-    if h < _MIN_OCR_HEIGHT:
-        scale = _MIN_OCR_HEIGHT / float(h)
-        new_w = min(_MAX_OCR_WIDTH, max(1, round(w * scale)))
-        new_h = max(_MIN_OCR_HEIGHT, round(h * scale))
-        inp = cv2.resize(inp, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    if target_w > _MAX_OCR_WIDTH:
+        scale = _MAX_OCR_WIDTH / float(target_w)
+        target_w = _MAX_OCR_WIDTH
+        target_h = max(1, round(target_h * scale))
 
-    return inp
+    if target_h < _MIN_OCR_HEIGHT:
+        scale = _MIN_OCR_HEIGHT / float(target_h)
+        target_w = min(_MAX_OCR_WIDTH, max(1, round(target_w * scale)))
+        target_h = _MIN_OCR_HEIGHT
+
+    if target_w == w and target_h == h:
+        return bgr_roi
+
+    interp = cv2.INTER_AREA if (target_w <= w and target_h <= h) else cv2.INTER_CUBIC
+    return cv2.resize(bgr_roi, (target_w, target_h), interpolation=interp)
 
 
 def _extract_raw_items(raw_output: Any) -> list[tuple[Any, str, float]]:
@@ -336,6 +337,7 @@ class OcrEngine:
         self,
         params_builder: Callable[..., dict[str, Any]],
         *,
+        eager_check: bool = False,
         eager_det_check: bool = False,
     ) -> tuple[Any, bool]:
         import rapidocr
@@ -351,14 +353,25 @@ class OcrEngine:
                 dml_params = params_builder(use_dml=True)
                 engine = rapidocr.RapidOCR(params=dml_params)
                 dml_active = True
-                if eager_det_check:
-                    load_det = getattr(engine, "_load_det_model", None)
-                    if callable(load_det):
-                        det_model = load_det()
-                        ort_sess = getattr(getattr(det_model, "session", None), "session", None)
+                if eager_check or eager_det_check:
+                    use_det = dml_params.get("Global.use_det", True)
+                    use_rec = dml_params.get("Global.use_rec", True)
+                    loaders: list[Callable[[], Any]] = []
+                    if use_det:
+                        load_det = getattr(engine, "_load_det_model", None)
+                        if callable(load_det):
+                            loaders.append(load_det)
+                    if use_rec:
+                        load_rec = getattr(engine, "_load_rec_model", None)
+                        if callable(load_rec):
+                            loaders.append(load_rec)
+                    for loader in loaders:
+                        model = loader()
+                        ort_sess = getattr(getattr(model, "session", None), "session", None)
                         get_providers = getattr(ort_sess, "get_providers", None)
                         if callable(get_providers):
-                            dml_active = "DmlExecutionProvider" in get_providers()
+                            if "DmlExecutionProvider" not in get_providers():
+                                dml_active = False
                 return engine, dml_active
             except Exception as exc:
                 logger.warning(
@@ -372,7 +385,8 @@ class OcrEngine:
             if self._engine is not None:
                 return self._engine
             self._engine, _ = self._init_rapidocr_with_fallback(
-                lambda *, use_dml: _build_rapidocr_params(self.ocr_model, use_dml=use_dml)
+                lambda *, use_dml: _build_rapidocr_params(self.ocr_model, use_dml=use_dml),
+                eager_check=True,
             )
             return self._engine
 
@@ -382,7 +396,7 @@ class OcrEngine:
                 return self._det_engine
             self._det_engine, self._det_dml_active = self._init_rapidocr_with_fallback(
                 lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml),
-                eager_det_check=True,
+                eager_check=True,
             )
             return self._det_engine
 
@@ -521,7 +535,9 @@ class OcrEngine:
             tw = max(32, round(w0 * scale))
             th = max(32, round(h0 * scale))
             rw = max(32, int(round(tw / 32.0)) * 32)
-            rh = max(32, int(round(th / 32.0)) * 32)
+            rh = max(32, int(math.ceil(th / 32.0)) * 32)
+            if h0 >= 48:
+                rh = max(64, rh)
 
             batch_uint8 = np.empty((len(valid_entries), rh, rw, 3), dtype=np.uint8)
             for idx, (_orig_idx, roi, orig_h, orig_w) in enumerate(valid_entries):

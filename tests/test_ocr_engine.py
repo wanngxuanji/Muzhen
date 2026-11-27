@@ -684,4 +684,155 @@ def test_ocr_engine_drops_offband_tiny_hanzi_and_serializes_concurrent_calls():
     assert len(results) == 2
 
 
+def test_ensure_engine_eagerly_verifies_rec_model_and_falls_back_to_cpu_on_dml_error(
+    monkeypatch, caplog
+):
+    import onnxruntime
+    import rapidocr
+
+    monkeypatch.setattr(
+        onnxruntime,
+        "get_available_providers",
+        lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    init_flags: list[bool] = []
+    rec_load_flags: list[bool] = []
+
+    def _make_fake_model(providers: list[str]):
+        class _FakeOrtSession:
+            def get_providers(self):
+                return list(providers)
+
+        class _FakeSession:
+            session = _FakeOrtSession()
+
+        class _FakeModel:
+            session = _FakeSession()
+
+        return _FakeModel()
+
+    class FakeLazyRecFailRapidOCR:
+        def __init__(self, params=None):
+            self._use_dml = bool((params or {}).get("EngineConfig.onnxruntime.use_dml"))
+            init_flags.append(self._use_dml)
+
+        def _load_det_model(self):
+            return _make_fake_model(
+                ["DmlExecutionProvider", "CPUExecutionProvider"]
+                if self._use_dml
+                else ["CPUExecutionProvider"]
+            )
+
+        def _load_rec_model(self):
+            rec_load_flags.append(self._use_dml)
+            if self._use_dml:
+                raise RuntimeError("DML session failed")
+            return _make_fake_model(["CPUExecutionProvider"])
+
+        def __call__(self, _img):
+            self._load_det_model()
+            self._load_rec_model()
+            return ([[[[0, 0], [40, 0], [40, 20], [0, 20]], "回退识别成功", 0.96]], [0.01])
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakeLazyRecFailRapidOCR)
+    caplog.set_level(logging.WARNING)
+
+    engine = OcrEngine(provider="directml")
+    text, conf = engine.recognize_roi(_make_bgr(64, 320))
+
+    assert (text, conf) == ("回退识别成功", pytest.approx(0.96))
+    assert init_flags == [True, False]
+    assert True in rec_load_flags
+    assert any("directml" in rec.message.lower() for rec in caplog.records)
+
+    # Silent DML drop on rec model must also report dml_active=False
+    class FakeSilentRecCpuRapidOCR:
+        def __init__(self, params=None):
+            self._use_dml = bool((params or {}).get("EngineConfig.onnxruntime.use_dml"))
+
+        def _load_det_model(self):
+            return _make_fake_model(["DmlExecutionProvider", "CPUExecutionProvider"])
+
+        def _load_rec_model(self):
+            return _make_fake_model(["CPUExecutionProvider"])
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakeSilentRecCpuRapidOCR)
+    engine2 = OcrEngine(provider="directml")
+    _inst, dml_active = engine2._init_rapidocr_with_fallback(
+        lambda *, use_dml: {"Global.use_det": True, "Global.use_rec": True, "EngineConfig.onnxruntime.use_dml": use_dml}
+        if use_dml
+        else {"Global.use_det": True, "Global.use_rec": True},
+        eager_check=True,
+    )
+    assert dml_active is False
+
+
+def test_detect_native_4d_batch_preserves_min_64px_height_for_1080p_roi():
+    seen_shapes: list[tuple[int, ...]] = []
+
+    class _FakeDetModel:
+        mean = [0.5, 0.5, 0.5]
+        std = [0.5, 0.5, 0.5]
+
+        @staticmethod
+        def session(batch_tensor: np.ndarray) -> np.ndarray:
+            seen_shapes.append(tuple(batch_tensor.shape))
+            n, _c, h, w = batch_tensor.shape
+            return np.zeros((n, 1, h, w), dtype=np.float32)
+
+        class postprocess_op:
+            box_thresh = 0.55
+
+            def __call__(self, _pred, _shape):
+                return np.empty((0, 4, 2), dtype=np.float32), []
+
+    det_model = _FakeDetModel()
+    det_model.postprocess_op = _FakeDetModel.postprocess_op()
+    engine = OcrEngine(provider="cpu")
+
+    # 1080p subtitle ROIs: 1536x108 and 1920x90 must never be crushed to rh=32px
+    for roi_h, roi_w in ((108, 1536), (90, 1920)):
+        seen_shapes.clear()
+        out = engine._detect_native_4d_batch(det_model, [_make_bgr(roi_h, roi_w)])
+        assert out == [[]]
+        assert len(seen_shapes) == 1
+        _n, _c, rh, rw = seen_shapes[0]
+        assert rh >= 64, f"Expected rh >= 64 for {roi_w}x{roi_h} ROI, got {rh}"
+        assert rh % 32 == 0
+        assert rw % 32 == 0
+
+
+def test_prepare_roi_for_ocr_single_resize_on_wide_1080p_roi(monkeypatch):
+    from transapp.core.ocr_engine import _prepare_roi_for_ocr
+
+    orig_resize = cv2.resize
+    calls: list[tuple[tuple[int, int], int]] = []
+
+    def spy_resize(src, dsize, *args, **kwargs):
+        interp = kwargs.get("interpolation", args[2] if len(args) >= 3 else cv2.INTER_LINEAR)
+        calls.append((tuple(dsize), interp))
+        return orig_resize(src, dsize, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, "resize", spy_resize)
+
+    roi_1080p = _make_bgr(86, 1920, color=(100, 120, 140))
+    out = _prepare_roi_for_ocr(roi_1080p)
+
+    assert len(calls) == 1, f"Expected single cv2.resize call, saw {len(calls)}: {calls}"
+    assert out.shape[0] >= 56
+    assert out.shape[1] <= 960
+    assert out.shape == (56, 960, 3)
+    assert calls[0][1] == cv2.INTER_AREA
+
+    # Wide-short ROI that shrinks width (1200->960) while upscaling height (40->56) also resizes once
+    calls.clear()
+    roi_short_wide = _make_bgr(40, 1200, color=(90, 90, 90))
+    out2 = _prepare_roi_for_ocr(roi_short_wide)
+    assert len(calls) == 1
+    assert out2.shape == (56, 960, 3)
+    assert calls[0][1] == cv2.INTER_CUBIC
+
+
+
 
