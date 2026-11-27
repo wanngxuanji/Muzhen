@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import replace as dc_replace
 import re
+import time
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaMethod, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
     QFrame,
@@ -42,6 +46,7 @@ _SHIFT_NUDGE_MS = 100
 _FALLBACK_FLAG_REASON = "Cần kiểm tra"
 _MAX_UNDO_DEPTH = 50
 _MERGE_DEDUP_SIMILARITY = 0.80
+_NUDGE_COALESCE_WINDOW_SEC = 0.5
 
 _TIME_RE = re.compile(r"^\s*(\d+):([0-5]\d):([0-5]\d)(?:[.,](\d{1,3}))?\s*$")
 
@@ -97,6 +102,8 @@ class ReviewTable(QWidget):
 
     events_changed = Signal()
     events_modified = Signal()
+    dirty_changed = Signal(bool)
+    transport_key_forwarded = Signal(object)
     jump_requested = Signal(int)
     snap_start_requested = Signal()
     snap_end_requested = Signal()
@@ -109,8 +116,15 @@ class ReviewTable(QWidget):
         self._populating: bool = False
         self._raw_pixmap: QPixmap | None = None
         self._frame_step_ms: int = _DEFAULT_FRAME_STEP_MS
-        self._undo_stack: list[tuple[list[SubtitleEvent], int]] = []
-        self._redo_stack: list[tuple[list[SubtitleEvent], int]] = []
+        self._frame_pts_ms: tuple[int, ...] = ()
+        self._undo_stack: list[tuple[list[SubtitleEvent], int, int]] = []
+        self._redo_stack: list[tuple[list[SubtitleEvent], int, int]] = []
+        self._next_revision_id: int = 1
+        self._current_revision: int = 0
+        self._clean_revision: int = 0
+        self._last_emitted_dirty: bool = False
+        self._last_nudge_ts: float = 0.0
+        self._last_nudge_master_idx: int | None = None
 
         self._mono_font = QFont("Cascadia Mono")
         self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
@@ -139,8 +153,10 @@ class ReviewTable(QWidget):
 
         self.radio_all = QRadioButton("Tất cả (0)")
         self.radio_all.setChecked(True)
+        self.radio_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.radio_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.radio_flagged = QRadioButton("Chỉ dòng nghi ngờ (0)")
+        self.radio_flagged.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.radio_flagged.setCursor(Qt.CursorShape.PointingHandCursor)
         pill_layout.addWidget(self.radio_all)
         pill_layout.addWidget(self.radio_flagged)
@@ -356,6 +372,7 @@ class ReviewTable(QWidget):
         self.btn_mark_ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_mark_ok.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mark_ok.setToolTip("Đánh dấu dòng đã kiểm tra xong (Ctrl+D)")
+        self.btn_mark_ok.setEnabled(False)
         flag_layout.addWidget(self.lbl_flag_reason, 1)
         flag_layout.addWidget(self.btn_mark_ok)
         self.flag_banner.setVisible(False)
@@ -465,18 +482,78 @@ class ReviewTable(QWidget):
         """Configure the 1-frame nudge step in milliseconds."""
         self._frame_step_ms = max(1, int(step_ms))
 
+    def set_frame_pts_ms(self, frame_pts_ms: Sequence[int] | None) -> None:
+        """Configure sorted 0-based frame PTS values (ms) for exact ±1f nudging."""
+        if not frame_pts_ms:
+            self._frame_pts_ms = ()
+            return
+        self._frame_pts_ms = tuple(sorted(max(0, int(pts)) for pts in frame_pts_ms))
+
+    def commit_or_close_active_editor(self) -> None:
+        """Commit and close any active inline cell editor synchronously before mutations."""
+        if self.table.state() != QAbstractItemView.State.EditingState:
+            return
+        viewport = self.table.viewport()
+        editor: QWidget | None = None
+        focus = QApplication.focusWidget()
+        if focus is not None and viewport is not None and viewport.isAncestorOf(focus):
+            cur: QWidget | None = focus
+            while cur is not None and cur.parentWidget() is not viewport:
+                cur = cur.parentWidget()
+            editor = cur
+        if editor is None and viewport is not None:
+            for child in viewport.findChildren(QWidget):
+                if child.parentWidget() is viewport and child.isVisible():
+                    editor = child
+                    break
+        if editor is not None:
+            self.table.commitData(editor)
+            self.table.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+        if self.table.state() == QAbstractItemView.State.EditingState:
+            cur_item = self.table.currentItem()
+            if cur_item is not None:
+                self.table.closePersistentEditor(cur_item)
+            if focus is not None:
+                focus.clearFocus()
+
+    def is_dirty(self) -> bool:
+        """Return True if the current event revision differs from the clean savepoint."""
+        return self._current_revision != self._clean_revision
+
+    def mark_clean(self) -> None:
+        """Mark the current revision as the clean savepoint (e.g., after load or export)."""
+        self._clean_revision = self._current_revision
+        self._reset_nudge_coalesce()
+        self._emit_dirty_if_changed()
+
+    def _reset_nudge_coalesce(self) -> None:
+        self._last_nudge_master_idx = None
+        self._last_nudge_ts = 0.0
+
+    def _emit_dirty_if_changed(self) -> None:
+        dirty = self.is_dirty()
+        if dirty != self._last_emitted_dirty:
+            self._last_emitted_dirty = dirty
+            self.dirty_changed.emit(dirty)
+
     def filter_mode(self) -> str:
         """Return active filter mode (``"all"`` or ``"flagged_only"``)."""
         return self._filter_mode
 
     def set_events(self, events: list[SubtitleEvent]) -> None:
-        """Replace in-memory subtitle events, reset undo/redo stacks, and refresh the table."""
-        self._events = list(events)
+        """Replace in-memory subtitle events (cloned), reset undo/redo stacks, and refresh."""
+        self.commit_or_close_active_editor()
+        self._events = [dc_replace(ev) for ev in events]
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._current_revision = 0
+        self._clean_revision = 0
+        self._next_revision_id = 1
+        self._reset_nudge_coalesce()
         self._update_filter_counts()
         self._rebuild_rows()
         self._refresh_find_status()
+        self._emit_dirty_if_changed()
 
     def events(self) -> list[SubtitleEvent]:
         """Return all in-memory subtitle events including inline edits."""
@@ -488,6 +565,7 @@ class ReviewTable(QWidget):
             raise ValueError(f"Unsupported filter mode: {mode!r}")
         if mode == self._filter_mode:
             return
+        self.commit_or_close_active_editor()
         self._filter_mode = mode
         self.radio_all.blockSignals(True)
         self.radio_flagged.blockSignals(True)
@@ -502,9 +580,14 @@ class ReviewTable(QWidget):
 
     def clear(self) -> None:
         """Clear all events, undo/redo stacks, table rows, inspector state, and thumbnail."""
+        self.commit_or_close_active_editor()
         self._events = []
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self._current_revision = 0
+        self._clean_revision = 0
+        self._next_revision_id = 1
+        self._reset_nudge_coalesce()
         self._raw_pixmap = None
         self._populating = True
         try:
@@ -517,6 +600,7 @@ class ReviewTable(QWidget):
         self._update_inspector_for_row(-1)
         self._update_action_buttons_state()
         self._refresh_find_status()
+        self._emit_dirty_if_changed()
 
     # === Undo / Redo Snapshot Helpers ===
 
@@ -524,13 +608,18 @@ class ReviewTable(QWidget):
         """Create fresh SubtitleEvent copies sharing immutable ``thumbnail_png`` bytes."""
         return [dc_replace(ev) for ev in self._events]
 
-    def _push_undo_snapshot(self) -> None:
+    def _push_undo_snapshot(self, *, reset_nudge: bool = True) -> None:
         preferred_row = max(0, self._selected_visible_row())
-        self._undo_stack.append((self._snapshot_events(), preferred_row))
+        self._undo_stack.append((self._snapshot_events(), preferred_row, self._current_revision))
         if len(self._undo_stack) > _MAX_UNDO_DEPTH:
             del self._undo_stack[:-_MAX_UNDO_DEPTH]
         self._redo_stack.clear()
+        self._current_revision = self._next_revision_id
+        self._next_revision_id += 1
+        if reset_nudge:
+            self._reset_nudge_coalesce()
         self._update_action_buttons_state()
+        self._emit_dirty_if_changed()
 
     def can_undo(self) -> bool:
         """Return True if an undo snapshot is available."""
@@ -542,36 +631,44 @@ class ReviewTable(QWidget):
 
     def undo(self) -> bool:
         """Restore the previous event list snapshot and push current state to redo stack."""
+        self.commit_or_close_active_editor()
         if not self._undo_stack:
             return False
+        self._reset_nudge_coalesce()
         current_row = max(0, self._selected_visible_row())
-        self._redo_stack.append((self._snapshot_events(), current_row))
+        self._redo_stack.append((self._snapshot_events(), current_row, self._current_revision))
         if len(self._redo_stack) > _MAX_UNDO_DEPTH:
             del self._redo_stack[:-_MAX_UNDO_DEPTH]
 
-        prev_events, preferred_row = self._undo_stack.pop()
+        prev_events, preferred_row, prev_revision = self._undo_stack.pop()
         self._events = [dc_replace(ev) for ev in prev_events]
+        self._current_revision = prev_revision
         self._update_filter_counts()
         self._rebuild_rows(preferred_row=preferred_row)
         self._refresh_find_status()
+        self._emit_dirty_if_changed()
         self.events_changed.emit()
         self.events_modified.emit()
         return True
 
     def redo(self) -> bool:
         """Re-apply the most recently undone snapshot."""
+        self.commit_or_close_active_editor()
         if not self._redo_stack:
             return False
+        self._reset_nudge_coalesce()
         current_row = max(0, self._selected_visible_row())
-        self._undo_stack.append((self._snapshot_events(), current_row))
+        self._undo_stack.append((self._snapshot_events(), current_row, self._current_revision))
         if len(self._undo_stack) > _MAX_UNDO_DEPTH:
             del self._undo_stack[:-_MAX_UNDO_DEPTH]
 
-        next_events, preferred_row = self._redo_stack.pop()
+        next_events, preferred_row, next_revision = self._redo_stack.pop()
         self._events = [dc_replace(ev) for ev in next_events]
+        self._current_revision = next_revision
         self._update_filter_counts()
         self._rebuild_rows(preferred_row=preferred_row)
         self._refresh_find_status()
+        self._emit_dirty_if_changed()
         self.events_changed.emit()
         self.events_modified.emit()
         return True
@@ -664,10 +761,14 @@ class ReviewTable(QWidget):
             style.polish(self.lbl_cue_meta)
 
     def _update_action_buttons_state(self) -> None:
-        has_selection = bool(self._selected_visible_and_master_pairs())
+        pairs = self._selected_visible_and_master_pairs()
+        has_selection = bool(pairs)
+        single_selected = len(pairs) == 1
         self.btn_delete_row.setEnabled(has_selection)
         self.btn_merge.setEnabled(self._contiguous_selected_master_range() is not None)
         self.btn_split.setEnabled(self._can_split_selected())
+        self._set_timing_buttons_enabled(single_selected)
+        self.btn_mark_ok.setEnabled(single_selected)
         self.btn_undo.setEnabled(self.can_undo())
         self.btn_redo.setEnabled(self.can_redo())
 
@@ -694,6 +795,7 @@ class ReviewTable(QWidget):
 
     def mark_selected_ok(self) -> bool:
         """Clear flagged status on the selected cue in-place without evicting it."""
+        self.commit_or_close_active_editor()
         sel = self._selected_row_and_master_idx()
         if sel is None:
             return False
@@ -711,6 +813,7 @@ class ReviewTable(QWidget):
 
     def apply_playhead_to_selected_start(self, rel_ms: int) -> bool:
         """Set selected cue's ``start_ms`` to ``rel_ms`` if strictly before ``end_ms``."""
+        self.commit_or_close_active_editor()
         sel = self._selected_row_and_master_idx()
         if sel is None:
             return False
@@ -738,6 +841,7 @@ class ReviewTable(QWidget):
 
     def apply_playhead_to_selected_end(self, rel_ms: int) -> bool:
         """Set selected cue's ``end_ms`` to ``rel_ms`` if strictly after ``start_ms``."""
+        self.commit_or_close_active_editor()
         sel = self._selected_row_and_master_idx()
         if sel is None:
             return False
@@ -763,19 +867,98 @@ class ReviewTable(QWidget):
         self.events_modified.emit()
         return True
 
-    def nudge_selected_timing(self, delta_ms: int) -> bool:
-        """Shift selected cue's ``(start_ms, end_ms)`` by ``delta_ms``, clamped to ``>= 0``."""
+    def _virtual_frame_index(self, ms: int) -> int:
+        pts = self._frame_pts_ms
+        n = len(pts)
+        if ms <= pts[0]:
+            return 0
+        if ms > pts[-1]:
+            step = max(1, self._frame_step_ms)
+            extra = max(1, int(round((ms - pts[-1]) / step)))
+            return (n - 1) + extra
+        idx = bisect_left(pts, ms)
+        if idx == 0:
+            return 0
+        if idx >= n:
+            return n - 1
+        if (ms - pts[idx - 1]) <= (pts[idx] - ms):
+            return idx - 1
+        return idx
+
+    def _ms_at_virtual_frame_index(self, v_idx: int) -> int:
+        pts = self._frame_pts_ms
+        n = len(pts)
+        if v_idx <= 0:
+            return pts[0]
+        if v_idx < n:
+            return pts[v_idx]
+        step = max(1, self._frame_step_ms)
+        return pts[-1] + (v_idx - (n - 1)) * step
+
+    def nudge_selected_timing(
+        self,
+        delta: int,
+        *,
+        by_frames: bool | None = None,
+    ) -> bool:
+        """Shift selected cue's ``(start_ms, end_ms)`` by exact frames or milliseconds.
+
+        When ``by_frames`` is ``True`` (or omitted with ``delta in (-1, 1)``), steps by
+        exact frame indices in ``_frame_pts_ms`` when available (falling back to
+        ``delta * _frame_step_ms``). Otherwise shifts directly by ``delta`` milliseconds.
+        Consecutive nudges on the same cue within 500ms coalesce into one Undo snapshot.
+        """
+        self.commit_or_close_active_editor()
         sel = self._selected_row_and_master_idx()
-        if sel is None or delta_ms == 0:
+        if sel is None or delta == 0:
             return False
         row, master_idx = sel
         ev = self._events[master_idx]
-        duration = max(1, ev.end_ms - ev.start_ms)
-        new_start = max(0, ev.start_ms + int(delta_ms))
-        new_end = new_start + duration
+        delta_int = int(delta)
+        use_frames = (abs(delta_int) == 1) if by_frames is None else bool(by_frames)
+
+        if use_frames and self._frame_pts_ms and ev.start_ms >= self._frame_pts_ms[0]:
+            start_idx = self._virtual_frame_index(ev.start_ms)
+            end_idx = self._virtual_frame_index(ev.end_ms)
+            if start_idx + delta_int < 0 and self._frame_pts_ms[0] > 0:
+                duration = max(1, ev.end_ms - ev.start_ms)
+                new_start = max(0, ev.start_ms + delta_int * self._frame_step_ms)
+                new_end = new_start + duration
+            else:
+                new_start_idx = max(0, start_idx + delta_int)
+                actual_delta = new_start_idx - start_idx
+                if actual_delta == 0:
+                    return False
+                new_end_idx = max(new_start_idx + 1, end_idx + actual_delta)
+                new_start = self._ms_at_virtual_frame_index(new_start_idx)
+                new_end = self._ms_at_virtual_frame_index(new_end_idx)
+                if new_end <= new_start:
+                    new_end = max(
+                        new_start + 1,
+                        self._ms_at_virtual_frame_index(new_start_idx + 1),
+                    )
+        else:
+            delta_ms = delta_int * self._frame_step_ms if use_frames else delta_int
+            duration = max(1, ev.end_ms - ev.start_ms)
+            new_start = max(0, ev.start_ms + delta_ms)
+            new_end = new_start + duration
+
         if new_start == ev.start_ms and new_end == ev.end_ms:
             return False
-        self._push_undo_snapshot()
+
+        now = time.monotonic()
+        coalesce = (
+            self._last_nudge_master_idx == master_idx
+            and (now - self._last_nudge_ts) <= _NUDGE_COALESCE_WINDOW_SEC
+            and bool(self._undo_stack)
+        )
+        if not coalesce:
+            self._push_undo_snapshot(reset_nudge=False)
+        else:
+            self._redo_stack.clear()
+        self._last_nudge_master_idx = master_idx
+        self._last_nudge_ts = now
+
         ev.start_ms = new_start
         ev.end_ms = new_end
         self._populating = True
@@ -789,19 +972,23 @@ class ReviewTable(QWidget):
         finally:
             self._populating = False
         self._update_inspector_for_row(row)
+        self._update_action_buttons_state()
         self.events_changed.emit()
         self.events_modified.emit()
         return True
 
     def _on_nudge_clicked(self, sign: int) -> None:
         mods = QApplication.keyboardModifiers()
-        step = _SHIFT_NUDGE_MS if (mods & Qt.KeyboardModifier.ShiftModifier) else self._frame_step_ms
-        self.nudge_selected_timing(sign * step)
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            self.nudge_selected_timing(sign * _SHIFT_NUDGE_MS, by_frames=False)
+        else:
+            self.nudge_selected_timing(sign, by_frames=True)
 
     # === Multi-Row Delete, Merge & Split ===
 
     def delete_selected_rows(self) -> bool:
         """Remove all currently selected subtitle events in one undoable step and re-index."""
+        self.commit_or_close_active_editor()
         pairs = self._selected_visible_and_master_pairs()
         if not pairs:
             return False
@@ -827,6 +1014,7 @@ class ReviewTable(QWidget):
 
     def merge_selected_rows(self) -> bool:
         """Merge >=2 contiguous selected rows into a single cue in one undoable step."""
+        self.commit_or_close_active_editor()
         span = self._contiguous_selected_master_range()
         if span is None:
             return False
@@ -894,6 +1082,7 @@ class ReviewTable(QWidget):
 
     def split_selected_row(self, playhead_rel_ms: int | None = None) -> bool:
         """Split the single selected cue at ``playhead_rel_ms`` (if strictly inside) or midpoint."""
+        self.commit_or_close_active_editor()
         pairs = self._selected_visible_and_master_pairs()
         if len(pairs) != 1:
             return False
@@ -1046,6 +1235,7 @@ class ReviewTable(QWidget):
 
     def replace_current(self) -> bool:
         """Replace matches in the selected row (or jump to next match) in one undoable step."""
+        self.commit_or_close_active_editor()
         needle = self.find_edit.text()
         if not needle:
             return False
@@ -1091,6 +1281,7 @@ class ReviewTable(QWidget):
         replacement: str | None = None,
     ) -> int:
         """Replace all matches across visible rows in a single undoable step."""
+        self.commit_or_close_active_editor()
         raw_needle = self.find_edit.text() if needle is None else needle
         raw_repl = self.replace_edit.text() if replacement is None else replacement
         if not raw_needle:
@@ -1148,6 +1339,7 @@ class ReviewTable(QWidget):
     def _on_filter_radio_toggled(self, checked_all: bool) -> None:
         new_mode = "all" if checked_all else "flagged_only"
         if new_mode != self._filter_mode:
+            self.commit_or_close_active_editor()
             self._filter_mode = new_mode
             self._rebuild_rows()
             self._refresh_find_status()
@@ -1238,6 +1430,8 @@ class ReviewTable(QWidget):
         self._render_preview_for_row(row)
         self._update_inspector_for_row(row)
         self._update_action_buttons_state()
+        if self.find_bar.isVisible():
+            self._refresh_find_status()
 
     def _update_inspector_for_row(self, row: int) -> None:
         if row < 0 or row >= self.table.rowCount():
@@ -1247,27 +1441,29 @@ class ReviewTable(QWidget):
             self.flag_banner.setVisible(False)
             self.lbl_flag_reason.setText("")
             self._set_timing_buttons_enabled(False)
+            self.btn_mark_ok.setEnabled(False)
             return
 
         stt_item = self.table.item(row, _COL_STT)
         if stt_item is None:
             self._set_timing_buttons_enabled(False)
+            self.btn_mark_ok.setEnabled(False)
             return
         master_idx = stt_item.data(Qt.ItemDataRole.UserRole)
         if master_idx is None or not (0 <= master_idx < len(self._events)):
             self._set_timing_buttons_enabled(False)
+            self.btn_mark_ok.setEnabled(False)
             return
 
         ev = self._events[master_idx]
         dur_ms = max(0, ev.end_ms - ev.start_ms)
         char_count = len(ev.text.replace("\n", ""))
         is_short = dur_ms < _MIN_DURATION_WARN_MS
-        is_overlap = (
-            (master_idx > 0 and self._events[master_idx - 1].end_ms > ev.start_ms)
-            or (
-                master_idx + 1 < len(self._events)
-                and ev.end_ms > self._events[master_idx + 1].start_ms
-            )
+        is_overlap = any(
+            other_idx != master_idx
+            and ev.start_ms < other.end_ms
+            and other.start_ms < ev.end_ms
+            for other_idx, other in enumerate(self._events)
         )
 
         meta_parts = [f"{dur_ms / 1000.0:.2f}s", f"{char_count} ký tự"]
@@ -1289,7 +1485,9 @@ class ReviewTable(QWidget):
             self.lbl_flag_reason.setToolTip("")
             self.flag_banner.setVisible(False)
 
-        self._set_timing_buttons_enabled(True)
+        single_selected = len(self._selected_visible_and_master_pairs()) == 1
+        self._set_timing_buttons_enabled(single_selected)
+        self.btn_mark_ok.setEnabled(single_selected)
 
     def _update_preview_pixmap(self) -> None:
         if self._raw_pixmap is None or self._raw_pixmap.isNull():
@@ -1389,6 +1587,29 @@ class ReviewTable(QWidget):
                 return True
         return False
 
+    @staticmethod
+    def _is_transport_shortcut_key(event: QKeyEvent) -> bool:
+        key = event.key()
+        mods = event.modifiers()
+        no_mod = mods == Qt.KeyboardModifier.NoModifier
+        shift_only = mods == Qt.KeyboardModifier.ShiftModifier
+        ctrl_only = mods == Qt.KeyboardModifier.ControlModifier
+        if no_mod and key in (
+            Qt.Key.Key_Space,
+            Qt.Key.Key_I,
+            Qt.Key.Key_O,
+            Qt.Key.Key_Comma,
+            Qt.Key.Key_Period,
+            Qt.Key.Key_Home,
+            Qt.Key.Key_End,
+        ):
+            return True
+        if key in (Qt.Key.Key_Less, Qt.Key.Key_Greater) and (no_mod or shift_only):
+            return True
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right) and (no_mod or shift_only or ctrl_only):
+            return True
+        return False
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.preview_label and event.type() == QEvent.Type.Resize:
             self._update_preview_pixmap()
@@ -1409,6 +1630,13 @@ class ReviewTable(QWidget):
             if self._handle_shortcut_key(event):
                 event.accept()
                 return True
+            if self._is_transport_shortcut_key(event) and self.isSignalConnected(
+                QMetaMethod.fromSignal(self.transport_key_forwarded)
+            ):
+                event.ignore()
+                self.transport_key_forwarded.emit(event)
+                if event.isAccepted():
+                    return True
         return super().eventFilter(watched, event)
 
     def _render_preview_for_row(self, row: int) -> None:

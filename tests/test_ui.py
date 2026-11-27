@@ -1962,4 +1962,517 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
     window.close()
 
 
+def test_transport_and_trim_shortcuts_work_when_review_table_has_focus(qtbot, tmp_path: Path):
+    from PySide6.QtWidgets import QAbstractItemView
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "focus_transport.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=2.0)
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    # Layout floor invariant
+    hint = window.minimumSizeHint()
+    assert hint.width() <= 1280
+    assert hint.height() <= 672
+
+    # Non-text action controls use NoFocus so Space toggles playback instead of re-firing buttons
+    for ctrl in (
+        window.btn_test_frame,
+        window.btn_browse_video,
+        window.btn_export,
+        window.review_table.radio_all,
+        window.review_table.radio_flagged,
+    ):
+        assert ctrl.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+    thumb = _make_png_bytes((60, 140, 220))
+    window.review_table.set_events(
+        [
+            SubtitleEvent(1, 200, 600, "第一行", 0.95, False, thumb),
+            SubtitleEvent(2, 700, 1100, "第二行", 0.95, False, thumb),
+            SubtitleEvent(3, 1200, 1600, "第三行", 0.95, False, thumb),
+        ]
+    )
+    window.review_table.table.selectRow(0)
+    window.review_table.table.setFocus()
+
+    # Frame stepping & scrub shortcuts work while ReviewTable.table has focus
+    start_ms = window._current_frame_ms
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Right)
+    after_right = window._current_frame_ms
+    assert after_right > start_ms
+
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Period)
+    after_period = window._current_frame_ms
+    assert after_period > after_right
+
+    qtbot.keyClick(
+        window.review_table.table,
+        Qt.Key.Key_Greater,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    after_gt = window._current_frame_ms
+    assert after_gt > after_period
+
+    qtbot.keyClick(
+        window.review_table.table,
+        Qt.Key.Key_Less,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert window._current_frame_ms < after_gt
+
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Comma)
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Left)
+    assert window._current_frame_ms <= after_right
+
+    # Shift+Right (+1s), Home, End work from ReviewTable.table
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Home)
+    assert window._current_frame_ms == window._start_pts_ms
+    qtbot.keyClick(
+        window.review_table.table,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert window._current_frame_ms >= window._start_pts_ms + 900
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_End)
+    assert window._current_frame_ms >= window._start_pts_ms + 1400
+
+    # I / O trim shortcuts work from ReviewTable.table
+    window.seek_to_ms(window._start_pts_ms + 400)
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_I)
+    assert window.build_config().trim_start_ms is not None
+    assert abs(window.build_config().trim_start_ms - 400) <= 60
+
+    window.seek_to_ms(window._start_pts_ms + 1400)
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_O)
+    assert window.build_config().trim_end_ms is not None
+    assert abs(window.build_config().trim_end_ms - 1400) <= 60
+
+    # Space toggles Play / Pause while ReviewTable.table has focus
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Home)
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Space)
+    assert window._is_playing is True
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Space)
+    assert window._is_playing is False
+
+    # Up / Down remain owned by ReviewTable for row navigation
+    window.review_table.table.selectRow(0)
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Down)
+    assert window.review_table.selected_event() is not None
+    assert window.review_table.selected_event().index == 2
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_Up)
+    assert window.review_table.selected_event().index == 1
+
+    # Typing Space / i / o inside find_edit does NOT trigger playback or trim
+    prev_in = window.build_config().trim_start_ms
+    prev_out = window.build_config().trim_end_ms
+    window.seek_to_ms(window._start_pts_ms + 800)
+    window.review_table.open_find_bar(focus_replace=False)
+    qtbot.keyClick(window.review_table.find_edit, Qt.Key.Key_Space)
+    qtbot.keyClick(window.review_table.find_edit, Qt.Key.Key_I)
+    qtbot.keyClick(window.review_table.find_edit, Qt.Key.Key_O)
+    assert window._is_playing is False
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+    assert window.review_table.find_edit.text().lower() == " io"
+    window.review_table.close_find_bar()
+
+    # Typing Space / i / o inside an active inline cell editor does NOT trigger playback or trim
+    item = window.review_table.table.item(0, 4)
+    assert item is not None
+    window.review_table.table.setCurrentCell(0, 4)
+    window.review_table.table.editItem(item)
+    assert window.review_table.table.state() == QAbstractItemView.State.EditingState
+    editor = window.focusWidget()
+    assert editor is not None
+    qtbot.keyClick(editor, Qt.Key.Key_Space)
+    qtbot.keyClick(editor, Qt.Key.Key_I)
+    qtbot.keyClick(editor, Qt.Key.Key_O)
+    assert window._is_playing is False
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+    qtbot.keyClick(editor, Qt.Key.Key_Escape)
+    window.close()
+
+
+def test_nudge_uses_exact_frame_pts_ms_and_exports_1_frame_step_on_ntsc(qtbot, tmp_path: Path):
+    from transapp.ui.review_table import ReviewTable, parse_subtitle_time
+
+    # 23.976fps exact frame PTS sequence (alternating 41ms / 42ms cadence)
+    frame_pts_ms = [int(round(i * 1000.0 * 1001.0 / 24000.0)) for i in range(60)]
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(900, 400)
+    table.show()
+
+    table.set_frame_step_ms(42)
+    table.set_frame_pts_ms(frame_pts_ms)
+    table.set_events(
+        [
+            SubtitleEvent(
+                index=1,
+                start_ms=frame_pts_ms[10],
+                end_ms=frame_pts_ms[22],
+                text="精确帧微调",
+                confidence=0.95,
+                flagged=False,
+                thumbnail_png=_make_png_bytes(),
+            )
+        ]
+    )
+
+    def _exported_visible_frames(ass_file: Path) -> list[int]:
+        export_ass(
+            table.events(),
+            ass_file,
+            video_width=1920,
+            video_height=1080,
+            frame_pts_ms=frame_pts_ms,
+        )
+        dialogue = next(
+            line for line in ass_file.read_text(encoding="utf-8").splitlines()
+            if line.startswith("Dialogue:")
+        )
+        parts = dialogue.split(",", 3)
+        start_ms_ass = parse_subtitle_time(parts[1])
+        end_ms_ass = parse_subtitle_time(parts[2])
+        assert start_ms_ass is not None and end_ms_ass is not None
+        return [
+            idx
+            for idx, pts in enumerate(frame_pts_ms)
+            if start_ms_ass <= pts < end_ms_ass
+        ]
+
+    assert _exported_visible_frames(tmp_path / "step0.ass") == list(range(10, 22))
+
+    # Each +1f nudge shifts both start & end by EXACTLY 1 frame on 23.976fps (no 0-frame stall or 2-frame jump)
+    for step in range(1, 13):
+        assert table.nudge_selected_timing(+1) is True
+        ev = table.events()[0]
+        assert (ev.start_ms, ev.end_ms) == (frame_pts_ms[10 + step], frame_pts_ms[22 + step])
+        assert _exported_visible_frames(tmp_path / f"step_{step}.ass") == list(
+            range(10 + step, 22 + step)
+        )
+
+    # -1f steps back by exact 1 frame
+    assert table.nudge_selected_timing(-1) is True
+    ev = table.events()[0]
+    assert (ev.start_ms, ev.end_ms) == (frame_pts_ms[21], frame_pts_ms[33])
+    assert _exported_visible_frames(tmp_path / "step_back.ass") == list(range(21, 33))
+
+    # Tail cue stepping past last_pts and back preserves exact 1-frame step
+    table.set_events(
+        [
+            SubtitleEvent(
+                index=1,
+                start_ms=frame_pts_ms[-3],
+                end_ms=frame_pts_ms[-1],
+                text="尾帧测试",
+                confidence=0.95,
+                flagged=False,
+                thumbnail_png=_make_png_bytes(),
+            )
+        ]
+    )
+    assert table.nudge_selected_timing(+1) is True
+    tail_ev = table.events()[0]
+    assert tail_ev.start_ms == frame_pts_ms[-2]
+    assert tail_ev.end_ms > frame_pts_ms[-1]
+    assert table.nudge_selected_timing(-1) is True
+    tail_back = table.events()[0]
+    assert (tail_back.start_ms, tail_back.end_ms) == (frame_pts_ms[-3], frame_pts_ms[-1])
+
+    # Clearing frame_pts_ms falls back cleanly to delta_frames * frame_step_ms
+    table.set_frame_pts_ms(None)
+    before_s, before_e = table.events()[0].start_ms, table.events()[0].end_ms
+    assert table.nudge_selected_timing(+1) is True
+    assert (table.events()[0].start_ms, table.events()[0].end_ms) == (
+        before_s + 42,
+        before_e + 42,
+    )
+
+
+def test_active_cell_editor_commits_cleanly_before_nofocus_toolbar_ops_and_close(
+    qtbot, tmp_path: Path
+):
+    from PySide6.QtWidgets import QAbstractItemView, QLineEdit
+    from transapp.ui.main_window import MainWindow
+    from transapp.ui.review_table import ReviewTable
+
+    # Part A: Standalone ReviewTable toolbar buttons commit/close active editor cleanly
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(900, 420)
+    table.show()
+    table.set_frame_step_ms(40)
+    thumb = _make_png_bytes()
+    table.set_events(
+        [
+            SubtitleEvent(1, 500, 1200, "OLD_0", 0.95, False, thumb),
+            SubtitleEvent(2, 1500, 2200, "OLD_1", 0.95, False, thumb),
+        ]
+    )
+
+    def _open_editor_and_type(row: int, new_text: str) -> None:
+        item = table.table.item(row, 4)
+        assert item is not None
+        table.table.setCurrentCell(row, 4)
+        table.table.editItem(item)
+        assert table.table.state() == QAbstractItemView.State.EditingState
+        editors = table.table.viewport().findChildren(QLineEdit)
+        assert editors
+        editors[-1].setText(new_text)
+
+    # 1a. Undo directly while editor has uncommitted text (even with empty stack) commits first, then undoes
+    _open_editor_and_type(0, "EDITED")
+    assert table.undo() is True
+    assert table.table.state() != QAbstractItemView.State.EditingState
+    assert [e.text for e in table.events()] == ["OLD_0", "OLD_1"]
+    assert table.redo() is True
+    assert [e.text for e in table.events()] == ["EDITED", "OLD_1"]
+
+    # 1b. Clicking NoFocus btn_undo while editor is open commits & undoes cleanly back to "EDITED"
+    assert table.btn_undo.isEnabled() is True
+    _open_editor_and_type(0, "EDITED_TWICE")
+    table.btn_undo.click()
+    assert table.table.state() != QAbstractItemView.State.EditingState
+    assert [e.text for e in table.events()] == ["EDITED", "OLD_1"]
+
+    # 2. Nudge while editor is open commits text and nudges timing without losing edit
+    _open_editor_and_type(0, "EDITED_NUDGE")
+    table.btn_nudge_fwd.click()
+    assert table.table.state() != QAbstractItemView.State.EditingState
+    assert table.events()[0].text == "EDITED_NUDGE"
+    assert (table.events()[0].start_ms, table.events()[0].end_ms) == (540, 1240)
+    assert table.events()[1].text == "OLD_1"
+
+    # 3. Delete while editor is open closes editor and deletes row 0 without corrupting row 1
+    _open_editor_and_type(0, "TO_DELETE")
+    table.btn_delete_row.click()
+    assert table.table.state() != QAbstractItemView.State.EditingState
+    assert [e.text for e in table.events()] == ["OLD_1"]
+
+    # Part B: MainWindow closeEvent & export_subtitles commit active cell editor first
+    ep = tmp_path / "editor_guard.mp4"
+    _make_synthetic_subtitle_mp4(ep, duration_sec=1.2, cues=((200, 900, "原始字幕"),))
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "原始字幕", 0.95]],
+            [0.01],
+        )
+    )
+    unsaved_prompts: list[bool] = []
+    unsaved_allow = {"value": False}
+
+    def fake_unsaved_confirm() -> bool:
+        unsaved_prompts.append(True)
+        return unsaved_allow["value"]
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+        unsaved_confirm_fn=fake_unsaved_confirm,
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+    assert window._has_unexported_edits is False
+
+    # Open inline editor without pressing Enter, then try to close -> must commit & prompt unsaved guard
+    item = window.review_table.table.item(0, 4)
+    assert item is not None
+    window.review_table.table.setCurrentCell(0, 4)
+    window.review_table.table.editItem(item)
+    assert window.review_table.table.state() == QAbstractItemView.State.EditingState
+    editors = window.review_table.table.viewport().findChildren(QLineEdit)
+    assert editors
+    editors[-1].setText("未回车修改")
+
+    window.close()
+    assert len(unsaved_prompts) == 1
+    assert window.isVisible() is True
+    assert window.review_table.table.state() != QAbstractItemView.State.EditingState
+    assert window.review_table.events()[0].text == "未回车修改"
+
+    # Open inline editor without pressing Enter, then export -> exported file contains committed text
+    item = window.review_table.table.item(0, 4)
+    assert item is not None
+    window.review_table.table.setCurrentCell(0, 4)
+    window.review_table.table.editItem(item)
+    editors = window.review_table.table.viewport().findChildren(QLineEdit)
+    assert editors
+    editors[-1].setText("导出前自动提交")
+
+    assert window.export_subtitles() is True
+    assert window.review_table.table.state() != QAbstractItemView.State.EditingState
+    assert "导出前自动提交" in (tmp_path / "editor_guard.srt").read_text(encoding="utf-8")
+    assert window._has_unexported_edits is False
+    window.close()
+
+
+def test_autorepeat_nudge_coalesces_into_single_undo_step_and_undo_to_clean_clears_dirty(
+    qtbot, tmp_path: Path
+):
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "coalesce_ep.mp4"
+    _make_synthetic_subtitle_mp4(ep, duration_sec=1.4, cues=((200, 1000, "连按微调"),))
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "连按微调", 0.95]],
+            [0.01],
+        )
+    )
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+
+    dirty_events: list[bool] = []
+    window.review_table.dirty_changed.connect(dirty_events.append)
+
+    assert window._has_unexported_edits is False
+    orig_start = window.review_table.events()[0].start_ms
+    orig_end = window.review_table.events()[0].end_ms
+    assert len(window.review_table._undo_stack) == 0
+
+    # 10 consecutive +1f nudges within 500ms coalesce into ONE undo snapshot
+    for _ in range(10):
+        assert window.review_table.nudge_selected_timing(+1) is True
+
+    assert len(window.review_table._undo_stack) == 1
+    assert window.review_table.events()[0].start_ms > orig_start
+    assert window._has_unexported_edits is True
+    assert dirty_events[-1] is True
+
+    # Single Undo restores original timestamps AND clears dirty state back to clean
+    assert window.review_table.undo() is True
+    assert (
+        window.review_table.events()[0].start_ms,
+        window.review_table.events()[0].end_ms,
+    ) == (orig_start, orig_end)
+    assert window._has_unexported_edits is False
+    assert dirty_events[-1] is False
+
+    # Redo marks dirty again; exporting marks clean; undoing past exported clean state marks dirty
+    assert window.review_table.redo() is True
+    assert window._has_unexported_edits is True
+    assert window.export_subtitles() is True
+    assert window._has_unexported_edits is False
+    assert window.review_table.undo() is True
+    assert window._has_unexported_edits is True
+    assert window.review_table.redo() is True
+    assert window._has_unexported_edits is False
+    window.close()
+
+
+def test_review_table_minor_polish_cloning_find_status_multiselection_and_overlap(qtbot):
+    from PySide6.QtCore import QItemSelectionModel
+    from transapp.ui.review_table import ReviewTable
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(960, 440)
+    table.show()
+
+    thumb = _make_png_bytes()
+    ev0 = SubtitleEvent(1, 500, 1200, "长剑出鞘", 0.96, False, thumb)
+    ev1 = SubtitleEvent(2, 1300, 2000, "普通台词", 0.94, False, thumb)
+    ev2 = SubtitleEvent(3, 2100, 2800, "断剑重铸", 0.72, True, thumb, "Độ tin cậy thấp")
+
+    # M1: set_events clones SubtitleEvent objects so edits never mutate caller instances
+    table.set_events([ev0, ev1, ev2])
+    assert table.events()[0] is not ev0
+    table.table.item(0, 4).setText("长剑已改")
+    assert ev0.text == "长剑出鞘"
+    assert table.events()[0].text == "长剑已改"
+
+    # M2: lbl_find_status refreshes when selection changes while find_bar is visible
+    table.open_find_bar(focus_replace=False)
+    table.find_edit.setText("剑")
+    table.table.selectRow(2)
+    assert table.lbl_find_status.text() == "2/2"
+    table.table.selectRow(1)
+    assert table.lbl_find_status.text() == "0/2"
+    table.table.selectRow(0)
+    assert table.lbl_find_status.text() == "1/2"
+    table.close_find_bar()
+
+    # M6: Single-row timing/QA buttons enabled on 1 row, disabled when 2+ rows selected
+    single_row_buttons = (
+        table.btn_jump_start,
+        table.btn_jump_end,
+        table.btn_snap_in,
+        table.btn_snap_out,
+        table.btn_nudge_back,
+        table.btn_nudge_fwd,
+        table.btn_mark_ok,
+    )
+    table.table.selectRow(2)
+    assert all(btn.isEnabled() for btn in single_row_buttons)
+
+    sel = table.table.selectionModel()
+    sel.clearSelection()
+    flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+    sel.select(table.table.model().index(0, 0), flags)
+    sel.select(table.table.model().index(1, 0), flags)
+    table.table.setCurrentCell(1, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+    assert all(not btn.isEnabled() for btn in single_row_buttons)
+
+    # M7: "Trùng giờ" checks true interval intersection (a.start < b.end and b.start < a.end)
+    # Out-of-order non-overlapping intervals must NOT trigger false overlap
+    table.set_events(
+        [
+            SubtitleEvent(1, 5000, 6000, "后段", 0.95, False, thumb),
+            SubtitleEvent(2, 1000, 2000, "前段", 0.95, False, thumb),
+        ]
+    )
+    table.table.selectRow(0)
+    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    table.table.selectRow(1)
+    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+
+    # Touching intervals [1000, 2000] and [2000, 3000] do NOT overlap
+    table.set_events(
+        [
+            SubtitleEvent(1, 1000, 2000, "甲", 0.95, False, thumb),
+            SubtitleEvent(2, 2000, 3000, "乙", 0.95, False, thumb),
+        ]
+    )
+    table.table.selectRow(0)
+    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    table.table.selectRow(1)
+    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+
+    # Non-adjacent intersecting intervals [1000, 2000] and [1500, 2500] DO overlap
+    table.set_events(
+        [
+            SubtitleEvent(1, 1000, 2000, "甲", 0.95, False, thumb),
+            SubtitleEvent(2, 5000, 6000, "丙", 0.95, False, thumb),
+            SubtitleEvent(3, 1500, 2500, "乙", 0.95, False, thumb),
+        ]
+    )
+    table.table.selectRow(0)
+    assert "Trùng giờ" in table.lbl_cue_meta.text()
+    table.table.selectRow(1)
+    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    table.table.selectRow(2)
+    assert "Trùng giờ" in table.lbl_cue_meta.text()
+
+
+
 
