@@ -157,7 +157,7 @@ class ExtractionPipeline:
 
         _check_cancelled(cancel_check)
 
-        events = postprocess_segments(ocr_segments, config)
+        events = postprocess_segments(ocr_segments, config, duration_ms=meta.duration_ms)
         elapsed_sec = time.perf_counter() - t0
         if progress_cb is not None:
             progress_cb("done", len(events), len(events))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -123,6 +124,25 @@ def _group_and_format_boxes(raw_output: Any) -> tuple[str, float]:
     has_strong_hanzi = any(_HANZI_RE.search(b.text) and b.score >= 0.85 for b in boxes)
     if has_strong_hanzi:
         filtered = [b for b in boxes if _HANZI_RE.search(b.text) or b.score >= 0.85]
+        if filtered:
+            boxes = filtered
+
+    # When a strong Hanzi subtitle line (>= 0.90) exists, drop detached tiny or off-band
+    # low-confidence 1-char Hanzi background outliers while keeping genuine 2-line subtitles.
+    main_boxes = [b for b in boxes if _HANZI_RE.search(b.text) and b.score >= 0.90]
+    if main_boxes:
+        main_cy = float(np.median([b.cy for b in main_boxes]))
+        main_h = float(np.median([b.height for b in main_boxes]))
+        filtered = [
+            b
+            for b in boxes
+            if not (
+                len(b.text) == 1
+                and _HANZI_RE.search(b.text)
+                and b.score < 0.75
+                and (abs(b.cy - main_cy) > 0.8 * main_h or b.height < 0.55 * main_h)
+            )
+        ]
         if filtered:
             boxes = filtered
 
@@ -281,6 +301,7 @@ class OcrEngine:
         self._injected_callable: bool = ocr_callable is not None
         self._injected_det_callable: bool = det_callable is not None
         self._det_dml_active: bool | None = None
+        self._inference_lock = threading.RLock()
 
     @property
     def det_batch_size(self) -> int:
@@ -347,21 +368,23 @@ class OcrEngine:
         return rapidocr.RapidOCR(params=cpu_params), False
 
     def _ensure_engine(self) -> Callable[[np.ndarray], Any]:
-        if self._engine is not None:
+        with self._inference_lock:
+            if self._engine is not None:
+                return self._engine
+            self._engine, _ = self._init_rapidocr_with_fallback(
+                lambda *, use_dml: _build_rapidocr_params(self.ocr_model, use_dml=use_dml)
+            )
             return self._engine
-        self._engine, _ = self._init_rapidocr_with_fallback(
-            lambda *, use_dml: _build_rapidocr_params(self.ocr_model, use_dml=use_dml)
-        )
-        return self._engine
 
     def _ensure_det_engine(self) -> Callable[[np.ndarray], Any]:
-        if self._det_engine is not None:
+        with self._inference_lock:
+            if self._det_engine is not None:
+                return self._det_engine
+            self._det_engine, self._det_dml_active = self._init_rapidocr_with_fallback(
+                lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml),
+                eager_det_check=True,
+            )
             return self._det_engine
-        self._det_engine, self._det_dml_active = self._init_rapidocr_with_fallback(
-            lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml),
-            eager_det_check=True,
-        )
-        return self._det_engine
 
     def _detect_injected_grid_batch(
         self,
@@ -565,28 +588,29 @@ class OcrEngine:
                 )
             return results
 
-        det_engine = self._ensure_det_engine()
-        if self._injected_det_callable:
-            return self._detect_injected_grid_batch(det_engine, rois)
+        with self._inference_lock:
+            det_engine = self._ensure_det_engine()
+            if self._injected_det_callable:
+                return self._detect_injected_grid_batch(det_engine, rois)
 
-        load_det = getattr(det_engine, "_load_det_model", None)
-        if callable(load_det):
-            try:
-                det_model = load_det()
-            except Exception as exc:
-                logger.warning(
-                    "Failed to load Det Mobile model for 4D batching (%s); falling back to per-ROI detection.",
-                    exc,
-                )
-                det_model = None
-            if (
-                det_model is not None
-                and callable(getattr(det_model, "session", None))
-                and callable(getattr(det_model, "postprocess_op", None))
-            ):
-                return self._detect_native_4d_batch(det_model, rois)
+            load_det = getattr(det_engine, "_load_det_model", None)
+            if callable(load_det):
+                try:
+                    det_model = load_det()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load Det Mobile model for 4D batching (%s); falling back to per-ROI detection.",
+                        exc,
+                    )
+                    det_model = None
+                if (
+                    det_model is not None
+                    and callable(getattr(det_model, "session", None))
+                    and callable(getattr(det_model, "postprocess_op", None))
+                ):
+                    return self._detect_native_4d_batch(det_model, rois)
 
-        return self._detect_per_roi_fallback(det_engine, rois)
+            return self._detect_per_roi_fallback(det_engine, rois)
 
     def recognize_roi(
         self,
@@ -600,8 +624,9 @@ class OcrEngine:
 
         source = _dim_dark_background(bgr_roi) if brightness_filter else bgr_roi
         prepared = source if self._injected_callable else _prepare_roi_for_ocr(source)
-        engine = self._ensure_engine()
-        raw_output = engine(prepared)
+        with self._inference_lock:
+            engine = self._ensure_engine()
+            raw_output = engine(prepared)
         return _group_and_format_boxes(raw_output)
 
     def encode_thumbnail_png(self, bgr_roi: np.ndarray) -> bytes:

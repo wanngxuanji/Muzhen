@@ -472,3 +472,51 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     assert accurate_eng is not resolved[0]
     assert accurate_eng.ocr_model == "accurate"
 
+
+def test_pipeline_run_clamps_event_end_ms_to_video_duration(tmp_path: Path, monkeypatch):
+    import transapp.core.pipeline as pipeline_mod
+    from transapp.core.models import OcrSegment
+    from transapp.core.pipeline import ExtractionPipeline
+
+    video_path = tmp_path / "clamp_duration.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        duration_sec=1.0,
+        fps=25,
+        cues=((200, 1000, "结尾测试"),),
+    )
+
+    # Simulate an OCR segment whose end_ms overshoots the container duration_ms
+    def fake_recognize(spans, frame_pts_ms, ocr, config, **kwargs):
+        return [
+            OcrSegment(
+                start_ms=200,
+                end_ms=5000,
+                text="结尾测试",
+                confidence=0.96,
+                thumbnail_png=b"\x89PNG\r\n\x1a\n",
+            )
+        ]
+
+    monkeypatch.setattr(pipeline_mod, "recognize_spans_with_voting", fake_recognize)
+
+    pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "结尾测试", 0.96]],
+                [0.01],
+            )
+        )
+    )
+    result = pipeline.run(
+        video_path,
+        RoiRect(0.10, 0.74, 0.80, 0.20),
+        ExtractConfig(coarse_step=1),
+    )
+
+    assert len(result.events) == 1
+    assert result.duration_ms > 0
+    assert result.events[0].end_ms <= result.duration_ms
+    assert result.events[0].end_ms == result.duration_ms
+
+

@@ -589,3 +589,99 @@ def test_detect_batch_empty_zero_size_dtype_and_portrait_height_cap():
     assert called == 1
 
 
+def test_ocr_engine_drops_offband_tiny_hanzi_and_serializes_concurrent_calls():
+    import threading
+    import time
+
+    # 1) Off-band low-conf 1-char Hanzi & tiny low-conf 1-char Hanzi are dropped when strong Hanzi (>=0.90) exists
+    def fake_spatial_outliers(_img: np.ndarray):
+        items = [
+            # Strong main subtitle line: cy=50, h=30, score=0.98
+            [[[80.0, 35.0], [340.0, 35.0], [340.0, 65.0], [80.0, 65.0]], "不用亲眼看见", 0.98],
+            # Detached off-band 1-char low-conf Hanzi: cy=10 (|10-50|=40 > 0.8*30=24), score=0.62 -> drop
+            [[[20.0, 0.0], [45.0, 0.0], [45.0, 20.0], [20.0, 20.0]], "生", 0.62],
+            # Tiny 1-char low-conf Hanzi on same band: h=12 (< 0.55*30=16.5), score=0.70 -> drop
+            [[[360.0, 44.0], [375.0, 44.0], [375.0, 56.0], [360.0, 56.0]], "人", 0.70],
+        ]
+        return (items, [0.01])
+
+    outlier_engine = OcrEngine(ocr_callable=fake_spatial_outliers)
+    text, conf = outlier_engine.recognize_roi(_make_bgr(80, 420))
+    assert text == "不用亲眼看见"
+    assert conf == pytest.approx(0.98)
+
+    # 2) Genuine 2-line subtitle where both lines are full-height & high-score MUST be preserved
+    def fake_two_line(_img: np.ndarray):
+        items = [
+            [[[80.0, 10.0], [320.0, 10.0], [320.0, 38.0], [80.0, 38.0]], "第一行台词", 0.96],
+            [[[180.0, 46.0], [210.0, 46.0], [210.0, 74.0], [180.0, 74.0]], "嗯", 0.93],
+        ]
+        return (items, [0.01])
+
+    two_line_engine = OcrEngine(ocr_callable=fake_two_line)
+    text2, conf2 = two_line_engine.recognize_roi(_make_bgr(84, 420))
+    assert text2 == "第一行台词\n嗯"
+    assert conf2 == pytest.approx(0.93)
+
+    # 3) DirectML / ONNX thread safety: _inference_lock serializes concurrent recognize_roi & detect_grid_batch
+    active = 0
+    max_active = 0
+    state_lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def slow_ocr(_img: np.ndarray):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return ([[[[10, 10], [80, 10], [80, 34], [10, 34]], "并发测试", 0.97]], [0.05])
+        finally:
+            with state_lock:
+                active -= 1
+
+    def slow_det(_canvas: np.ndarray):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+
+            class _Out:
+                boxes = np.array(
+                    [[[20.0, 24.0], [180.0, 24.0], [180.0, 52.0], [20.0, 52.0]]],
+                    dtype=np.float32,
+                )
+
+            return _Out()
+        finally:
+            with state_lock:
+                active -= 1
+
+    shared_engine = OcrEngine(ocr_callable=slow_ocr, det_callable=slow_det)
+    assert hasattr(shared_engine, "_inference_lock")
+
+    results: list[object] = []
+
+    def run_rec():
+        barrier.wait()
+        results.append(shared_engine.recognize_roi(_make_bgr(64, 240)))
+
+    def run_det():
+        barrier.wait()
+        results.append(shared_engine.detect_grid_batch([_make_bgr(64, 240)]))
+
+    t1 = threading.Thread(target=run_rec)
+    t2 = threading.Thread(target=run_det)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert max_active == 1, f"Expected serialized ONNX/DirectML calls, saw {max_active} overlapping"
+    assert len(results) == 2
+
+
+

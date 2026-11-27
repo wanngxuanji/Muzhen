@@ -28,6 +28,10 @@ _CJK_FULLWIDTH_PUNCT = (
 
 _CJK_OR_PUNCT_CLASS = f"{_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}"
 _HAS_CJK_RE = re.compile(rf"[{_CJK_CHARS}]")
+_HANZI_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002ebef]")
+_EDGE_LATIN_NOISE_RE = re.compile(
+    r"(?:^[A-Za-z]{1,2}[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff][A-Za-z]{1,2}$)"
+)
 _HAS_CONTENT_CHAR_RE = re.compile(rf"[0-9A-Za-z\uff10-\uff19\uff21-\uff3a\uff41-\uff5a{_CJK_CHARS}]")
 _SINGLE_KANA_NOISE_RE = re.compile(r"^[\u3040-\u30ff]$")
 _PURE_KANA_NOISE_RE = re.compile(r"^[\u3040-\u30ff]+$")
@@ -110,6 +114,34 @@ def _has_suspicious_noise(text: str) -> bool:
     return bool(_DISALLOWED_TEXT_CHAR_RE.search(text))
 
 
+def _has_edge_latin_noise(text: str) -> bool:
+    return any(_EDGE_LATIN_NOISE_RE.search(line) for line in text.split("\n"))
+
+
+def _is_clean_hanzi_minimal_pair(
+    prev: _MergedCue, curr: _MergedCue, config: ExtractConfig
+) -> bool:
+    """True when two clean high-conf cues (>=4 stripped chars) differ by exactly 1 Hanzi char."""
+    if prev.confidence < config.conf_threshold or curr.confidence < config.conf_threshold:
+        return False
+    if (
+        _has_suspicious_noise(prev.text)
+        or _has_suspicious_noise(curr.text)
+        or _has_edge_latin_noise(prev.text)
+        or _has_edge_latin_noise(curr.text)
+    ):
+        return False
+    sa = _strip_for_similarity(prev.text)
+    sb = _strip_for_similarity(curr.text)
+    if len(sa) != len(sb) or len(sa) < 4:
+        return False
+    diffs = [(ca, cb) for ca, cb in zip(sa, sb) if ca != cb]
+    if len(diffs) != 1:
+        return False
+    ca, cb = diffs[0]
+    return bool(_HANZI_CHAR_RE.fullmatch(ca) and _HANZI_CHAR_RE.fullmatch(cb))
+
+
 def _is_strict_containment(a: str, b: str) -> bool:
     """True when the shorter text (>=4 chars) is a strict prefix/suffix of the longer by 1-2 chars."""
     sa = _strip_for_similarity(a)
@@ -125,7 +157,13 @@ def _is_strict_containment(a: str, b: str) -> bool:
 
 def _should_merge(prev: _MergedCue, curr: _MergedCue, config: ExtractConfig) -> bool:
     gap_ms = curr.start_ms - prev.end_ms
+    if gap_ms < 0:
+        # Guard against blindly merging overlapping distinct cues; only coalesce exact duplicates.
+        return _strip_for_similarity(prev.text) == _strip_for_similarity(curr.text)
+
     if gap_ms <= config.merge_gap_ms:
+        if _is_clean_hanzi_minimal_pair(prev, curr, config):
+            return False
         if text_similarity(prev.text, curr.text) >= config.merge_similarity:
             return True
         if _is_strict_containment(prev.text, curr.text) and not (
@@ -149,8 +187,13 @@ def _should_merge(prev: _MergedCue, curr: _MergedCue, config: ExtractConfig) -> 
 
 def _pick_merged_winner(
     prev: _MergedCue, curr: _MergedCue, config: ExtractConfig
-) -> tuple[str, bytes]:
-    """Choose the best display text and thumbnail when merging two cues."""
+) -> tuple[str, float, bytes]:
+    """Choose the best display text, true winner confidence, and thumbnail when merging two cues."""
+    if prev.text == curr.text:
+        win_conf = max(prev.confidence, curr.confidence)
+        win_thumb = curr.thumbnail_png if curr.confidence > prev.confidence else prev.thumbnail_png
+        return (prev.text, win_conf, win_thumb)
+
     # Prefer the fuller clean text when one is a strict prefix/suffix containment of the other
     # (e.g. "一个蕴藏着神秘力量的" over glare-clipped "个蕴藏着神秘力量的") if confidence is healthy.
     if _is_strict_containment(prev.text, curr.text):
@@ -159,18 +202,44 @@ def _pick_merged_winner(
         if len(curr.text) > len(prev.text) and curr_clean:
             min_ok = max(config.conf_threshold - 0.05, prev.confidence - 0.08)
             if curr.confidence >= min_ok:
-                return (curr.text, curr.thumbnail_png)
+                return (curr.text, curr.confidence, curr.thumbnail_png)
         elif len(prev.text) > len(curr.text) and prev_clean:
             min_ok = max(config.conf_threshold - 0.05, curr.confidence - 0.08)
             if prev.confidence >= min_ok:
-                return (prev.text, prev.thumbnail_png)
+                return (prev.text, prev.confidence, prev.thumbnail_png)
 
     if (
         curr.confidence > prev.confidence
         or (curr.confidence == prev.confidence and len(curr.text) > len(prev.text))
     ):
-        return (curr.text, curr.thumbnail_png)
-    return (prev.text, prev.thumbnail_png)
+        return (curr.text, curr.confidence, curr.thumbnail_png)
+    return (prev.text, prev.confidence, prev.thumbnail_png)
+
+
+def _is_ghost_cue(cue: _MergedCue, config: ExtractConfig) -> bool:
+    """Return True if cue is a known non-CJK, kana, 1-char ultra-low-conf, or short symbol ghost."""
+    if not _HAS_CONTENT_CHAR_RE.search(cue.text):
+        return True
+    if _SINGLE_KANA_NOISE_RE.match(cue.text):
+        return True
+    if _PURE_KANA_NOISE_RE.match(cue.text) and cue.confidence < config.conf_threshold:
+        return True
+    if not _HAS_CJK_RE.search(cue.text) and cue.confidence < config.conf_threshold:
+        return True
+
+    stripped = _strip_for_similarity(cue.text)
+    dur_ms = cue.end_ms - cue.start_ms
+    # Rule A: 1-char ultra-low-conf transient ghost
+    if len(stripped) == 1 and cue.confidence < 0.72 and dur_ms < 400:
+        return True
+    # Rule B: short disallowed-symbol ghost below confidence threshold
+    if (
+        len(stripped) <= 3
+        and _has_suspicious_noise(cue.text)
+        and cue.confidence < config.conf_threshold
+    ):
+        return True
+    return False
 
 
 def _build_flag_info(cue: _MergedCue, config: ExtractConfig) -> tuple[bool, str]:
@@ -187,6 +256,8 @@ def _build_flag_info(cue: _MergedCue, config: ExtractConfig) -> tuple[bool, str]
 def postprocess_segments(
     segments: list[OcrSegment],
     config: ExtractConfig,
+    *,
+    duration_ms: int | None = None,
 ) -> list[SubtitleEvent]:
     """Normalize text, merge flickering/truncated cues, filter short/noise cues, flag, and re-index."""
     kept: list[_MergedCue] = []
@@ -211,33 +282,37 @@ def postprocess_segments(
     for curr in kept[1:]:
         prev = merged[-1]
         if _should_merge(prev, curr, config):
-            win_text, win_thumb = _pick_merged_winner(prev, curr, config)
+            win_text, win_conf, win_thumb = _pick_merged_winner(prev, curr, config)
             prev.text = win_text
             prev.thumbnail_png = win_thumb
-            prev.confidence = max(prev.confidence, curr.confidence)
+            prev.confidence = win_conf
             prev.start_ms = min(prev.start_ms, curr.start_ms)
             prev.end_ms = max(prev.end_ms, curr.end_ms)
         else:
             merged.append(curr)
+
+    if duration_ms is not None and duration_ms > 0:
+        clamped: list[_MergedCue] = []
+        for cue in merged:
+            if cue.start_ms >= duration_ms:
+                continue
+            cue.end_ms = min(cue.end_ms, duration_ms)
+            if cue.end_ms > cue.start_ms:
+                clamped.append(cue)
+        merged = clamped
+
+    for i in range(len(merged) - 1):
+        prev_cue = merged[i]
+        next_cue = merged[i + 1]
+        if prev_cue.end_ms > next_cue.start_ms:
+            prev_cue.end_ms = max(prev_cue.start_ms + 1, next_cue.start_ms)
 
     # Filter out cues that remain shorter than min_duration_ms AFTER merging so valid
     # leading/trailing fragments attached to a real cue are not discarded prematurely.
     merged = [cue for cue in merged if (cue.end_ms - cue.start_ms) >= config.min_duration_ms]
 
     if config.filter_non_cjk_low_conf:
-        merged = [
-            cue
-            for cue in merged
-            if (
-                _HAS_CONTENT_CHAR_RE.search(cue.text)
-                and not _SINGLE_KANA_NOISE_RE.match(cue.text)
-                and not (
-                    _PURE_KANA_NOISE_RE.match(cue.text)
-                    and cue.confidence < config.conf_threshold
-                )
-                and (_HAS_CJK_RE.search(cue.text) or cue.confidence >= config.conf_threshold)
-            )
-        ]
+        merged = [cue for cue in merged if not _is_ghost_cue(cue, config)]
 
     events: list[SubtitleEvent] = []
     for idx, cue in enumerate(merged, start=1):
