@@ -72,6 +72,7 @@ hiddenimports = sorted(
             "av",
             "onnxruntime",
             "PySide6.QtSvg",
+            "PySide6.QtMultimedia",
         ]
     )
 )
@@ -94,7 +95,6 @@ excludes = [
     "PySide6.QtQuick3D",
     "PySide6.QtQml",
     "PySide6.QtQmlModels",
-    "PySide6.QtMultimedia",
     "PySide6.QtMultimediaWidgets",
     "PySide6.QtCharts",
     "PySide6.QtDataVisualization",

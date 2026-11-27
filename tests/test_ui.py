@@ -3286,5 +3286,136 @@ def test_settings_footer_author_star_opens_github_and_update_controls_in_setting
     window.close()
 
 
+def test_subtitle_row_click_auto_seeks_program_monitor_and_stops_playback(
+    qtbot, tmp_path: Path
+):
+    from muzhen.ui.main_window import MainWindow
+
+    ep = tmp_path / "row_sync.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=2.0)
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    thumb = _make_png_bytes((60, 140, 220))
+    window.review_table.set_events(
+        [
+            SubtitleEvent(1, 200, 520, "第一行", 0.96, False, thumb),
+            SubtitleEvent(2, 800, 1120, "第二行", 0.96, False, thumb),
+            SubtitleEvent(3, 1400, 1760, "第三行", 0.96, False, thumb),
+        ]
+    )
+    assert window._current_rel_ms() == 0
+
+    window.start_playback()
+    assert window._is_playing is True
+
+    window.review_table.table.selectRow(1)
+    assert window._is_playing is False
+    assert abs(window._current_rel_ms() - 800) <= 45
+    assert abs(window.frame_slider.value() - 800) <= 45
+
+    window.review_table.table.selectRow(2)
+    assert abs(window._current_rel_ms() - 1400) <= 45
+    assert abs(window.frame_slider.value() - 1400) <= 45
+
+    window.seek_to_ms(window._start_pts_ms + 120)
+    assert abs(window._current_rel_ms() - 120) <= 45
+
+    item2 = window.review_table.table.item(2, 4)
+    assert item2 is not None
+    window.review_table.table.itemClicked.emit(item2)
+    assert abs(window._current_rel_ms() - 1400) <= 45
+    window.close()
+
+
+def test_mute_button_shortcut_and_audio_master_clock_pacing(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from muzhen.ui.i18n import tr
+    from muzhen.ui.main_window import MainWindow
+
+    ep = tmp_path / "audio_clock.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.2)
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    assert window.btn_mute.isEnabled() is True
+    assert window.btn_mute.isCheckable() is True
+    assert window.btn_mute.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.btn_mute.isChecked() is False
+    assert window.btn_mute.toolTip() == tr("en", "tip_mute")
+
+    window.btn_mute.click()
+    assert window._audio_player.is_muted() is True
+    assert window.btn_mute.toolTip() == tr("en", "tip_unmute")
+
+    window.review_table.table.setFocus()
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_M)
+    assert window._audio_player.is_muted() is False
+    assert window.btn_mute.isChecked() is False
+
+    clock_state = {"pts": 0}
+    monkeypatch.setattr(window._audio_player, "start", lambda _p, _ms: True)
+    monkeypatch.setattr(window._audio_player, "playback_pts_ms", lambda: clock_state["pts"])
+
+    window.start_playback()
+    assert window._is_playing is True
+
+    clock_state["pts"] = window._start_pts_ms + 240
+    window._on_playback_tick()
+    assert abs(window._current_frame_ms - (window._start_pts_ms + 240)) <= 60
+
+    before_hold = window._current_frame_ms
+    clock_state["pts"] = before_hold
+    window._on_playback_tick()
+    assert window._current_frame_ms == before_hold
+
+    window.stop_playback()
+    assert window._is_playing is False
+    window.close()
+
+
+def test_minimum_size_hint_fits_1280x672_without_stylesheet_across_languages(
+    qtbot, tmp_path: Path
+):
+    from PySide6.QtWidgets import QApplication
+    from muzhen.ui.main_window import MainWindow
+
+    app = QApplication.instance()
+    assert app is not None
+    prev_qss = app.styleSheet()
+    app.setStyleSheet("")
+    try:
+        ep = tmp_path / "no_qss_fit.mp4"
+        _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.5)
+        window = MainWindow(
+            preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+            language="en",
+        )
+        qtbot.addWidget(window)
+        window.show()
+        window.load_video(ep)
+        for lang_code in ("en", "vi", "zh"):
+            window.set_language(lang_code, persist=False)
+            hint = window.minimumSizeHint()
+            assert hint.width() <= 1280, f"{lang_code} width={hint.width()}"
+            assert hint.height() <= 672, f"{lang_code} height={hint.height()}"
+        window.close()
+    finally:
+        app.setStyleSheet(prev_qss)
+
+
 
 
