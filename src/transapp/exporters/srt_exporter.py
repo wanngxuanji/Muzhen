@@ -25,13 +25,18 @@ def export_srt(events: list[SubtitleEvent], output_path: Path) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     blocks: list[str] = []
-    for seq, event in enumerate(events, start=1):
+    seq = 1
+    for event in events:
+        raw = event.text.replace("\r\n", "\n").replace("\r", "\n")
+        clean_text = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+        if not clean_text:
+            continue
         start_ms = max(0, int(event.start_ms))
         end_ms = max(start_ms + 1, int(event.end_ms))
-        clean_text = event.text.replace("\r\n", "\n").replace("\r", "\n")
         blocks.append(
             f"{seq}\n{format_srt_time(start_ms)} --> {format_srt_time(end_ms)}\n{clean_text}"
         )
+        seq += 1
 
     content = ("\n\n".join(blocks) + "\n") if blocks else ""
     with out.open("w", encoding="utf-8", newline="\n") as fh:

@@ -200,3 +200,26 @@ def test_export_srt_empty_events(tmp_path: Path):
     out_path = tmp_path / "empty.srt"
     export_srt([], out_path)
     assert out_path.read_bytes() == b""
+
+
+def test_export_srt_collapses_blank_lines_and_skips_empty_cues(tmp_path: Path):
+    out_path = tmp_path / "sanitized.srt"
+    events = [
+        _event(1, 1000, 2000, "  第一行 \n\n  第二行  \r\n\r\n"),
+        _event(2, 2100, 2500, "   \n\t \r\n  "),
+        _event(3, 2600, 3000, ""),
+        _event(4, 3100, 4000, "\n  第三句  \n"),
+    ]
+    export_srt(events, out_path)
+    content = out_path.read_text(encoding="utf-8")
+    expected = (
+        "1\n"
+        "00:00:01,000 --> 00:00:02,000\n"
+        "第一行\n"
+        "第二行\n"
+        "\n"
+        "2\n"
+        "00:00:03,100 --> 00:00:04,000\n"
+        "第三句\n"
+    )
+    assert content == expected

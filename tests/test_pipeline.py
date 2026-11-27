@@ -41,6 +41,7 @@ def _make_synthetic_subtitle_mp4(
     height: int = 360,
     fps: int = 25,
     duration_sec: float = 3.0,
+    start_pts_ms: int = 0,
     cues: tuple[tuple[int, int, str], ...] = (
         (200, 1100, "你好世界"),
         (1450, 2500, "战斗开始"),
@@ -89,7 +90,7 @@ def _make_synthetic_subtitle_mp4(
 
             bgr = np.asarray(img, dtype=np.uint8)[:, :, ::-1].copy()
             frame = av.VideoFrame.from_ndarray(bgr, format="bgr24")
-            frame.pts = pts_ms
+            frame.pts = start_pts_ms + pts_ms
             frame.time_base = Fraction(1, 1000)
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -356,4 +357,102 @@ def test_pipeline_skips_ocr_for_segments_below_min_duration(tmp_path: Path):
 
     assert ocr_calls == 0
     assert result.events == []
+
+
+def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path):
+    from transapp.core.pipeline import ExtractionPipeline
+
+    video_path = tmp_path / "nonzero_start_pts.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        duration_sec=0.5,
+        start_pts_ms=5000,
+        cues=((100, 400, "偏移测试"),),
+    )
+
+    pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "偏移测试", 0.95]],
+                [0.01],
+            )
+        )
+    )
+    progress_calls: list[tuple[str, int, int]] = []
+    pipeline.run(
+        video_path,
+        RoiRect(0.10, 0.74, 0.80, 0.20),
+        ExtractConfig(coarse_step=1),
+        progress_cb=lambda stage, cur, tot: progress_calls.append((stage, cur, tot)),
+    )
+
+    scan_calls = [c for c in progress_calls if c[0] == "scan"]
+    assert len(scan_calls) >= 5
+    # Frame 0 must start at 0, not jump straight to total_ms even though start_pts_ms >= duration_ms.
+    assert scan_calls[0][1] == 0
+    assert scan_calls[-1][1] > 0
+    assert all(0 <= cur <= tot for _, cur, tot in scan_calls)
+    assert [cur for _, cur, _ in scan_calls] == sorted(cur for _, cur, _ in scan_calls)
+
+
+def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
+    import threading
+    import time
+    import transapp.core.pipeline as pipeline_mod
+    from transapp.core.pipeline import ExtractionPipeline
+
+    full_bgr = np.zeros((360, 640, 3), dtype=np.uint8)
+    roi = RoiRect(0.10, 0.74, 0.80, 0.20)
+    x1, y1, x2, y2 = roi.to_pixels(640, 360)
+    full_bgr[y1 + 20 : y2 - 20, x1 + 40 : x2 - 40] = (245, 245, 245)
+
+    seen_shapes: list[tuple[int, int, int]] = []
+
+    def fake_ocr(img: np.ndarray):
+        seen_shapes.append(img.shape)
+        return ([[[[0, 0], [60, 0], [60, 20], [0, 20]], " 你 好 ", 0.88]], [0.01])
+
+    pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=fake_ocr))
+    res = pipeline.test_frame_bgr(full_bgr, frame_index=7, pts_ms=1234, roi=roi, config=ExtractConfig())
+    assert isinstance(res, FrameTestResult)
+    assert res.frame_index == 7
+    assert res.pts_ms == 1234
+    assert res.mask.shape == (y2 - y1, x2 - x1)
+    assert seen_shapes == [(y2 - y1, x2 - x1, 3)]
+    assert res.text == "你好"
+    assert res.confidence == pytest.approx(0.88)
+
+    # Concurrent _resolve_ocr_engine calls must initialize OcrEngine only once under _engine_lock.
+    init_calls = 0
+
+    class _SlowFakeOcrEngine:
+        def __init__(self, provider: str = "cpu"):
+            nonlocal init_calls
+            time.sleep(0.05)
+            init_calls += 1
+            self.provider = provider
+
+    monkeypatch.setattr(pipeline_mod, "OcrEngine", _SlowFakeOcrEngine)
+    shared_pipeline = ExtractionPipeline()
+    assert hasattr(shared_pipeline, "_engine_lock")
+
+    barrier = threading.Barrier(4)
+    resolved: list[object] = []
+    lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        eng = shared_pipeline._resolve_ocr_engine(ExtractConfig(provider="cpu"))
+        with lock:
+            resolved.append(eng)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert init_calls == 1
+    assert len(resolved) == 4
+    assert all(eng is resolved[0] for eng in resolved)
 

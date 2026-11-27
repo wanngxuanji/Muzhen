@@ -145,3 +145,14 @@ def test_postprocess_flagging_noise_vs_valid_dialogue():
     assert events[2].flagged is True
     assert events[3].flagged is True
     assert events[4].flagged is True
+
+
+def test_postprocess_allows_iteration_marks_and_halfwidth_parens_slash_semicolon():
+    assert normalize_cjk_text("人 々 二 〇 二 六") == "人々二〇二六"
+    cfg = ExtractConfig(conf_threshold=0.85)
+    segs = [
+        OcrSegment(0, 500, "人々も二〇二六年 (10/12); OK", 0.95, b"ok"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert len(events) == 1
+    assert events[0].flagged is False

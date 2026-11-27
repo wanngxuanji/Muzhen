@@ -22,6 +22,7 @@ class VideoMetadata:
     duration_ms: int
     fps: float
     estimated_frames: int
+    start_pts_ms: int = 0
 
 
 @dataclass(slots=True)
@@ -57,8 +58,12 @@ class VideoReader:
 
         self._container: av.container.InputContainer | None = container
         self._stream: av.video.stream.VideoStream | None = stream
-        self._start_pts_ms: int = self._compute_start_pts_ms(stream)
-        self._metadata: VideoMetadata = self._build_metadata(container, stream)
+        try:
+            self._start_pts_ms: int = self._compute_start_pts_ms(stream)
+            self._metadata: VideoMetadata = self._build_metadata(container, stream)
+        except Exception:
+            self.close()
+            raise
 
     def __enter__(self) -> VideoReader:
         return self
@@ -125,7 +130,7 @@ class VideoReader:
 
     @staticmethod
     def _compute_start_pts_ms(stream: av.video.stream.VideoStream) -> int:
-        if stream.start_time is not None and stream.time_base is not None:
+        if stream.start_time is not None and stream.time_base:
             return max(0, int(round(stream.start_time * float(stream.time_base) * 1000.0)))
         return 0
 
@@ -158,7 +163,6 @@ class VideoReader:
                 duration_ms = scanned_dur
 
         if width <= 0 or height <= 0:
-            container.close()
             raise ValueError(f"Invalid video dimensions ({width}x{height}) in {self._path}")
 
         if stream.frames and stream.frames > 0:
@@ -174,6 +178,7 @@ class VideoReader:
             duration_ms=duration_ms,
             fps=fps,
             estimated_frames=estimated_frames,
+            start_pts_ms=self._start_pts_ms,
         )
 
     def _probe_stream(
@@ -234,12 +239,10 @@ class VideoReader:
         frame_index: int,
         fps: float,
     ) -> int:
-        if frame.pts is not None:
-            tb = float(frame.time_base) if frame.time_base else float(stream.time_base)
-            return max(0, int(round(frame.pts * tb * 1000.0)))
-        if frame.dts is not None:
-            tb = float(frame.time_base) if frame.time_base else float(stream.time_base)
-            return max(0, int(round(frame.dts * tb * 1000.0)))
+        tick = frame.pts if frame.pts is not None else frame.dts
+        if tick is not None:
+            tb = float(frame.time_base or stream.time_base or (1.0 / 1000.0))
+            return max(0, int(round(tick * tb * 1000.0)))
         return max(0, int(round(frame_index * 1000.0 / fps)))
 
     def _frame_pts_ms(

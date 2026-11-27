@@ -39,6 +39,7 @@ def _make_synthetic_subtitle_mp4(
     height: int = 360,
     fps: int = 25,
     duration_sec: float = 1.6,
+    start_pts_ms: int = 0,
     cues: tuple[tuple[int, int, str], ...] = ((200, 1200, "你好世界"),),
 ) -> None:
     total_frames = int(round(duration_sec * fps))
@@ -72,7 +73,7 @@ def _make_synthetic_subtitle_mp4(
 
             bgr = np.asarray(img, dtype=np.uint8)[:, :, ::-1].copy()
             frame = av.VideoFrame.from_ndarray(bgr, format="bgr24")
-            frame.pts = pts_ms
+            frame.pts = start_pts_ms + pts_ms
             frame.time_base = Fraction(1, 1000)
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -480,9 +481,19 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
     assert window._preview_reader is None
     assert window.current_result is None
 
-    # Smoke-test transapp.app.main() without blocking on event loop
+    # Smoke-test transapp.app.main() without blocking on event loop (isolated LOCALAPPDATA)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "isolated_appdata"))
     monkeypatch.setattr(QApplication, "exec", lambda _self: 0)
+    before_widgets = set(QApplication.topLevelWidgets())
     assert app_mod.main() == 0
+    created_windows = [
+        w
+        for w in QApplication.topLevelWidgets()
+        if w not in before_widgets and isinstance(w, MainWindow)
+    ]
+    assert len(created_windows) == 1
+    assert created_windows[0]._preset_store.config_dir == tmp_path / "isolated_appdata" / "TransApp"
+    created_windows[0].close()
 
 
 def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_stale_worker(
@@ -603,4 +614,295 @@ def test_main_window_export_oserror_shows_warning_without_crashing(
     assert len(warnings) == 1
     assert "Locked by another process" in warnings[0][1]
     assert "Locked by another process" in window.status_label.text()
+    window.close()
+
+
+def test_review_table_rejects_inverted_start_end_and_rescales_preview_on_resize(qtbot):
+    from transapp.ui.review_table import ReviewTable
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(620, 320)
+    table.show()
+
+    ev = SubtitleEvent(
+        index=1,
+        start_ms=1000,
+        end_ms=2000,
+        text="台词",
+        confidence=0.95,
+        flagged=False,
+        thumbnail_png=_make_png_bytes((20, 180, 220)),
+    )
+    table.set_events([ev])
+    qtbot.waitUntil(
+        lambda: table.preview_label.pixmap() is not None and not table.preview_label.pixmap().isNull(),
+        timeout=2000,
+    )
+    initial_w = table.preview_label.pixmap().width()
+
+    emitted_count = 0
+    table.events_changed.connect(lambda: nonlocal_inc())
+
+    def nonlocal_inc():
+        nonlocal emitted_count
+        emitted_count += 1
+
+    # Start >= End must revert cleanly without corrupting event or emitting events_changed
+    orig_start_text = table.table.item(0, 1).text()
+    table.table.item(0, 1).setText("00:00:02,000")
+    assert table.table.item(0, 1).text() == orig_start_text
+    assert table.events()[0].start_ms == 1000
+    table.table.item(0, 1).setText("00:00:02,500")
+    assert table.table.item(0, 1).text() == orig_start_text
+    assert table.events()[0].start_ms == 1000
+
+    # End <= Start must revert cleanly as well
+    orig_end_text = table.table.item(0, 2).text()
+    table.table.item(0, 2).setText("00:00:01,000")
+    assert table.table.item(0, 2).text() == orig_end_text
+    assert table.events()[0].end_ms == 2000
+    table.table.item(0, 2).setText("00:00:00,500")
+    assert table.table.item(0, 2).text() == orig_end_text
+    assert table.events()[0].end_ms == 2000
+    assert emitted_count == 0
+
+    # Resizing ReviewTable rescales _raw_pixmap smoothly to the new preview_label size
+    table.resize(1200, 620)
+    qtbot.waitUntil(
+        lambda: table.preview_label.pixmap() is not None
+        and table.preview_label.pixmap().width() > initial_w,
+        timeout=2000,
+    )
+
+
+def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_decode(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from transapp.core.video_reader import VideoReader
+    from transapp.ui.main_window import MainWindow
+
+    video_path = tmp_path / "nonzero_start.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        duration_sec=0.4,
+        fps=25,
+        start_pts_ms=5000,
+        cues=((40, 360, "偏移测试"),),
+    )
+
+    pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "偏移测试", 0.94]],
+                [0.01],
+            )
+        )
+    )
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(video_path)
+
+    assert window._start_pts_ms == 5000
+    assert window._duration_ms > 0
+    assert window.frame_slider.hasTracking() is False
+    assert window.frame_slider.minimum() == 0
+    assert window.frame_slider.maximum() == window._duration_ms
+    assert window._current_frame_ms == 5000
+    assert window.time_label.text().startswith("0:00:00.00 / ")
+
+    # Spy on VideoReader.read_frame_at_ms and VideoReader.__init__
+    read_calls: list[int] = []
+    init_calls: list[Path] = []
+    real_read = VideoReader.read_frame_at_ms
+    real_init = VideoReader.__init__
+
+    def spy_read(self, target_ms: int):
+        read_calls.append(target_ms)
+        return real_read(self, target_ms)
+
+    def spy_init(self, path):
+        init_calls.append(Path(path))
+        return real_init(self, path)
+
+    monkeypatch.setattr(VideoReader, "read_frame_at_ms", spy_read)
+    monkeypatch.setattr(VideoReader, "__init__", spy_init)
+
+    # sliderMoved updates time_label live WITHOUT decoding frames
+    window.frame_slider.sliderMoved.emit(120)
+    assert read_calls == []
+    assert window.time_label.text().startswith("0:00:00.12 / ")
+
+    # valueChanged (commit/release) decodes ONCE at start_pts_ms + offset
+    window.frame_slider.setValue(120)
+    assert read_calls == [5120]
+    assert window._current_frame_ms == 5120
+    assert window.time_label.text().startswith("0:00:00.12 / ")
+
+    # +1f, >|, |< work relative to [start_pts_ms, start_pts_ms + duration_ms]
+    read_calls.clear()
+    window.btn_step_fwd.click()
+    assert window._current_frame_ms > 5120
+    assert len(read_calls) == 1
+
+    window.btn_seek_end.click()
+    assert window._current_frame_ms >= 5160
+    assert window.frame_slider.value() > 0
+
+    window.btn_seek_start.click()
+    assert window._current_frame_ms == 5000
+    assert window.frame_slider.value() == 0
+
+    # Clamping outside [start_pts_ms, start_pts_ms + duration_ms]
+    read_calls.clear()
+    window.seek_to_ms(0)
+    assert read_calls[-1] == 5000
+    window.seek_to_ms(999_999)
+    assert read_calls[-1] == 5000 + window._duration_ms
+
+    # test_current_frame uses cached frame / at most 1 decode without double VideoReader open
+    init_calls.clear()
+    read_calls.clear()
+    res = window.test_current_frame()
+    assert res is not None
+    assert "偏移测试" in window.test_result_label.text()
+    assert len(init_calls) == 0
+    assert len(read_calls) == 0
+
+    # Even if preview reader & cached frame are cleared, test_current_frame opens/reads at most once
+    window._close_preview_reader()
+    window._current_frame_bgr = None
+    res2 = window.test_current_frame()
+    assert res2 is not None
+    assert len(init_calls) == 1
+    assert len(read_calls) == 1
+
+    # seek_to_ms surfaces missing video file error inside try block without crashing
+    window._close_preview_reader()
+    video_path.unlink()
+    window.seek_to_ms(5040)
+    assert "Lỗi seek frame:" in window.status_label.text()
+    window.close()
+
+
+def test_main_window_retires_slow_qthread_and_waits_on_close(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from transapp.ui.main_window import MainWindow
+
+    ep1 = tmp_path / "slow_ep1.mp4"
+    ep2 = tmp_path / "slow_ep2.mp4"
+    _make_synthetic_subtitle_mp4(ep1, duration_sec=1.0, cues=((200, 800, "第一集"),))
+    _make_synthetic_subtitle_mp4(ep2, duration_sec=1.0, cues=((200, 800, "第二集"),))
+
+    ocr_entered = threading.Event()
+    release_ocr = threading.Event()
+
+    def slow_ocr(_img: np.ndarray):
+        ocr_entered.set()
+        release_ocr.wait(timeout=5.0)
+        return ([[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一集", 0.92]], [0.01])
+
+    pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=slow_ocr))
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep1)
+
+    window.btn_start.click()
+    assert ocr_entered.wait(timeout=5.0)
+
+    old_thread = window._worker_thread
+    old_worker = window._worker
+    assert old_thread is not None and old_worker is not None
+
+    delete_events: list[tuple[str, bool]] = []
+    orig_thread_delete = old_thread.deleteLater
+    orig_worker_delete = old_worker.deleteLater
+    orig_wait = old_thread.wait
+
+    monkeypatch.setattr(
+        old_thread,
+        "deleteLater",
+        lambda: (delete_events.append(("thread", old_thread.isRunning())), orig_thread_delete())[1],
+    )
+    monkeypatch.setattr(
+        old_worker,
+        "deleteLater",
+        lambda: (delete_events.append(("worker", old_thread.isRunning())), orig_worker_delete())[1],
+    )
+    monkeypatch.setattr(
+        old_thread,
+        "wait",
+        lambda *args: False if args == (5000,) else orig_wait(*args),
+    )
+
+    # Switching video when wait(5000) times out must NOT call deleteLater on running thread
+    window.load_video(ep2)
+    assert window._worker_thread is None
+    assert window._worker is None
+    assert old_thread in window._retiring_threads
+    assert delete_events == []
+
+    # Releasing the old worker allows finished signal to retire & deleteLater safely
+    import shiboken6
+
+    release_ocr.set()
+    qtbot.waitUntil(lambda: old_thread not in window._retiring_threads, timeout=5000)
+    assert ("worker", False) in delete_events
+    assert ("thread", False) in delete_events
+    assert (not shiboken6.isValid(old_thread)) or (not old_thread.isRunning())
+
+    # Now verify closeEvent waits on a timed-out worker/retiring thread until finished
+    release_ocr.clear()
+    ocr_entered.clear()
+    window.btn_start.click()
+    assert ocr_entered.wait(timeout=5.0)
+
+    second_thread = window._worker_thread
+    assert second_thread is not None
+    orig_second_wait = second_thread.wait
+    monkeypatch.setattr(
+        second_thread,
+        "wait",
+        lambda *args: False if args == (5000,) else orig_second_wait(*args),
+    )
+
+    timer = threading.Timer(0.15, release_ocr.set)
+    timer.start()
+    try:
+        window.close()
+    finally:
+        timer.cancel()
+        release_ocr.set()
+
+    assert (not shiboken6.isValid(second_thread)) or (not second_thread.isRunning())
+    assert window._retiring_threads == []
+
+
+def test_main_window_browse_buttons_screen_clamp_and_corrupt_presets(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QScreen
+    from transapp.ui.main_window import MainWindow
+
+    cfg_dir = tmp_path / "corrupt_cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "presets.json").write_text('{"bad": ', encoding="utf-8")
+
+    # Simulate a 1080p laptop at 150% DPI scaling (available geometry 1280x672)
+    monkeypatch.setattr(QScreen, "availableGeometry", lambda _self: QRect(0, 0, 1280, 672))
+
+    window = MainWindow(preset_store=PresetStore(config_dir=cfg_dir))
+    qtbot.addWidget(window)
+    assert window.width() <= 1160
+    assert window.height() <= 672
+
+    # Browse buttons stay enabled while not running so clicking them auto-selects custom radio
+    assert window.radio_dir_same.isChecked()
+    assert window.btn_browse_out_dir.isEnabled() is True
+    assert window.radio_ass_default.isChecked()
+    assert window.btn_browse_ass_template.isEnabled() is True
     window.close()

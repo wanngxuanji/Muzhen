@@ -245,3 +245,59 @@ def test_video_reader_duration_fallback_and_probe_stops_after_first_frame(tmp_pa
         assert reader.metadata.height == 180
         assert reader.metadata.duration_ms == 2500
         assert proxies[0].decoded_count == 1
+
+
+def test_video_reader_start_pts_ms_falsy_timebase_and_init_error_closes_container(
+    tmp_path: Path, monkeypatch
+):
+    # Backward-compatible default on VideoMetadata
+    legacy_meta = VideoMetadata(width=320, height=180, duration_ms=100, fps=25.0, estimated_frames=3)
+    assert legacy_meta.start_pts_ms == 0
+
+    # Non-zero start_pts_ms >= duration_ms
+    video_path = tmp_path / "offset_pts.mp4"
+    _make_synthetic_vfr_mp4(
+        video_path,
+        width=320,
+        height=180,
+        pts_ms_list=(5000, 5040, 5080, 5120),
+    )
+    with VideoReader(video_path) as reader:
+        meta = reader.metadata
+        assert meta.start_pts_ms == 5000
+        assert meta.start_pts_ms >= meta.duration_ms
+
+        # Falsy frame/stream time_base falls back to 1/1000 instead of raising TypeError
+        class _FakeFrame:
+            pts = 1234
+            dts = None
+            time_base = None
+
+        class _FakeStream:
+            time_base = None
+
+        assert reader._raw_pts_ms(_FakeFrame(), _FakeStream(), 0, meta.fps) == 1234
+
+    # Init error during _compute_start_pts_ms / _build_metadata must close container
+    real_open = av.open
+    close_calls = {"count": 0}
+
+    class _TrackingContainer:
+        def __init__(self, inner):
+            self._inner = inner
+            self.streams = inner.streams
+            self.duration = inner.duration
+
+        def close(self):
+            close_calls["count"] += 1
+            self._inner.close()
+
+    monkeypatch.setattr(av, "open", lambda path, *a, **kw: _TrackingContainer(real_open(path, *a, **kw)))
+    monkeypatch.setattr(
+        VideoReader,
+        "_compute_start_pts_ms",
+        staticmethod(lambda _stream: (_ for _ in ()).throw(RuntimeError("boom"))),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        VideoReader(video_path)
+    assert close_calls["count"] == 1

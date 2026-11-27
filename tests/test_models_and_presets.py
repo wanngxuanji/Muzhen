@@ -120,3 +120,95 @@ def test_preset_store_utf8_update_and_missing_cases(tmp_path: Path, monkeypatch)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     fallback_store = PresetStore()
     assert fallback_store.config_dir == Path.home() / ".transapp"
+
+
+def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: Path, monkeypatch):
+    import os
+    import transapp.core.presets as presets_mod
+
+    store = PresetStore(config_dir=tmp_path)
+
+    # 1. Corrupt/truncated JSON returns empty cleanly
+    store.presets_path.write_text('{"bad": ', encoding="utf-8")
+    assert store.list_names() == []
+    assert store.load("bad") is None
+
+    # 2. Invalid UTF-8 bytes or non-object JSON root return empty cleanly
+    store.presets_path.write_bytes(b"\xff\xfe\xfd")
+    assert store.list_names() == []
+    assert store.load("any") is None
+
+    store.presets_path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert store.list_names() == []
+
+    # 3. Malformed entries return None on load() without crashing
+    import json
+
+    malformed_payload = {
+        "not_a_dict": "oops",
+        "missing_name": {"roi": {"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1}},
+        "bad_roi_type": {"name": "bad_roi_type", "roi": "oops"},
+        "bad_coord_val": {"name": "bad_coord_val", "roi": {"x": "bad", "y": 0.8, "w": 0.8, "h": 0.1}},
+        "bool_coord": {"name": "bool_coord", "roi": {"x": True, "y": 0.8, "w": 0.8, "h": 0.1}},
+        "bad_conf": {
+            "name": "bad_conf",
+            "roi": {"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1},
+            "conf_threshold": "not_float",
+        },
+        "out_of_range_conf": {
+            "name": "out_of_range_conf",
+            "roi": {"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1},
+            "conf_threshold": 1.5,
+        },
+        "valid_one": {
+            "name": "valid_one",
+            "roi": {"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1},
+            "conf_threshold": 0.85,
+        },
+    }
+    store.presets_path.write_text(json.dumps(malformed_payload), encoding="utf-8")
+    assert "valid_one" in store.list_names()
+    for bad_key in (
+        "not_a_dict",
+        "missing_name",
+        "bad_roi_type",
+        "bad_coord_val",
+        "bool_coord",
+        "bad_conf",
+        "out_of_range_conf",
+    ):
+        assert store.load(bad_key) is None
+    loaded_valid = store.load("valid_one")
+    assert loaded_valid == RoiPreset(
+        name="valid_one",
+        roi=RoiRect(0.1, 0.8, 0.8, 0.1),
+        conf_threshold=0.85,
+    )
+
+    # 4. Atomic write via os.replace preserves previous file if replace fails
+    replace_calls: list[tuple[Path, Path]] = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        replace_calls.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(presets_mod.os, "replace", spy_replace)
+    store.save(RoiPreset(name="atomic", roi=RoiRect(0.2, 0.7, 0.6, 0.2)))
+    assert len(replace_calls) == 1
+    assert replace_calls[0][0].parent == store.config_dir
+    assert replace_calls[0][1] == store.presets_path
+    assert [p for p in store.config_dir.glob("*.tmp")] == []
+
+    before_bytes = store.presets_path.read_bytes()
+    monkeypatch.setattr(
+        presets_mod.os,
+        "replace",
+        lambda _s, _d: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    import pytest
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save(RoiPreset(name="failed_atomic", roi=RoiRect(0.1, 0.1, 0.2, 0.2)))
+    assert store.presets_path.read_bytes() == before_bytes
+    assert [p for p in store.config_dir.glob("*.tmp")] == []

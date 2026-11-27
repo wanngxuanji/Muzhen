@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 import threading
 
+import numpy as np
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -104,15 +105,28 @@ class MainWindow(QMainWindow):
         self._video_path: Path | None = None
         self._video_meta: VideoMetadata | None = None
         self._preview_reader: VideoReader | None = None
+        self._start_pts_ms: int = 0
+        self._duration_ms: int = 0
         self._current_frame_ms: int = 0
+        self._current_frame_index: int = 0
+        self._current_frame_bgr: np.ndarray | None = None
         self._extract_result: ExtractResult | None = None
 
         self._worker_thread: QThread | None = None
         self._worker: _ExtractionWorker | None = None
         self._cancel_event: threading.Event | None = None
+        self._retiring_threads: list[QThread] = []
+        self._retiring_workers: dict[QThread, _ExtractionWorker | None] = {}
 
         self.setWindowTitle("TransApp - Tách Sub Raw Tiếng Trung")
-        self.resize(1240, 840)
+        target_w, target_h = 1160, 680
+        screen = self.screen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            if avail.width() > 0 and avail.height() > 0:
+                target_w = min(target_w, avail.width())
+                target_h = min(target_h, avail.height())
+        self.resize(target_w, target_h)
 
         self._build_ui()
         self._connect_signals()
@@ -144,6 +158,7 @@ class MainWindow(QMainWindow):
         self.btn_seek_start = QPushButton("|<")
         self.btn_step_back = QPushButton("-1f")
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
         self.btn_step_fwd = QPushButton("+1f")
         self.btn_seek_end = QPushButton(">|")
@@ -314,11 +329,12 @@ class MainWindow(QMainWindow):
         self.btn_save_preset.clicked.connect(lambda: self.save_preset())
         self.btn_delete_preset.clicked.connect(self.delete_current_preset)
 
-        self.btn_seek_start.clicked.connect(lambda: self.seek_to_ms(0))
+        self.btn_seek_start.clicked.connect(self._seek_to_start)
         self.btn_seek_end.clicked.connect(self._seek_to_end)
         self.btn_step_back.clicked.connect(lambda: self._step_frame(-1))
         self.btn_step_fwd.clicked.connect(lambda: self._step_frame(1))
-        self.frame_slider.valueChanged.connect(self._on_slider_moved)
+        self.frame_slider.sliderMoved.connect(self._on_slider_moved)
+        self.frame_slider.valueChanged.connect(self._on_slider_value_changed)
 
         self.radio_dir_same.toggled.connect(lambda _: self._update_controls_state())
         self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
@@ -357,11 +373,11 @@ class MainWindow(QMainWindow):
 
         custom_dir = self.radio_dir_custom.isChecked()
         self.custom_dir_edit.setEnabled(custom_dir and not running)
-        self.btn_browse_out_dir.setEnabled(custom_dir and not running)
+        self.btn_browse_out_dir.setEnabled(not running)
 
         custom_tpl = self.radio_ass_template.isChecked()
         self.ass_template_edit.setEnabled(custom_tpl and not running)
-        self.btn_browse_ass_template.setEnabled(custom_tpl and not running)
+        self.btn_browse_ass_template.setEnabled(not running)
 
         self.btn_test_frame.setEnabled(has_video and not running)
         self.btn_start.setEnabled(has_video and not running)
@@ -467,6 +483,8 @@ class MainWindow(QMainWindow):
         self._stop_and_wait_worker()
 
         self._clear_session_results()
+        self._current_frame_bgr = None
+        self._current_frame_index = 0
         self.roi_canvas.set_frame(None)
         self._close_preview_reader()
 
@@ -476,6 +494,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._video_path = None
             self._video_meta = None
+            self._start_pts_ms = 0
+            self._duration_ms = 0
+            self._current_frame_ms = 0
             self.video_path_edit.clear()
             self.frame_slider.setRange(0, 0)
             self.time_label.setText("0:00:00.00 / 0:00:00.00")
@@ -487,19 +508,22 @@ class MainWindow(QMainWindow):
         self._video_path = path
         self._video_meta = reader.metadata
         self._preview_reader = reader
-        self._current_frame_ms = 0
+        self._start_pts_ms = max(0, reader.metadata.start_pts_ms)
+        self._duration_ms = max(0, reader.metadata.duration_ms)
+        self._current_frame_ms = self._start_pts_ms
+        self._current_frame_index = 0
 
         self.video_path_edit.setText(str(path))
         self.frame_slider.blockSignals(True)
         try:
-            self.frame_slider.setRange(0, max(0, reader.metadata.duration_ms))
+            self.frame_slider.setRange(0, self._duration_ms)
             self.frame_slider.setValue(0)
         finally:
             self.frame_slider.blockSignals(False)
 
         self.progress_bar.setValue(0)
         self.status_label.setText("Sẵn sàng")
-        self.seek_to_ms(0)
+        self.seek_to_ms(self._start_pts_ms)
         self._update_controls_state()
 
     def _browse_video(self) -> None:
@@ -545,29 +569,45 @@ class MainWindow(QMainWindow):
         """Seek preview canvas to the frame nearest ``target_ms``."""
         if self._video_meta is None:
             return
-        clamped = max(0, min(int(target_ms), max(0, self._video_meta.duration_ms)))
-        reader = self._ensure_preview_reader()
-        if reader is None:
-            return
+        min_ms = self._start_pts_ms
+        max_ms = self._start_pts_ms + self._duration_ms
+        clamped = max(min_ms, min(int(target_ms), max_ms))
         try:
-            _idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
+            reader = self._ensure_preview_reader()
+            if reader is None:
+                return
+            frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
         except Exception as exc:
             self.status_label.setText(f"Lỗi seek frame: {exc}")
             return
 
+        self._current_frame_index = frame_idx
         self._current_frame_ms = pts_ms
+        self._current_frame_bgr = full_bgr
         self.roi_canvas.set_frame(full_bgr)
         self.frame_slider.blockSignals(True)
         try:
-            self.frame_slider.setValue(min(pts_ms, self.frame_slider.maximum()))
+            offset_ms = max(0, min(pts_ms - self._start_pts_ms, self.frame_slider.maximum()))
+            self.frame_slider.setValue(offset_ms)
         finally:
             self.frame_slider.blockSignals(False)
+        rel_ms = max(0, pts_ms - self._start_pts_ms)
         self.time_label.setText(
-            f"{format_ass_time(pts_ms)} / {format_ass_time(self._video_meta.duration_ms)}"
+            f"{format_ass_time(rel_ms)} / {format_ass_time(self._duration_ms)}"
         )
 
-    def _on_slider_moved(self, value_ms: int) -> None:
-        self.seek_to_ms(value_ms)
+    def _on_slider_moved(self, offset_ms: int) -> None:
+        if self._video_meta is None:
+            return
+        clamped = max(0, min(int(offset_ms), self._duration_ms))
+        self.time_label.setText(
+            f"{format_ass_time(clamped)} / {format_ass_time(self._duration_ms)}"
+        )
+
+    def _on_slider_value_changed(self, offset_ms: int) -> None:
+        if self._video_meta is None:
+            return
+        self.seek_to_ms(self._start_pts_ms + int(offset_ms))
 
     def _step_frame(self, delta: int) -> None:
         if self._video_meta is None:
@@ -575,11 +615,15 @@ class MainWindow(QMainWindow):
         step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
         self.seek_to_ms(self._current_frame_ms + delta * step_ms)
 
+    def _seek_to_start(self) -> None:
+        if self._video_meta is None:
+            return
+        self.seek_to_ms(self._start_pts_ms)
+
     def _seek_to_end(self) -> None:
         if self._video_meta is None:
             return
-        step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
-        self.seek_to_ms(max(0, self._video_meta.duration_ms - step_ms))
+        self.seek_to_ms(self._start_pts_ms + self._duration_ms)
 
     def build_config(self) -> ExtractConfig:
         """Build an ExtractConfig from the current UI controls."""
@@ -594,25 +638,30 @@ class MainWindow(QMainWindow):
         if self._video_path is None or self._is_running():
             return None
 
-        # Close any idle preview reader so only one VideoReader touches the file at a time.
-        self._close_preview_reader()
         config = self.build_config()
         roi = self.roi_canvas.roi()
 
         try:
-            result = self._pipeline.test_single_frame(
-                self._video_path,
+            full_bgr = self._current_frame_bgr
+            if full_bgr is None:
+                reader = self._ensure_preview_reader()
+                if reader is None:
+                    return None
+                frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(self._current_frame_ms)
+                self._current_frame_index = frame_idx
+                self._current_frame_ms = pts_ms
+                self._current_frame_bgr = full_bgr
+            result = self._pipeline.test_frame_bgr(
+                full_bgr,
+                self._current_frame_index,
                 self._current_frame_ms,
                 roi,
                 config,
             )
-            with VideoReader(self._video_path) as reader:
-                _idx, pts_ms, full_bgr = reader.read_frame_at_ms(result.pts_ms)
         except Exception as exc:
             self.test_result_label.setText(f"Lỗi test frame: {exc}")
             return None
 
-        self._current_frame_ms = pts_ms
         self.roi_canvas.set_frame(full_bgr, mask=result.mask)
         if result.text:
             self.test_result_label.setText(
@@ -723,23 +772,58 @@ class MainWindow(QMainWindow):
             self._cancel_event.set()
         self._cleanup_worker()
 
+    def _disconnect_worker_slots(self, worker: _ExtractionWorker) -> None:
+        for sig, slot in (
+            (worker.progress, self._on_worker_progress),
+            (worker.finished, self._on_worker_finished),
+            (worker.cancelled, self._on_worker_cancelled),
+            (worker.failed, self._on_worker_failed),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _retire_thread(self, thread: QThread) -> None:
+        if thread not in self._retiring_threads or thread.isRunning():
+            return
+        self._retiring_threads.remove(thread)
+        worker = self._retiring_workers.pop(thread, None)
+        if worker is not None:
+            worker.deleteLater()
+        thread.deleteLater()
+
+    @Slot()
+    def _on_retiring_thread_finished(self) -> None:
+        sender = self.sender()
+        if isinstance(sender, QThread):
+            self._retire_thread(sender)
+
     def _cleanup_worker(self) -> None:
         thread = self._worker_thread
         worker = self._worker
-        if thread is not None:
-            thread.quit()
-            thread.wait(5000)
-            thread.deleteLater()
-        if worker is not None:
-            for sig in (worker.progress, worker.finished, worker.cancelled, worker.failed):
-                try:
-                    sig.disconnect()
-                except (RuntimeError, TypeError):
-                    pass
-            worker.deleteLater()
         self._worker_thread = None
         self._worker = None
         self._cancel_event = None
+
+        if worker is not None:
+            self._disconnect_worker_slots(worker)
+
+        if thread is not None:
+            thread.quit()
+            finished = thread.wait(5000)
+            if finished and not thread.isRunning():
+                if worker is not None:
+                    worker.deleteLater()
+                thread.deleteLater()
+            else:
+                self._retiring_threads.append(thread)
+                self._retiring_workers[thread] = worker
+                thread.finished.connect(self._on_retiring_thread_finished)
+                if thread.isFinished() and not thread.isRunning():
+                    self._retire_thread(thread)
+        elif worker is not None:
+            worker.deleteLater()
 
     def _confirm_overwrite(self, existing_paths: list[Path]) -> bool:
         if self._overwrite_confirm_fn is not None:
@@ -830,7 +914,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background extraction, close open readers, and clear review memory."""
         self._stop_and_wait_worker()
+        for retiring in list(self._retiring_threads):
+            retiring.quit()
+            retiring.wait()
+            self._retire_thread(retiring)
         self._close_preview_reader()
         self._clear_session_results()
+        self._current_frame_bgr = None
         self.roi_canvas.set_frame(None)
         super().closeEvent(event)

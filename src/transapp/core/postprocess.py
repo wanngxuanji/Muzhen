@@ -13,6 +13,7 @@ _ALL_WS_RE = re.compile(r"\s+")
 _CJK_CHARS = (
     r"\u2e80-\u2eff"  # CJK Radicals Supplement
     r"\u2f00-\u2fdf"  # Kangxi Radicals
+    r"\u3005\u3007"   # Ideographic iteration mark (々) & zero (〇)
     r"\u3040-\u30ff"  # Hiragana & Katakana
     r"\u3400-\u4dbf"  # CJK Extension A
     r"\u4e00-\u9fff"  # CJK Unified Ideographs
@@ -29,7 +30,7 @@ _CJK_ADJACENT_SPACE_RE = re.compile(
 )
 
 _DISALLOWED_TEXT_CHAR_RE = re.compile(
-    rf"[^0-9a-zA-Z,.!?%:'\"\-\n {_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}]"
+    rf"[^0-9a-zA-Z,.!?%:'\"()/;\-\n {_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}]"
 )
 
 

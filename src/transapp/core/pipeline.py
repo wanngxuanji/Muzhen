@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+import threading
 import time
 
 import numpy as np
@@ -38,17 +39,45 @@ class ExtractionPipeline:
     def __init__(self, ocr_engine: OcrEngine | None = None) -> None:
         self._injected_ocr_engine = ocr_engine
         self._cached_ocr_engine: OcrEngine | None = None
+        self._engine_lock = threading.Lock()
 
     def _resolve_ocr_engine(self, config: ExtractConfig) -> OcrEngine:
         if self._injected_ocr_engine is not None:
             return self._injected_ocr_engine
         requested_provider = (config.provider or "cpu").strip().lower()
-        if (
-            self._cached_ocr_engine is None
-            or self._cached_ocr_engine.provider != requested_provider
-        ):
-            self._cached_ocr_engine = OcrEngine(provider=requested_provider)
-        return self._cached_ocr_engine
+        with self._engine_lock:
+            if (
+                self._cached_ocr_engine is None
+                or self._cached_ocr_engine.provider != requested_provider
+            ):
+                self._cached_ocr_engine = OcrEngine(provider=requested_provider)
+            return self._cached_ocr_engine
+
+    def test_frame_bgr(
+        self,
+        full_bgr: np.ndarray,
+        frame_index: int,
+        pts_ms: int,
+        roi: RoiRect,
+        config: ExtractConfig,
+    ) -> FrameTestResult:
+        """Build stroke mask and run OCR on an already-decoded full BGR frame."""
+        height, width = full_bgr.shape[:2]
+        x1, y1, x2, y2 = roi.to_pixels(width, height)
+        bgr_roi = np.ascontiguousarray(full_bgr[y1:y2, x1:x2])
+
+        mask = build_stroke_mask(bgr_roi, config)
+        ocr = self._resolve_ocr_engine(config)
+        raw_text, confidence = ocr.recognize_roi(bgr_roi)
+        text = normalize_cjk_text(raw_text)
+
+        return FrameTestResult(
+            frame_index=frame_index,
+            pts_ms=pts_ms,
+            mask=mask,
+            text=text,
+            confidence=confidence,
+        )
 
     def test_single_frame(
         self,
@@ -61,22 +90,7 @@ class ExtractionPipeline:
         with VideoReader(video_path) as reader:
             frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(frame_ms)
 
-        height, width = full_bgr.shape[:2]
-        x1, y1, x2, y2 = roi.to_pixels(width, height)
-        bgr_roi = np.ascontiguousarray(full_bgr[y1:y2, x1:x2])
-
-        mask = build_stroke_mask(bgr_roi, config)
-        ocr = self._resolve_ocr_engine(config)
-        raw_text, confidence = ocr.recognize_roi(bgr_roi)
-        text = normalize_cjk_text(raw_text)
-
-        return FrameTestResult(
-            frame_index=frame_idx,
-            pts_ms=pts_ms,
-            mask=mask,
-            text=text,
-            confidence=confidence,
-        )
+        return self.test_frame_bgr(full_bgr, frame_idx, pts_ms, roi, config)
 
     def run(
         self,
@@ -94,10 +108,13 @@ class ExtractionPipeline:
         with VideoReader(source_path) as reader:
             meta = reader.metadata
             total_ms = max(1, meta.duration_ms)
+            start_pts_ms = meta.start_pts_ms
             scan_progress = (
                 (
                     lambda _frame_idx, pts_ms: progress_cb(
-                        "scan", max(0, min(pts_ms, total_ms)), total_ms
+                        "scan",
+                        max(0, min(pts_ms - start_pts_ms, total_ms)),
+                        total_ms,
                     )
                 )
                 if progress_cb is not None

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QColor, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QRadioButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -111,9 +112,11 @@ class ReviewTable(QWidget):
         self.preview_label = QLabel("Chưa chọn dòng")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(280, 120)
+        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.preview_label.setStyleSheet(
             "background-color: #14161A; color: #9AA3B2; border: 1px solid #2E3440;"
         )
+        self.preview_label.installEventFilter(self)
         preview_layout.addWidget(self.preview_label, 1)
 
         splitter.addWidget(self.table)
@@ -230,6 +233,30 @@ class ReviewTable(QWidget):
             row = selected[0].row() if selected else -1
         self._render_preview_for_row(row)
 
+    def _update_preview_pixmap(self) -> None:
+        if self._raw_pixmap is None or self._raw_pixmap.isNull():
+            return
+        target_size = self.preview_label.size()
+        if target_size.width() > 10 and target_size.height() > 10:
+            scaled = self._raw_pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        else:
+            scaled = self._raw_pixmap
+        self.preview_label.setPixmap(scaled)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Rescale active ROI thumbnail smoothly when the review panel resizes."""
+        super().resizeEvent(event)
+        self._update_preview_pixmap()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.preview_label and event.type() == QEvent.Type.Resize:
+            self._update_preview_pixmap()
+        return super().eventFilter(watched, event)
+
     def _render_preview_for_row(self, row: int) -> None:
         if row < 0 or row >= self.table.rowCount():
             self._raw_pixmap = None
@@ -248,16 +275,7 @@ class ReviewTable(QWidget):
         pixmap = QPixmap()
         if png_bytes and pixmap.loadFromData(png_bytes, "PNG") and not pixmap.isNull():
             self._raw_pixmap = pixmap
-            target_size = self.preview_label.size()
-            if target_size.width() > 10 and target_size.height() > 10:
-                scaled = pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            else:
-                scaled = pixmap
-            self.preview_label.setPixmap(scaled)
+            self._update_preview_pixmap()
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
@@ -284,9 +302,11 @@ class ReviewTable(QWidget):
             return
 
         if col in (_COL_START, _COL_END):
+            prev_ms = event.start_ms if col == _COL_START else event.end_ms
             parsed_ms = parse_subtitle_time(item.text())
-            if parsed_ms is None:
-                prev_ms = event.start_ms if col == _COL_START else event.end_ms
+            new_start_ms = parsed_ms if col == _COL_START else event.start_ms
+            new_end_ms = parsed_ms if col == _COL_END else event.end_ms
+            if parsed_ms is None or new_start_ms >= new_end_ms:
                 self._populating = True
                 try:
                     item.setText(_format_cell_time(prev_ms))
