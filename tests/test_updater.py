@@ -217,3 +217,50 @@ def test_update_prefs_store_persists_skipped_version_atomically(
     default_store = UpdatePrefsStore()
     assert default_store.path == tmp_path / "appdata" / "update_prefs.json"
     assert not (tmp_path / "appdata").exists()
+
+
+def test_update_prefs_store_persists_language_and_preserves_skipped_version(
+    tmp_path: Path,
+) -> None:
+    prefs_path = tmp_path / "nested" / "update_prefs.json"
+    store = UpdatePrefsStore(prefs_path)
+
+    assert store.get_language() == "auto"
+
+    store.set_skipped_version("v2.1.0")
+    assert store.get_language() == "auto"
+
+    store.set_language("vi")
+    assert list(prefs_path.parent.glob("*.tmp")) == []
+
+    reloaded = UpdatePrefsStore(prefs_path)
+    assert reloaded.get_language() == "vi"
+    assert reloaded.get_skipped_version() == "v2.1.0"
+    assert reloaded.is_version_skipped("v2.1.0") is True
+
+    reloaded.set_skipped_version("v2.2.0")
+    assert reloaded.get_skipped_version() == "v2.2.0"
+    assert reloaded.get_language() == "vi"
+
+    reloaded.set_skipped_version(None)
+    assert reloaded.get_skipped_version() is None
+    assert reloaded.get_language() == "vi"
+
+    reloaded.set_language("  ZH  ")
+    assert reloaded.get_language() == "zh"
+
+    reloaded.set_language("en")
+    assert reloaded.get_language() == "en"
+
+    reloaded.set_language("fr")
+    assert reloaded.get_language() == "auto"
+
+    prefs_path.write_text('{"language": "invalid", "skipped_version": "v2.3.0"}', encoding="utf-8")
+    assert reloaded.get_language() == "auto"
+    assert reloaded.get_skipped_version() == "v2.3.0"
+
+    prefs_path.write_text("{corrupt json", encoding="utf-8")
+    assert reloaded.get_language() == "auto"
+
+    prefs_path.write_text('["not", "an", "object"]', encoding="utf-8")
+    assert reloaded.get_language() == "auto"

@@ -130,6 +130,9 @@ def check_for_updates(
     )
 
 
+_VALID_LANGUAGE_PREFS: tuple[str, ...] = ("auto", "en", "vi", "zh")
+
+
 class UpdatePrefsStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = (
@@ -138,31 +141,23 @@ class UpdatePrefsStore:
             else runtime_paths.get_app_data_dir(create=False) / "update_prefs.json"
         )
 
-    def get_skipped_version(self) -> str | None:
+    def _read_prefs(self) -> dict[str, Any]:
         if not self.path.exists():
-            return None
+            return {}
         try:
             raw = self.path.read_text(encoding="utf-8")
             if not raw.strip():
-                return None
+                return {}
             data = json.loads(raw)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
+            return {}
         if not isinstance(data, dict):
-            return None
-        skipped = data.get("skipped_version")
-        if isinstance(skipped, str) and skipped.strip():
-            return skipped.strip()
-        return None
+            return {}
+        return dict(data)
 
-    def set_skipped_version(self, tag_name: str | None) -> None:
-        normalized = (
-            tag_name.strip()
-            if isinstance(tag_name, str) and tag_name.strip()
-            else None
-        )
+    def _write_prefs(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"skipped_version": normalized}, ensure_ascii=False, indent=2)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
         fd, tmp_name = tempfile.mkstemp(
             dir=self.path.parent,
             prefix=f".{self.path.name}.",
@@ -181,6 +176,40 @@ class UpdatePrefsStore:
             except OSError:
                 pass
             raise
+
+    def get_skipped_version(self) -> str | None:
+        data = self._read_prefs()
+        skipped = data.get("skipped_version")
+        if isinstance(skipped, str) and skipped.strip():
+            return skipped.strip()
+        return None
+
+    def set_skipped_version(self, tag_name: str | None) -> None:
+        normalized = (
+            tag_name.strip()
+            if isinstance(tag_name, str) and tag_name.strip()
+            else None
+        )
+        data = self._read_prefs()
+        data["skipped_version"] = normalized
+        self._write_prefs(data)
+
+    def get_language(self) -> str:
+        data = self._read_prefs()
+        raw = data.get("language")
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in _VALID_LANGUAGE_PREFS:
+                return normalized
+        return "auto"
+
+    def set_language(self, code: str) -> None:
+        normalized = code.strip().lower() if isinstance(code, str) else "auto"
+        if normalized not in _VALID_LANGUAGE_PREFS:
+            normalized = "auto"
+        data = self._read_prefs()
+        data["language"] = normalized
+        self._write_prefs(data)
 
     def is_version_skipped(self, tag_name: str) -> bool:
         if not isinstance(tag_name, str) or not tag_name.strip():
