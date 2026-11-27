@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 import threading
 
 import numpy as np
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QLinearGradient, QPainter, QPaintEvent, QPen, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -218,6 +218,10 @@ class MainWindow(QMainWindow):
         self._extract_result: ExtractResult | None = None
         self._trim_start_ms: int | None = None
         self._trim_end_ms: int | None = None
+        self._is_playing: bool = False
+        self._play_iter: Iterator[tuple[int, int, np.ndarray]] | None = None
+        self._play_timer = QTimer(self)
+        self._play_timer.timeout.connect(self._on_playback_tick)
 
         self._worker_thread: QThread | None = None
         self._worker: _ExtractionWorker | None = None
@@ -333,28 +337,44 @@ class MainWindow(QMainWindow):
         scrub_row.setSpacing(6)
         self.btn_seek_start = QPushButton()
         self.btn_seek_start.setIcon(make_icon("skip_back", size=14))
-        self.btn_seek_start.setToolTip("Về đầu video")
+        self.btn_seek_start.setToolTip("Về đầu video (Home)")
+        self.btn_play_pause = QPushButton()
+        self.btn_play_pause.setIcon(make_icon("play", size=14))
+        self.btn_play_pause.setToolTip("Phát / Tạm dừng xem trước (Space)")
         self.btn_step_back = QPushButton()
         self.btn_step_back.setIcon(make_icon("step_back", size=14))
-        self.btn_step_back.setToolTip("Lùi 1 frame")
+        self.btn_step_back.setToolTip("Lùi 1 frame — giữ để tua (← / , / <)")
         self.frame_slider = TrimRangeSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
+        self.frame_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.frame_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_step_fwd = QPushButton()
         self.btn_step_fwd.setIcon(make_icon("step_fwd", size=14))
-        self.btn_step_fwd.setToolTip("Tiến 1 frame")
+        self.btn_step_fwd.setToolTip("Tiến 1 frame — giữ để tua (→ / . / >)")
         self.btn_seek_end = QPushButton()
         self.btn_seek_end.setIcon(make_icon("skip_fwd", size=14))
-        self.btn_seek_end.setToolTip("Tới cuối video")
-        for btn in (self.btn_seek_start, self.btn_step_back, self.btn_step_fwd, self.btn_seek_end):
+        self.btn_seek_end.setToolTip("Tới cuối video (End)")
+        for btn in (
+            self.btn_seek_start,
+            self.btn_play_pause,
+            self.btn_step_back,
+            self.btn_step_fwd,
+            self.btn_seek_end,
+        ):
             btn.setProperty("variant", "tool")
             btn.setIconSize(QSize(14, 14))
             btn.setFixedSize(30, 28)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        for step_btn in (self.btn_step_back, self.btn_step_fwd):
+            step_btn.setAutoRepeat(True)
+            step_btn.setAutoRepeatDelay(250)
+            step_btn.setAutoRepeatInterval(55)
         self.time_label = QLabel("0:00:00.00 / 0:00:00.00")
         self.time_label.setObjectName("timecodeBadge")
         scrub_row.addWidget(self.btn_seek_start)
+        scrub_row.addWidget(self.btn_play_pause)
         scrub_row.addWidget(self.btn_step_back)
         scrub_row.addWidget(self.frame_slider, 1)
         scrub_row.addWidget(self.btn_step_fwd)
@@ -394,6 +414,9 @@ class MainWindow(QMainWindow):
         self.btn_clear_trim.setFixedHeight(24)
         self.btn_clear_trim.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_trim.setToolTip("Xóa giới hạn In/Out để quét toàn tập")
+
+        for trim_btn in (self.btn_set_in, self.btn_set_out, self.btn_clear_trim):
+            trim_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         trim_row.addWidget(self.btn_set_in)
         trim_row.addWidget(self.lbl_trim_range)
@@ -637,9 +660,11 @@ class MainWindow(QMainWindow):
         self.btn_delete_preset.clicked.connect(self.delete_current_preset)
 
         self.btn_seek_start.clicked.connect(self._seek_to_start)
+        self.btn_play_pause.clicked.connect(self.toggle_playback)
         self.btn_seek_end.clicked.connect(self._seek_to_end)
         self.btn_step_back.clicked.connect(lambda: self._step_frame(-1))
         self.btn_step_fwd.clicked.connect(lambda: self._step_frame(1))
+        self.frame_slider.sliderPressed.connect(self.stop_playback)
         self.frame_slider.sliderMoved.connect(self._on_slider_moved)
         self.frame_slider.valueChanged.connect(self._on_slider_value_changed)
         self.btn_set_in.clicked.connect(lambda: self.set_trim_in())
@@ -749,16 +774,64 @@ class MainWindow(QMainWindow):
         return False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if (
-            event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and not self._is_text_input_focused()
-        ):
-            if event.key() == Qt.Key.Key_I:
-                self.set_trim_in()
+        if not self._is_text_input_focused() and self._video_meta is not None and not self._is_running():
+            key = event.key()
+            mods = event.modifiers()
+            no_mod = mods == Qt.KeyboardModifier.NoModifier
+            shift_only = mods == Qt.KeyboardModifier.ShiftModifier
+            ctrl_only = mods == Qt.KeyboardModifier.ControlModifier
+
+            if key == Qt.Key.Key_Space and no_mod:
+                if not event.isAutoRepeat():
+                    self.toggle_playback()
                 event.accept()
                 return
-            if event.key() == Qt.Key.Key_O:
-                self.set_trim_out()
+            if key == Qt.Key.Key_I and no_mod:
+                if not event.isAutoRepeat():
+                    self.set_trim_in()
+                event.accept()
+                return
+            if key == Qt.Key.Key_O and no_mod:
+                if not event.isAutoRepeat():
+                    self.set_trim_out()
+                event.accept()
+                return
+            if (
+                (key in (Qt.Key.Key_Left, Qt.Key.Key_Comma) and no_mod)
+                or (key == Qt.Key.Key_Less and (no_mod or shift_only))
+            ):
+                self._step_frame(-1)
+                event.accept()
+                return
+            if (
+                (key in (Qt.Key.Key_Right, Qt.Key.Key_Period) and no_mod)
+                or (key == Qt.Key.Key_Greater and (no_mod or shift_only))
+            ):
+                self._step_frame(1)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Left and shift_only:
+                self._jump_ms(-1000)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Right and shift_only:
+                self._jump_ms(1000)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Left and ctrl_only:
+                self._jump_ms(-5000)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Right and ctrl_only:
+                self._jump_ms(5000)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Home and no_mod:
+                self._seek_to_start()
+                event.accept()
+                return
+            if key == Qt.Key.Key_End and no_mod:
+                self._seek_to_end()
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -775,6 +848,7 @@ class MainWindow(QMainWindow):
         self.btn_delete_preset.setEnabled(not running and self.preset_combo.currentIndex() > 0)
 
         self.btn_seek_start.setEnabled(has_video and not running)
+        self.btn_play_pause.setEnabled(has_video and not running)
         self.btn_step_back.setEnabled(has_video and not running)
         self.frame_slider.setEnabled(has_video and not running)
         self.btn_step_fwd.setEnabled(has_video and not running)
@@ -881,6 +955,8 @@ class MainWindow(QMainWindow):
         return deleted
 
     def _close_preview_reader(self) -> None:
+        self.stop_playback()
+        self._play_iter = None
         if self._preview_reader is not None:
             try:
                 self._preview_reader.close()
@@ -993,22 +1069,9 @@ class MainWindow(QMainWindow):
             self._preview_reader = VideoReader(self._video_path)
         return self._preview_reader
 
-    def seek_to_ms(self, target_ms: int) -> None:
-        """Seek preview canvas to the frame nearest ``target_ms``."""
-        if self._video_meta is None:
-            return
-        min_ms = self._start_pts_ms
-        max_ms = self._start_pts_ms + self._duration_ms
-        clamped = max(min_ms, min(int(target_ms), max_ms))
-        try:
-            reader = self._ensure_preview_reader()
-            if reader is None:
-                return
-            frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
-        except Exception as exc:
-            self.status_label.setText(f"Lỗi seek frame: {exc}")
-            return
-
+    def _display_preview_frame(
+        self, frame_idx: int, pts_ms: int, full_bgr: np.ndarray
+    ) -> None:
         self._current_frame_index = frame_idx
         self._current_frame_ms = pts_ms
         self._current_frame_bgr = full_bgr
@@ -1024,6 +1087,111 @@ class MainWindow(QMainWindow):
             f"{format_ass_time(rel_ms)} / {format_ass_time(self._duration_ms)}"
         )
 
+    def _update_play_button_icon(self) -> None:
+        if self._is_playing:
+            self.btn_play_pause.setIcon(make_icon("pause", color="#60A5FA", size=14))
+            self.btn_play_pause.setToolTip("Tạm dừng xem trước (Space)")
+        else:
+            self.btn_play_pause.setIcon(make_icon("play", size=14))
+            self.btn_play_pause.setToolTip("Phát xem trước (Space)")
+
+    def start_playback(self) -> None:
+        """Start sequential preview playback on the video canvas."""
+        if self._video_meta is None or self._is_running():
+            return
+        if self._is_playing:
+            return
+        reader = self._ensure_preview_reader()
+        if reader is None:
+            return
+
+        fps = max(1.0, float(self._video_meta.fps))
+        frame_ms = max(1, round(1000.0 / fps))
+        max_raw_ms = self._start_pts_ms + self._duration_ms
+        if self._duration_ms > 0 and self._current_frame_ms >= max_raw_ms - frame_ms:
+            start_raw = self._start_pts_ms
+        else:
+            start_raw = self._current_frame_ms + 1
+
+        try:
+            self._play_iter = reader.iter_full_frames_from_ms(start_raw)
+        except Exception as exc:
+            self.status_label.setText(f"Lỗi phát video: {exc}")
+            self._play_iter = None
+            return
+
+        self._is_playing = True
+        self._update_play_button_icon()
+        interval_ms = max(16, int(round(1000.0 / fps)))
+        self._play_timer.start(interval_ms)
+
+    def stop_playback(self) -> None:
+        """Pause sequential preview playback."""
+        if self._play_timer.isActive():
+            self._play_timer.stop()
+        if self._is_playing:
+            self._is_playing = False
+            self._update_play_button_icon()
+
+    def toggle_playback(self) -> None:
+        """Toggle video preview playback on/off."""
+        if self._is_playing:
+            self.stop_playback()
+        else:
+            self.start_playback()
+
+    def _advance_one_sequential_frame(self) -> bool:
+        """Decode and display the next sequential frame without re-seeking; returns False at EOF."""
+        if self._video_meta is None or self._is_running():
+            return False
+        reader = self._ensure_preview_reader()
+        if reader is None:
+            return False
+        if self._play_iter is None:
+            try:
+                self._play_iter = reader.iter_full_frames_from_ms(self._current_frame_ms + 1)
+            except Exception:
+                return False
+        try:
+            frame_idx, pts_ms, full_bgr = next(self._play_iter)
+        except StopIteration:
+            self._play_iter = None
+            return False
+        except Exception as exc:
+            self._play_iter = None
+            self.status_label.setText(f"Lỗi đọc frame: {exc}")
+            return False
+        self._display_preview_frame(frame_idx, pts_ms, full_bgr)
+        return True
+
+    @Slot()
+    def _on_playback_tick(self) -> None:
+        if not self._is_playing or self._video_meta is None or self._is_running():
+            self.stop_playback()
+            return
+        if not self._advance_one_sequential_frame():
+            self.stop_playback()
+
+    def seek_to_ms(self, target_ms: int) -> None:
+        """Seek preview canvas to the frame nearest ``target_ms``."""
+        if self._video_meta is None:
+            return
+        self.stop_playback()
+        self._play_iter = None
+        min_ms = self._start_pts_ms
+        max_ms = self._start_pts_ms + self._duration_ms
+        clamped = max(min_ms, min(int(target_ms), max_ms))
+        try:
+            reader = self._ensure_preview_reader()
+            if reader is None:
+                return
+            frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
+        except Exception as exc:
+            self.status_label.setText(f"Lỗi seek frame: {exc}")
+            return
+
+        self._display_preview_frame(frame_idx, pts_ms, full_bgr)
+
     def _on_slider_moved(self, offset_ms: int) -> None:
         if self._video_meta is None:
             return
@@ -1038,10 +1206,19 @@ class MainWindow(QMainWindow):
         self.seek_to_ms(self._start_pts_ms + int(offset_ms))
 
     def _step_frame(self, delta: int) -> None:
-        if self._video_meta is None:
+        if self._video_meta is None or self._is_running():
             return
+        self.stop_playback()
+        if delta == 1:
+            if self._advance_one_sequential_frame():
+                return
         step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
         self.seek_to_ms(self._current_frame_ms + delta * step_ms)
+
+    def _jump_ms(self, delta_ms: int) -> None:
+        if self._video_meta is None or self._is_running():
+            return
+        self.seek_to_ms(self._current_frame_ms + int(delta_ms))
 
     def _seek_to_start(self) -> None:
         if self._video_meta is None:
@@ -1069,6 +1246,7 @@ class MainWindow(QMainWindow):
         """Run stroke-mask + OCR on the currently previewed frame and display overlay."""
         if self._video_path is None or self._is_running():
             return None
+        self.stop_playback()
 
         config = self.build_config()
         roi = self.roi_canvas.roi()

@@ -50,6 +50,10 @@ _SVG_PATHS: dict[str, str] = {
         '<line x1="12" y1="7" x2="12" y2="17"/>'
     ),
     "play": '<polygon points="6 4 20 12 6 20 6 4"/>',
+    "pause": (
+        '<rect x="6" y="4" width="4" height="16" rx="1"/>'
+        '<rect x="14" y="4" width="4" height="16" rx="1"/>'
+    ),
     "stop": '<rect x="5" y="5" width="14" height="14" rx="2"/>',
     "export": (
         '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'

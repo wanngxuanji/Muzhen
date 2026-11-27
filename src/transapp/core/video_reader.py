@@ -200,6 +200,69 @@ class VideoReader:
             raise ValueError(f"No decodable video frames found in {self._path}")
         return result
 
+    def iter_full_frames_from_ms(
+        self, start_raw_ms: int
+    ) -> Iterator[tuple[int, int, np.ndarray]]:
+        """Stream sequential full BGR frames starting at or after ``start_raw_ms`` (no per-frame seek)."""
+        container, stream = self._ensure_open()
+        min_target_ms = min(0, self._start_pts_ms)
+        clamped_ms = max(min_target_ms, int(start_raw_ms))
+
+        did_seek = False
+        if clamped_ms <= self._start_pts_ms:
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=self._start_pts_ms,
+                first_pts_ticks=self._first_pts_ticks,
+            )
+        else:
+            tb = self._to_time_base_fraction(stream.time_base)
+            seek_ticks = math.floor(Fraction(clamped_ms, 1000) / tb)
+            try:
+                container.seek(seek_ticks, backward=True, any_frame=False, stream=stream)
+                did_seek = True
+            except av.error.FFmpegError:
+                self._seek_to_start(
+                    container,
+                    stream,
+                    start_pts_ms=self._start_pts_ms,
+                    first_pts_ticks=self._first_pts_ticks,
+                )
+
+        anchor_pts_ms = clamped_ms if did_seek else self._start_pts_ms
+        anchor_decoded_index = 0
+        has_real_pts = False
+        decoded_index = 0
+        prev_pts_ms: int | None = None
+        try:
+            for frame in container.decode(stream):
+                pts_ms = self._frame_pts_ms(
+                    frame,
+                    stream,
+                    decoded_index,
+                    prev_pts_ms,
+                    anchor_pts_ms=anchor_pts_ms,
+                    anchor_index=anchor_decoded_index,
+                    has_real_pts=has_real_pts,
+                )
+                if frame.pts is not None:
+                    anchor_pts_ms = pts_ms
+                    anchor_decoded_index = decoded_index
+                    has_real_pts = True
+                prev_pts_ms = pts_ms
+                decoded_index += 1
+
+                if pts_ms < clamped_ms:
+                    continue
+
+                rel_ms = max(0, pts_ms - self._start_pts_ms)
+                est_idx = int(round(Fraction(rel_ms) * self._fps_frac / 1000))
+                full_bgr = frame.to_ndarray(format="bgr24")
+                yield (est_idx, pts_ms, full_bgr)
+        except av.error.EOFError:
+            return
+
     def _ensure_open(self) -> tuple[av.container.InputContainer, av.video.stream.VideoStream]:
         if self._container is None or self._stream is None:
             raise ValueError("VideoReader is closed")

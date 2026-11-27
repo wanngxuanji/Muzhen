@@ -712,21 +712,28 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
     assert window._current_frame_ms == 5000
     assert window.time_label.text().startswith("0:00:00.00 / ")
 
-    # Spy on VideoReader.read_frame_at_ms and VideoReader.__init__
+    # Spy on VideoReader.read_frame_at_ms, iter_full_frames_from_ms, and VideoReader.__init__
     read_calls: list[int] = []
+    iter_calls: list[int] = []
     init_calls: list[Path] = []
     real_read = VideoReader.read_frame_at_ms
+    real_iter = VideoReader.iter_full_frames_from_ms
     real_init = VideoReader.__init__
 
     def spy_read(self, target_ms: int):
         read_calls.append(target_ms)
         return real_read(self, target_ms)
 
+    def spy_iter(self, start_raw_ms: int):
+        iter_calls.append(start_raw_ms)
+        return real_iter(self, start_raw_ms)
+
     def spy_init(self, path):
         init_calls.append(Path(path))
         return real_init(self, path)
 
     monkeypatch.setattr(VideoReader, "read_frame_at_ms", spy_read)
+    monkeypatch.setattr(VideoReader, "iter_full_frames_from_ms", spy_iter)
     monkeypatch.setattr(VideoReader, "__init__", spy_init)
 
     # sliderMoved updates time_label live WITHOUT decoding frames
@@ -742,9 +749,15 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
 
     # +1f, >|, |< work relative to [start_pts_ms, start_pts_ms + duration_ms]
     read_calls.clear()
+    iter_calls.clear()
     window.btn_step_fwd.click()
     assert window._current_frame_ms > 5120
-    assert len(read_calls) == 1
+    assert len(read_calls) + len(iter_calls) == 1
+    # Consecutive +1f reuses sequential stream without re-seeking
+    prev_ms = window._current_frame_ms
+    window.btn_step_fwd.click()
+    assert window._current_frame_ms > prev_ms
+    assert len(read_calls) + len(iter_calls) == 1
 
     window.btn_seek_end.click()
     assert window._current_frame_ms >= 5160
@@ -1186,5 +1199,95 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert window.lbl_trim_range.text() == "Toàn tập"
     assert window.btn_clear_trim.isEnabled() is False
     assert window.frame_slider.trim_range() == (None, None)
+    window.close()
+
+
+def test_main_window_playback_autorepeat_and_keyboard_scrubbing(qtbot, tmp_path: Path):
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "playback_test.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.6)
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "你好世界", 0.95]],
+            [0.01],
+        )
+    )
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    # Step buttons support press-and-hold auto-repeat and don't steal keyboard focus
+    assert window.btn_step_back.autoRepeat() is True
+    assert window.btn_step_fwd.autoRepeat() is True
+    assert window.btn_play_pause.isEnabled() is True
+    assert window.btn_play_pause.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.frame_slider.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+    # Keyboard stepping: Right / Period / Greater (+1f) and Left / Comma / Less (-1f)
+    start_ms = window._current_frame_ms
+    qtbot.keyClick(window, Qt.Key.Key_Right)
+    after_right = window._current_frame_ms
+    assert after_right > start_ms
+
+    qtbot.keyClick(window, Qt.Key.Key_Period)
+    after_period = window._current_frame_ms
+    assert after_period > after_right
+
+    qtbot.keyClick(window, Qt.Key.Key_Greater, Qt.KeyboardModifier.ShiftModifier)
+    after_gt = window._current_frame_ms
+    assert after_gt > after_period
+
+    qtbot.keyClick(window, Qt.Key.Key_Less, Qt.KeyboardModifier.ShiftModifier)
+    assert window._current_frame_ms < after_gt
+
+    qtbot.keyClick(window, Qt.Key.Key_Comma)
+    qtbot.keyClick(window, Qt.Key.Key_Left)
+    assert window._current_frame_ms <= after_right
+
+    # Shift+Right (+1s), Home (start), End (end)
+    qtbot.keyClick(window, Qt.Key.Key_Home)
+    assert window._current_frame_ms == window._start_pts_ms
+    qtbot.keyClick(window, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert window._current_frame_ms >= window._start_pts_ms + 900
+    qtbot.keyClick(window, Qt.Key.Key_End)
+    end_ms = window._current_frame_ms
+    assert end_ms >= window._start_pts_ms + 1000
+    qtbot.keyClick(window, Qt.Key.Key_Home)
+
+    # Space toggles Play/Pause and advances sequential frames cleanly
+    qtbot.keyClick(window, Qt.Key.Key_Space)
+    assert window._is_playing is True
+    t_before = window._current_frame_ms
+    window._on_playback_tick()
+    window._on_playback_tick()
+    assert window._current_frame_ms > t_before
+
+    # Second Space pauses cleanly
+    qtbot.keyClick(window, Qt.Key.Key_Space)
+    assert window._is_playing is False
+
+    # Playing from EOF wraps to start and auto-stops at EOF
+    window._seek_to_end()
+    window.start_playback()
+    assert window._is_playing is True
+    for _ in range(60):
+        if not window._is_playing:
+            break
+        window._on_playback_tick()
+    assert window._is_playing is False
+
+    # Space / Left / Right must NOT trigger playback or seek while typing in QLineEdit
+    window._seek_to_start()
+    window.radio_dir_custom.setChecked(True)
+    window.custom_dir_edit.setFocus()
+    qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_Space)
+    qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_Period)
+    assert window._is_playing is False
+    assert window._current_frame_ms == window._start_pts_ms
     window.close()
 
