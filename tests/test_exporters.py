@@ -496,3 +496,66 @@ def test_ass_and_srt_empty_cue_parity_chronological_sort_and_overlap_clamp(tmp_p
         srt_prev_end = e_ms
         srt_texts.append("\n".join(lines[2:]))
     assert srt_texts == ["碰撞前", "碰撞后", "重叠前句", "重叠后句", "同起点A", "同起点B"]
+
+
+def test_ass_snapping_edge_cases_trimmed_eof_short_and_vfr_fallback(tmp_path: Path):
+    # 1. Trimmed non-zero pts[0] > 0 keeps absolute timestamps & exact frame 0 / EOF visibility
+    trimmed_pts = [90007, 90049, 90090, 90132, 90174]
+    s0, e0 = snap_ass_centiseconds(90007, 90090, trimmed_pts)
+    assert s0 == 9000  # 90000ms <= 90007ms (frame 0 visible, NOT jumped to 0:00:00.00)
+    assert [s0 * 10 <= p < e0 * 10 for p in trimmed_pts] == [True, True, False, False, False]
+
+    s_eof, e_eof = snap_ass_centiseconds(90132, 90216, trimmed_pts)
+    assert [s_eof * 10 <= p < e_eof * 10 for p in trimmed_pts] == [False, False, False, True, True]
+
+    # 2. Symmetric EOF boundary snapping when last_pts % 10 < 5 (pts=[0, 42, 83])
+    short_pts = [0, 42, 83]
+    c1_s, c1_e = snap_ass_centiseconds(42, 84, short_pts)
+    c2_s, c2_e = snap_ass_centiseconds(84, 200, short_pts)
+    assert c1_e == c2_s == 9  # 90ms > 83ms; zero overlap and zero bleed
+    assert [c1_s * 10 <= p < c1_e * 10 for p in short_pts] == [False, True, True]
+    assert [c2_s * 10 <= p < c2_e * 10 for p in short_pts] == [False, False, False]
+
+    # 3. Trimmed boundary (42, 44) on pts=[0, 42, 83] must NOT drop frame 42
+    t_s, t_e = snap_ass_centiseconds(42, 44, short_pts)
+    assert [t_s * 10 <= p < t_e * 10 for p in short_pts] == [False, True, False]
+
+    # 4. < 10ms frame-gap VFR fallback (pts=[0, 12, 18, 50]): lo_cs=2 > hi_cs=1 -> half-up fallback
+    vfr_tight = [0, 12, 18, 50]
+    v_s, v_e = snap_ass_centiseconds(18, 50, vfr_tight)
+    assert v_s == 2  # half-up(18) = 2
+    assert v_e > v_s
+
+    # 5. 3-cue cascading overlap collision + normal Windows path without spurious \u200b
+    cascade_events = [
+        _event(1, 1000, 1004, r"C:\path\to\file"),
+        _event(2, 1004, 1008, "中段"),
+        _event(3, 1008, 2000, "尾段"),
+    ]
+    ass_path = tmp_path / "cascade.ass"
+    srt_path = tmp_path / "cascade.srt"
+    export_ass(cascade_events, ass_path, width=1920, height=1080)
+    export_srt(cascade_events, srt_path)
+
+    ass_lines = [
+        line for line in ass_path.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+    ]
+    assert len(ass_lines) == 3
+    ass_spans = []
+    for line in ass_lines:
+        fields = line.removeprefix("Dialogue: ").split(",", 9)
+        ass_spans.append((_parse_ass_ts_cs(fields[1]), _parse_ass_ts_cs(fields[2]), fields[9]))
+    assert ass_spans[0] == (100, 101, r"C:\path\to\file")
+    assert "\u200b" not in ass_spans[0][2]
+    assert ass_spans[1] == (101, 102, "中段")
+    assert ass_spans[2] == (102, 200, "尾段")
+
+    srt_blocks = [b for b in srt_path.read_text(encoding="utf-8").strip().split("\n\n") if b.strip()]
+    assert len(srt_blocks) == 3
+    srt_prev_end = -1
+    for block in srt_blocks:
+        s_str, e_str = block.splitlines()[1].split(" --> ")
+        s_ms, e_ms = _parse_srt_ts_ms(s_str), _parse_srt_ts_ms(e_str)
+        assert s_ms < e_ms
+        assert srt_prev_end <= s_ms
+        srt_prev_end = e_ms

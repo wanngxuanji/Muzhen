@@ -205,9 +205,11 @@ def _parse_ass_template(
                 break
         suffix_lines = lines[next_section_idx:] if next_section_idx is not None else []
 
-    while prefix_lines and prefix_lines[-1] == "":
+    while prefix_lines and not prefix_lines[-1].strip():
         prefix_lines.pop()
-    while suffix_lines and suffix_lines[-1] == "":
+    while suffix_lines and not suffix_lines[0].strip():
+        suffix_lines.pop(0)
+    while suffix_lines and not suffix_lines[-1].strip():
         suffix_lines.pop()
 
     prefix_lines, effective_res_y = _ensure_script_info_playres(prefix_lines, res_x, res_y)

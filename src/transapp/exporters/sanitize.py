@@ -48,8 +48,6 @@ def ms_to_ass_cs_half_up(ms: int) -> int:
 def _snap_boundary_cs(
     boundary_ms: int,
     frame_pts_ms: Sequence[int],
-    *,
-    is_end: bool = False,
 ) -> int:
     """Snap a cue boundary to the Aegisub/libass inter-frame midpoint centisecond."""
     b_ms = max(0, int(boundary_ms))
@@ -57,18 +55,9 @@ def _snap_boundary_cs(
     last_pts = int(frame_pts_ms[-1])
 
     if b_ms > last_pts:
-        half_up = ms_to_ass_cs_half_up(b_ms)
-        if is_end:
-            return max((last_pts // 10) + 1, half_up)
-        return half_up
+        return max((last_pts // 10) + 1, ms_to_ass_cs_half_up(b_ms))
 
     idx = bisect_left(frame_pts_ms, b_ms)
-    if idx > 0:
-        prev_pts = int(frame_pts_ms[idx - 1])
-        curr_pts = int(frame_pts_ms[idx])
-        if 0 < (b_ms - prev_pts) <= 2 and (curr_pts - prev_pts) >= 10:
-            idx -= 1
-
     if idx == 0:
         return min(max(0, first_pts // 10), ms_to_ass_cs_half_up(b_ms))
 
@@ -101,8 +90,8 @@ def snap_ass_centiseconds(
         end_cs = max(start_cs + 1, ms_to_ass_cs_half_up(e_ms))
         return (start_cs, end_cs)
 
-    start_cs = _snap_boundary_cs(s_ms, frame_pts_ms, is_end=False)
-    end_cs = _snap_boundary_cs(e_ms, frame_pts_ms, is_end=True)
+    start_cs = _snap_boundary_cs(s_ms, frame_pts_ms)
+    end_cs = _snap_boundary_cs(e_ms, frame_pts_ms)
     end_cs = max(start_cs + 1, end_cs)
     return (start_cs, end_cs)
 
