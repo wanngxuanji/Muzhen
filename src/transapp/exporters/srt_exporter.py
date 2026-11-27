@@ -6,7 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from transapp.core.models import SubtitleEvent
-from transapp.exporters.sanitize import clamp_non_overlapping_intervals, prepare_export_cues
+from transapp.exporters.sanitize import (
+    clamp_non_overlapping_intervals,
+    prepare_export_cues,
+    write_text_atomic,
+)
 
 
 def format_srt_time(ms: int) -> str:
@@ -37,6 +41,5 @@ def export_srt(events: Sequence[SubtitleEvent], output_path: Path) -> Path:
         )
 
     content = ("\n\n".join(blocks) + "\n") if blocks else ""
-    with out.open("w", encoding="utf-8", newline="\n") as fh:
-        fh.write(content)
+    write_text_atomic(out, content, encoding="utf-8", newline="\n")
     return out

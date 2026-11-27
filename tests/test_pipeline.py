@@ -598,4 +598,132 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     assert overshoot_scans[-1][1] >= expected_span - 80
 
 
+def test_test_single_frame_uses_zero_based_rel_ms_on_nonzero_start_pts(tmp_path: Path, monkeypatch):
+    import transapp.core.pipeline as pipeline_mod
+    from transapp.core.pipeline import ExtractionPipeline
+
+    video_path = tmp_path / "nonzero_single_frame.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        duration_sec=1.5,
+        start_pts_ms=5000,
+        cues=((200, 1200, "偏移单帧"),),
+    )
+
+    seen_targets: list[int] = []
+
+    class SpyVideoReader(VideoReader):
+        def read_frame_at_ms(self, target_ms: int):
+            seen_targets.append(target_ms)
+            return super().read_frame_at_ms(target_ms)
+
+    monkeypatch.setattr(pipeline_mod, "VideoReader", SpyVideoReader)
+
+    pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "偏移单帧", 0.94]],
+                [0.01],
+            )
+        )
+    )
+    roi = RoiRect(0.10, 0.74, 0.80, 0.20)
+    res = pipeline.test_single_frame(video_path, 600, roi, ExtractConfig())
+
+    assert len(seen_targets) == 1
+    assert seen_targets[0] == 5600  # start_pts_ms (5000) + rel frame_ms (600)
+    assert abs(res.pts_ms - 600) <= 60  # returned FrameTestResult.pts_ms is 0-based rel_ms
+    assert mask_fg_ratio(res.mask) > ExtractConfig().fg_ratio_min
+    assert res.text == "偏移单帧"
+
+
+def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_over_short_header(
+    tmp_path: Path, monkeypatch
+):
+    from dataclasses import replace as dc_replace
+    import transapp.core.pipeline as pipeline_mod
+    from transapp.core.models import OcrSegment
+    from transapp.core.pipeline import ExtractionPipeline
+
+    video_path = tmp_path / "trim_and_tail.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        duration_sec=1.0,
+        fps=25,
+        cues=((200, 1000, "尾帧测试"),),
+    )
+    roi = RoiRect(0.10, 0.74, 0.80, 0.20)
+
+    # 1. Missing video path must NOT evict _cached_ocr_engine even when config changes provider/model
+    cached_pipeline = ExtractionPipeline()
+    sentinel_engine = OcrEngine(provider="cpu", ocr_model="fast")
+    cached_pipeline._cached_ocr_engine = sentinel_engine
+    with pytest.raises(Exception):
+        cached_pipeline.run(
+            tmp_path / "does_not_exist.mp4",
+            roi,
+            ExtractConfig(provider="directml", ocr_model="accurate"),
+        )
+    assert cached_pipeline._cached_ocr_engine is sentinel_engine
+
+    # 2. trim_start_ms >= meta.duration_ms must raise ValueError (without evicting cached engine)
+    with VideoReader(video_path) as probe_reader:
+        actual_duration_ms = probe_reader.metadata.duration_ms
+    assert actual_duration_ms > 0
+
+    with pytest.raises(ValueError, match="trim_start_ms"):
+        cached_pipeline.run(
+            video_path,
+            roi,
+            ExtractConfig(provider="directml", ocr_model="accurate", trim_start_ms=actual_duration_ms),
+        )
+    assert cached_pipeline._cached_ocr_engine is sentinel_engine
+
+    with pytest.raises(ValueError, match="trim_start_ms"):
+        cached_pipeline.run(
+            video_path,
+            roi,
+            ExtractConfig(provider="cpu", trim_start_ms=actual_duration_ms + 500),
+        )
+
+    # 3. Under-reported container header duration_ms must not clip valid tail cue when trim_end is None
+    class ShortHeaderVideoReader(VideoReader):
+        @property
+        def metadata(self):
+            base = super().metadata
+            # Under-report header duration by 2 frames (80ms) relative to real 1000ms video
+            return dc_replace(base, duration_ms=max(100, base.duration_ms - 80))
+
+    monkeypatch.setattr(pipeline_mod, "VideoReader", ShortHeaderVideoReader)
+
+    def fake_recognize(spans, frame_pts_ms, ocr, config, **kwargs):
+        tail_end = frame_pts_ms[-1] + 40
+        return [
+            OcrSegment(
+                start_ms=200,
+                end_ms=tail_end,
+                text="尾帧测试",
+                confidence=0.96,
+                thumbnail_png=b"\x89PNG\r\n\x1a\n",
+            )
+        ]
+
+    monkeypatch.setattr(pipeline_mod, "recognize_spans_with_voting", fake_recognize)
+
+    tail_pipeline = ExtractionPipeline(
+        ocr_engine=OcrEngine(
+            ocr_callable=lambda _img: (
+                [[[[0, 0], [80, 0], [80, 24], [0, 24]], "尾帧测试", 0.96]],
+                [0.01],
+            )
+        )
+    )
+    result = tail_pipeline.run(video_path, roi, ExtractConfig(coarse_step=1))
+    assert len(result.events) == 1
+    expected_tail = result.frame_pts_ms[-1] + 40
+    assert result.duration_ms < expected_tail  # header genuinely under-reported
+    assert result.events[0].end_ms == expected_tail  # tail cue preserved intact
+
+
+
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from fractions import Fraction
 from pathlib import Path
 
+import pytest
+
 from transapp.core.models import SubtitleEvent
 from transapp.exporters import (
     export_ass as pkg_export_ass,
@@ -14,7 +16,7 @@ from transapp.exporters import (
     snap_ass_centiseconds as pkg_snap_ass_centiseconds,
 )
 from transapp.exporters.ass_exporter import export_ass, format_ass_time, list_ass_template_styles
-from transapp.exporters.sanitize import prepare_export_cues, snap_ass_centiseconds
+from transapp.exporters.sanitize import prepare_export_cues, snap_ass_centiseconds, write_text_atomic
 from transapp.exporters.srt_exporter import export_srt, format_srt_time
 
 
@@ -559,3 +561,231 @@ def test_ass_snapping_edge_cases_trimmed_eof_short_and_vfr_fallback(tmp_path: Pa
         assert s_ms < e_ms
         assert srt_prev_end <= s_ms
         srt_prev_end = e_ms
+
+
+def test_snap_ass_centiseconds_ntsc_1ms_overshoot_stays_on_nearest_frame():
+    # 23.976fps: +1ms overshoot (501 over 500) must snap to frame 500, not jump to 542
+    pts_23976 = [417, 459, 500, 542]
+    exact_s, exact_e = snap_ass_centiseconds(500, 542, pts_23976)
+    over_s, over_e = snap_ass_centiseconds(501, 542, pts_23976)
+    assert over_s == exact_s
+    assert over_e == exact_e
+    assert 459 < over_s * 10 <= 500
+    assert [over_s * 10 <= p < over_e * 10 for p in pts_23976] == [False, False, True, False]
+
+    # 29.97fps where nearest frame is frame 0 (idx == 1): 1035 over 1034 stays on 1034
+    pts_2997_head = [1034, 1068, 1101]
+    exact_s0, exact_e0 = snap_ass_centiseconds(1034, 1101, pts_2997_head)
+    over_s0, over_e0 = snap_ass_centiseconds(1035, 1101, pts_2997_head)
+    assert over_s0 == exact_s0 == 103
+    assert over_e0 == exact_e0
+    assert [over_s0 * 10 <= p < over_e0 * 10 for p in pts_2997_head] == [True, True, False]
+
+    # 29.97fps where nearest frame is interior (idx == 2): 1035 over 1034 stays on 1034
+    pts_2997_mid = [1001, 1034, 1068, 1101]
+    exact_sm, exact_em = snap_ass_centiseconds(1034, 1101, pts_2997_mid)
+    over_sm, over_em = snap_ass_centiseconds(1035, 1101, pts_2997_mid)
+    assert over_sm == exact_sm
+    assert over_em == exact_em
+    assert 1001 < over_sm * 10 <= 1034
+    assert [over_sm * 10 <= p < over_em * 10 for p in pts_2997_mid] == [False, True, True, False]
+
+
+def test_snap_ass_centiseconds_tail_does_not_bleed_past_unaligned_trim_end():
+    pts_23976 = [0, 42, 83, 125]
+    start_cs, end_cs = snap_ass_centiseconds(0, 166, pts_23976)
+    assert start_cs == 0
+    assert end_cs == 16  # 160ms <= 166ms, strictly > 125ms, never 170ms
+    assert [start_cs * 10 <= p < end_cs * 10 for p in pts_23976] == [True, True, True, True]
+
+    # Even 169ms floors to 160ms rather than rounding up to 170ms
+    _, end_cs_169 = snap_ass_centiseconds(0, 169, pts_23976)
+    assert end_cs_169 == 16
+
+    # Tail just 3ms past last_pts still stays strictly > last_pts ((125 // 10) + 1 = 13)
+    _, end_cs_128 = snap_ass_centiseconds(0, 128, pts_23976)
+    assert end_cs_128 == 13
+
+
+def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: Path):
+    # (a) [V4+ Styles] placed after [Events] must not duplicate [V4+ Styles] and must use its style
+    tpl_reordered = tmp_path / "styles_after_events.ass"
+    tpl_reordered.write_text(
+        "[Script Info]\n"
+        "Title: Reordered\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,LateStyle,,0,0,0,,OLD\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: LateStyle,Source Han Sans SC,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+        "0,0,0,0,100,100,0,0,1,2,1,2,20,20,30,1\n"
+        "\n"
+        "[Fonts]\n"
+        "fontname: test.ttf\n"
+        "!!!!fontdata!!!!\n"
+        "[A9]\n"
+        "[0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ]\n"
+        "[...!]\n"
+        "AFTER_BRACKET_PAYLOAD\n",
+        encoding="utf-8",
+    )
+    out_reordered = tmp_path / "out_reordered.ass"
+    export_ass(
+        [_event(1, 0, 1000, "顺序测试")],
+        out_reordered,
+        width=1920,
+        height=1080,
+        template_path=tpl_reordered,
+    )
+    reordered_text = out_reordered.read_text(encoding="utf-8")
+    assert reordered_text.count("[V4+ Styles]") == 1
+    assert reordered_text.index("[Script Info]") < reordered_text.index("[V4+ Styles]")
+    assert reordered_text.index("[V4+ Styles]") < reordered_text.index("[Events]")
+    assert reordered_text.index("[Events]") < reordered_text.index("[Fonts]")
+    assert "OLD" not in reordered_text
+    fonts_idx = reordered_text.index("[Fonts]")
+    for payload_line in (
+        "!!!!fontdata!!!!",
+        "[A9]",
+        "[0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ]",
+        "[...!]",
+        "AFTER_BRACKET_PAYLOAD",
+    ):
+        assert payload_line in reordered_text
+        assert reordered_text.index(payload_line) > fonts_idx
+    reordered_dialogues = [l for l in reordered_text.splitlines() if l.startswith("Dialogue:")]
+    assert len(reordered_dialogues) == 1
+    assert reordered_dialogues[0].removeprefix("Dialogue: ").split(",", 9)[3] == "LateStyle"
+
+    # (b) Empty [V4+ Styles] (no Style: lines, and no Format: line) must inject Format + Default style
+    tpl_empty_styles = tmp_path / "empty_styles.ass"
+    tpl_empty_styles.write_text(
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1280\n"
+        "PlayResY: 720\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "\n"
+        "[Events]\n",
+        encoding="utf-8",
+    )
+    out_empty_styles = tmp_path / "out_empty_styles.ass"
+    export_ass(
+        [_event(1, 0, 1000, "空样式测试")],
+        out_empty_styles,
+        width=1920,
+        height=1080,
+        template_path=tpl_empty_styles,
+    )
+    empty_styles_text = out_empty_styles.read_text(encoding="utf-8")
+    assert empty_styles_text.count("[V4+ Styles]") == 1
+    assert "Format: Name, Fontname," in empty_styles_text
+    assert "Style: Default," in empty_styles_text
+    assert "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,空样式测试" in empty_styles_text
+
+    # (c) UTF-16 LE BOM (and UTF-16 BE BOM) templates load & list styles cleanly
+    utf16_body = (
+        "[Script Info]\r\n"
+        "Title: UTF16 Template\r\n"
+        "ScriptType: v4.00+\r\n"
+        "PlayResX: 1920\r\n"
+        "PlayResY: 1080\r\n"
+        "\r\n"
+        "[V4+ Styles]\r\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n"
+        "Style: Utf16Style,Microsoft YaHei,54,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,0,0,1,2,1,2,20,20,30,1\r\n"
+        "\r\n"
+        "[Events]\r\n"
+    )
+    tpl_utf16_le = tmp_path / "tpl_utf16_le.ass"
+    tpl_utf16_le.write_bytes(b"\xff\xfe" + utf16_body.encode("utf-16-le"))
+    assert list_ass_template_styles(tpl_utf16_le) == ["Utf16Style"]
+
+    out_utf16_le = tmp_path / "out_utf16_le.ass"
+    export_ass(
+        [_event(1, 100, 900, "编码测试")],
+        out_utf16_le,
+        width=1920,
+        height=1080,
+        template_path=tpl_utf16_le,
+    )
+    out_utf16_bytes = out_utf16_le.read_bytes()
+    assert not out_utf16_bytes.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf"))
+    utf16_out_text = out_utf16_bytes.decode("utf-8")
+    assert "Title: UTF16 Template" in utf16_out_text
+    assert ",Utf16Style,,0,0,0,,编码测试" in utf16_out_text
+
+    tpl_utf16_be = tmp_path / "tpl_utf16_be.ass"
+    tpl_utf16_be.write_bytes(b"\xfe\xff" + utf16_body.encode("utf-16-be"))
+    assert list_ass_template_styles(tpl_utf16_be) == ["Utf16Style"]
+
+    # (d) Unsafe style_name with commas/newlines is sanitized safely without breaking Dialogue columns
+    out_sanitized = tmp_path / "out_sanitized_style.ass"
+    export_ass(
+        [_event(1, 0, 1000, "安全样式")],
+        out_sanitized,
+        width=1920,
+        height=1080,
+        template_path=tpl_utf16_le,
+        style_name="Bad,Style\nX",
+    )
+    sanitized_lines = out_sanitized.read_text(encoding="utf-8").splitlines()
+    sanitized_dialogues = [l for l in sanitized_lines if l.startswith("Dialogue:")]
+    assert len(sanitized_dialogues) == 1
+    assert "X" not in sanitized_lines  # newline must NOT inject an extra line
+    fields = sanitized_dialogues[0].removeprefix("Dialogue: ").split(",", 9)
+    assert len(fields) == 10
+    assert "," not in fields[3] and "\n" not in fields[3] and "\r" not in fields[3]
+    assert fields[9] == "安全样式"
+
+    # Style name that becomes empty after stripping disallowed chars falls back to default_style
+    out_fallback = tmp_path / "out_fallback_style.ass"
+    export_ass(
+        [_event(1, 0, 1000, "回退样式")],
+        out_fallback,
+        width=1920,
+        height=1080,
+        template_path=tpl_utf16_le,
+        style_name=",\r\n,",
+    )
+    fallback_dialogue = [
+        l for l in out_fallback.read_text(encoding="utf-8").splitlines() if l.startswith("Dialogue:")
+    ][0]
+    assert fallback_dialogue.removeprefix("Dialogue: ").split(",", 9)[3] == "Utf16Style"
+
+    # No stray .tmp files left behind from atomic writes
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_text_atomic_cleans_temp_file_and_preserves_target_on_error(
+    tmp_path: Path, monkeypatch
+):
+    import transapp.exporters.sanitize as sanitize_mod
+
+    target = tmp_path / "existing.ass"
+    target.write_text("ORIGINAL CONTENT\n", encoding="utf-8")
+
+    def fail_replace(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(sanitize_mod.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        write_text_atomic(target, "NEW CONTENT\n")
+
+    assert target.read_text(encoding="utf-8") == "ORIGINAL CONTENT\n"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+

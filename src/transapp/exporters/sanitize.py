@@ -5,7 +5,10 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import replace
+import os
+from pathlib import Path
 import re
+import tempfile
 
 from transapp.core.models import SubtitleEvent
 
@@ -45,6 +48,15 @@ def ms_to_ass_cs_half_up(ms: int) -> int:
     return (max(0, int(ms)) + 5) // 10
 
 
+def _midpoint_cs(prev_pts: int, curr_pts: int, fallback_ms: int) -> int:
+    lo_cs = (prev_pts // 10) + 1
+    hi_cs = curr_pts // 10
+    if lo_cs <= hi_cs:
+        mid_cs = (prev_pts + curr_pts + 10) // 20
+        return max(lo_cs, min(hi_cs, mid_cs))
+    return ms_to_ass_cs_half_up(fallback_ms)
+
+
 def _snap_boundary_cs(
     boundary_ms: int,
     frame_pts_ms: Sequence[int],
@@ -55,7 +67,7 @@ def _snap_boundary_cs(
     last_pts = int(frame_pts_ms[-1])
 
     if b_ms > last_pts:
-        return max((last_pts // 10) + 1, ms_to_ass_cs_half_up(b_ms))
+        return max((last_pts // 10) + 1, b_ms // 10)
 
     idx = bisect_left(frame_pts_ms, b_ms)
     if idx == 0:
@@ -63,12 +75,12 @@ def _snap_boundary_cs(
 
     prev_pts = int(frame_pts_ms[idx - 1])
     curr_pts = int(frame_pts_ms[idx])
-    lo_cs = (prev_pts // 10) + 1
-    hi_cs = curr_pts // 10
-    if lo_cs <= hi_cs:
-        mid_cs = (prev_pts + curr_pts + 10) // 20
-        return max(lo_cs, min(hi_cs, mid_cs))
-    return ms_to_ass_cs_half_up(b_ms)
+    if b_ms < curr_pts and (b_ms - prev_pts) <= (curr_pts - prev_pts) // 2:
+        if idx > 1:
+            return _midpoint_cs(int(frame_pts_ms[idx - 2]), prev_pts, prev_pts)
+        return min(max(0, first_pts // 10), ms_to_ass_cs_half_up(first_pts))
+
+    return _midpoint_cs(prev_pts, curr_pts, b_ms)
 
 
 def snap_ass_centiseconds(
@@ -92,6 +104,13 @@ def snap_ass_centiseconds(
 
     start_cs = _snap_boundary_cs(s_ms, frame_pts_ms)
     end_cs = _snap_boundary_cs(e_ms, frame_pts_ms)
+    if end_cs <= start_cs:
+        f = bisect_left(frame_pts_ms, start_cs * 10)
+        if f < len(frame_pts_ms) and _snap_boundary_cs(int(frame_pts_ms[f]), frame_pts_ms) == start_cs:
+            if f + 1 < len(frame_pts_ms):
+                end_cs = _snap_boundary_cs(int(frame_pts_ms[f + 1]), frame_pts_ms)
+            else:
+                end_cs = (int(frame_pts_ms[f]) // 10) + 1
     end_cs = max(start_cs + 1, end_cs)
     return (start_cs, end_cs)
 
@@ -124,3 +143,38 @@ def sanitize_ass_dialogue_text(text: str) -> str:
         safe = _ASS_ESCAPE_RE.sub("\\\\\u200b\\1", safe)
         escaped_lines.append(safe)
     return r"\N".join(escaped_lines)
+
+
+def write_text_atomic(
+    path: Path,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    newline: str = "\n",
+) -> None:
+    """Write text atomically via a same-directory temp file, fsync, and os.replace."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding=encoding,
+            newline=newline,
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = Path(fh.name)
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, target)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass

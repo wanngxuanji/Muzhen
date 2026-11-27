@@ -94,11 +94,14 @@ class ExtractionPipeline:
         roi: RoiRect,
         config: ExtractConfig,
     ) -> FrameTestResult:
-        """Decode one frame near frame_ms, build its stroke mask, and run OCR on the ROI."""
+        """Decode one frame near 0-based frame_ms, build its stroke mask, and run OCR on the ROI."""
         with VideoReader(video_path) as reader:
-            frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(frame_ms)
+            start_pts_ms = reader.metadata.start_pts_ms
+            target_raw_ms = start_pts_ms + max(0, int(frame_ms))
+            frame_idx, actual_raw_ms, full_bgr = reader.read_frame_at_ms(target_raw_ms)
 
-        return self.test_frame_bgr(full_bgr, frame_idx, pts_ms, roi, config)
+        rel_ms = max(0, actual_raw_ms - start_pts_ms)
+        return self.test_frame_bgr(full_bgr, frame_idx, rel_ms, roi, config)
 
     def run(
         self,
@@ -117,10 +120,14 @@ class ExtractionPipeline:
         if trim_end is not None and trim_end <= (trim_start or 0):
             raise ValueError("trim_start_ms must be smaller than trim_end_ms")
 
-        ocr = self._resolve_ocr_engine(config)
         source_path = Path(video_path)
         with VideoReader(source_path) as reader:
             meta = reader.metadata
+            if trim_start is not None and meta.duration_ms > 0 and trim_start >= meta.duration_ms:
+                raise ValueError(
+                    f"trim_start_ms ({trim_start}) must be smaller than video duration ({meta.duration_ms}ms)"
+                )
+            ocr = self._resolve_ocr_engine(config)
             start_pts_ms = meta.start_pts_ms
             if trim_end is not None:
                 effective_end_ms = min(meta.duration_ms, trim_end) if meta.duration_ms > 0 else trim_end
@@ -168,7 +175,17 @@ class ExtractionPipeline:
 
         _check_cancelled(cancel_check)
 
-        events = postprocess_segments(ocr_segments, config, duration_ms=effective_end_ms)
+        if trim_end is None and frame_pts_ms:
+            deltas = [b - a for a, b in zip(frame_pts_ms, frame_pts_ms[1:]) if b > a]
+            if deltas:
+                median_frame_ms = max(1, int(round(float(np.median(deltas)))))
+            else:
+                median_frame_ms = max(1, round(1000.0 / max(1.0, meta.fps)))
+            effective_duration_ms = max(meta.duration_ms, frame_pts_ms[-1] + median_frame_ms)
+        else:
+            effective_duration_ms = effective_end_ms
+
+        events = postprocess_segments(ocr_segments, config, duration_ms=effective_duration_ms)
         elapsed_sec = time.perf_counter() - t0
         if progress_cb is not None:
             progress_cb("done", len(events), len(events))

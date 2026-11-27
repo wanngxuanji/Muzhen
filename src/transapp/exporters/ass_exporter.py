@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+import re
 
 from transapp.core.models import SubtitleEvent
 from transapp.exporters.sanitize import (
@@ -12,6 +13,7 @@ from transapp.exporters.sanitize import (
     prepare_export_cues,
     sanitize_ass_dialogue_text,
     snap_ass_centiseconds,
+    write_text_atomic,
 )
 
 _EVENTS_FORMAT = "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -21,6 +23,22 @@ _STYLES_FORMAT = (
     "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
     "Alignment, MarginL, MarginR, MarginV, Encoding"
 )
+_TRAILING_SECTIONS = frozenset({"[fonts]", "[graphics]", "[aegisub extradata]"})
+_UUENCODED_SECTIONS = frozenset({"[fonts]", "[graphics]"})
+_KNOWN_ASS_SECTIONS = frozenset(
+    {
+        "[script info]",
+        "[v4+ styles]",
+        "[v4 styles]",
+        "[events]",
+        "[fonts]",
+        "[graphics]",
+        "[aegisub project garbage]",
+        "[aegisub extradata]",
+    }
+)
+_SECTION_HEADER_RE = re.compile(r"\[[A-Za-z0-9 _+\-]+\]")
+_UNSAFE_STYLE_CHARS_RE = re.compile(r"[,\r\n]+")
 
 
 def _format_ass_cs(total_cs: int) -> str:
@@ -39,17 +57,21 @@ def format_ass_time(ms: int) -> str:
     return _format_ass_cs(ms_to_ass_cs_half_up(ms))
 
 
-def _build_default_styles_section(video_height: int) -> list[str]:
+def _build_default_style_line(video_height: int) -> str:
     res_y = max(1, int(video_height))
     font_size = max(16, round(res_y * 0.055))
     margin_v = max(10, round(res_y * 0.04))
+    return (
+        f"Style: Default,Microsoft YaHei,{font_size},&H00FFFFFF,&H000000FF,"
+        f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,20,20,{margin_v},1"
+    )
+
+
+def _build_default_styles_section(video_height: int) -> list[str]:
     return [
         "[V4+ Styles]",
         _STYLES_FORMAT,
-        (
-            f"Style: Default,Microsoft YaHei,{font_size},&H00FFFFFF,&H000000FF,"
-            f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,20,20,{margin_v},1"
-        ),
+        _build_default_style_line(video_height),
     ]
 
 
@@ -72,8 +94,19 @@ def _build_default_header(video_width: int, video_height: int) -> list[str]:
 
 
 def _is_section_header(line: str) -> bool:
+    return _SECTION_HEADER_RE.fullmatch(line.strip()) is not None
+
+
+def _starts_new_section(line: str, current_key: str | None) -> bool:
     stripped = line.strip()
-    return len(stripped) >= 3 and stripped.startswith("[") and stripped.endswith("]")
+    if not _is_section_header(stripped):
+        return False
+    if current_key in _UUENCODED_SECTIONS:
+        lower = stripped.lower()
+        if lower in _KNOWN_ASS_SECTIONS:
+            return True
+        return any(("a" <= ch <= "z") or ch == " " for ch in stripped)
+    return True
 
 
 def _extract_styles_from_lines(lines: Sequence[str]) -> tuple[bool, list[str]]:
@@ -96,9 +129,26 @@ def _extract_styles_from_lines(lines: Sequence[str]) -> tuple[bool, list[str]]:
     return has_styles_section, styles
 
 
+def _read_template_text(path: Path) -> str:
+    """Decode ASS template with UTF-16 LE/BE BOM detection before falling back to UTF-8."""
+    raw_bytes = Path(path).read_bytes()
+    if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw_bytes.decode("utf-16")
+    return raw_bytes.decode("utf-8-sig")
+
+
+def _sanitize_style_name(style_name: str | None, fallback: str) -> str:
+    """Strip ASS field/line separators from style_name, falling back when empty."""
+    safe_fallback = _UNSAFE_STYLE_CHARS_RE.sub("", fallback).strip() or "Default"
+    if not style_name:
+        return safe_fallback
+    cleaned = _UNSAFE_STYLE_CHARS_RE.sub("", style_name).strip()
+    return cleaned or safe_fallback
+
+
 def list_ass_template_styles(template_path: Path) -> list[str]:
     """Return deduplicated style names declared under ``[V4+ Styles]`` in file order."""
-    raw = Path(template_path).read_text(encoding="utf-8-sig")
+    raw = _read_template_text(Path(template_path))
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     _, styles = _extract_styles_from_lines(lines)
     return styles
@@ -179,48 +229,124 @@ def _ensure_script_info_playres(
     return result, effective_res_y
 
 
+def _trim_blank_edges(lines: Sequence[str]) -> list[str]:
+    result = list(lines)
+    while result and not result[0].strip():
+        result.pop(0)
+    while result and not result[-1].strip():
+        result.pop()
+    return result
+
+
+def _split_ini_sections(
+    lines: Sequence[str],
+) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """Split ASS script lines into leading preamble and ordered ``(lower_header, block)`` pairs."""
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    current_key: str | None = None
+    current_block: list[str] = []
+
+    for line in lines:
+        if _starts_new_section(line, current_key):
+            if current_key is not None:
+                sections.append((current_key, _trim_blank_edges(current_block)))
+            current_key = line.strip().lower()
+            current_block = [line.strip()]
+        elif current_key is None:
+            preamble.append(line)
+        else:
+            current_block.append(line)
+
+    if current_key is not None:
+        sections.append((current_key, _trim_blank_edges(current_block)))
+
+    return _trim_blank_edges(preamble), sections
+
+
+def _join_section_blocks(blocks: Sequence[Sequence[str]]) -> list[str]:
+    joined: list[str] = []
+    for block in blocks:
+        trimmed = _trim_blank_edges(block)
+        if not trimmed:
+            continue
+        if joined:
+            joined.append("")
+        joined.extend(trimmed)
+    return joined
+
+
 def _parse_ass_template(
     template_path: Path,
     res_x: int,
     res_y: int,
 ) -> tuple[list[str], list[str], str]:
-    raw = Path(template_path).read_text(encoding="utf-8-sig")
+    raw = _read_template_text(Path(template_path))
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    preamble, sections = _split_ini_sections(lines)
 
-    events_idx: int | None = None
-    for idx, line in enumerate(lines):
-        if line.strip().lower() == "[events]":
-            events_idx = idx
-            break
+    script_info_block: list[str] | None = None
+    garbage_blocks: list[list[str]] = []
+    styles_block: list[str] | None = None
+    other_header_blocks: list[list[str]] = []
+    trailing_blocks: list[list[str]] = []
 
-    if events_idx is None:
-        prefix_lines = list(lines)
-        suffix_lines: list[str] = []
+    for sec_key, block in sections:
+        if sec_key == "[events]":
+            continue
+        if sec_key == "[script info]":
+            if script_info_block is None:
+                script_info_block = list(block)
+            else:
+                script_info_block.extend(block[1:])
+        elif sec_key == "[aegisub project garbage]":
+            garbage_blocks.append(list(block))
+        elif sec_key == "[v4+ styles]":
+            if styles_block is None:
+                styles_block = list(block)
+            else:
+                has_format = any(
+                    ln.strip().lower().startswith("format:") for ln in styles_block[1:]
+                )
+                for ln in block[1:]:
+                    if has_format and ln.strip().lower().startswith("format:"):
+                        continue
+                    styles_block.append(ln)
+        elif sec_key in _TRAILING_SECTIONS:
+            trailing_blocks.append(list(block))
+        else:
+            other_header_blocks.append(list(block))
+
+    script_info_seed = script_info_block if script_info_block is not None else preamble
+    script_info_lines, effective_res_y = _ensure_script_info_playres(
+        script_info_seed, res_x, res_y
+    )
+
+    if styles_block is None:
+        styles_block = _build_default_styles_section(effective_res_y)
+        styles = ["Default"]
     else:
-        prefix_lines = lines[:events_idx]
-        next_section_idx: int | None = None
-        for idx in range(events_idx + 1, len(lines)):
-            if _is_section_header(lines[idx]):
-                next_section_idx = idx
-                break
-        suffix_lines = lines[next_section_idx:] if next_section_idx is not None else []
+        _, styles = _extract_styles_from_lines(styles_block)
+        if not styles:
+            has_format = any(
+                ln.strip().lower().startswith("format:") for ln in styles_block[1:]
+            )
+            if not has_format:
+                styles_block.append(_STYLES_FORMAT)
+            styles_block.append(_build_default_style_line(effective_res_y))
+            styles = ["Default"]
 
-    while prefix_lines and not prefix_lines[-1].strip():
-        prefix_lines.pop()
-    while suffix_lines and not suffix_lines[0].strip():
-        suffix_lines.pop(0)
-    while suffix_lines and not suffix_lines[-1].strip():
-        suffix_lines.pop()
-
-    prefix_lines, effective_res_y = _ensure_script_info_playres(prefix_lines, res_x, res_y)
-    has_styles_section, styles = _extract_styles_from_lines(prefix_lines)
-    if not has_styles_section:
-        if prefix_lines:
-            prefix_lines.append("")
-        prefix_lines.extend(_build_default_styles_section(effective_res_y))
+    header_blocks: list[list[str]] = [
+        script_info_lines,
+        *garbage_blocks,
+        styles_block,
+        *other_header_blocks,
+    ]
+    header_lines = _join_section_blocks(header_blocks)
+    suffix_lines = _join_section_blocks(trailing_blocks)
 
     default_style = styles[0] if styles else "Default"
-    return prefix_lines, suffix_lines, default_style
+    return header_lines, suffix_lines, default_style
 
 
 def export_ass(
@@ -251,7 +377,7 @@ def export_ass(
         suffix_lines = []
         default_style = "Default"
 
-    chosen_style = style_name.strip() if (style_name and style_name.strip()) else default_style
+    chosen_style = _sanitize_style_name(style_name, default_style)
 
     output_lines = list(header_lines)
     if output_lines:
@@ -277,6 +403,5 @@ def export_ass(
         output_lines.append("")
         output_lines.extend(suffix_lines)
 
-    with out.open("w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n".join(output_lines) + "\n")
+    write_text_atomic(out, "\n".join(output_lines) + "\n", encoding="utf-8", newline="\n")
     return out
