@@ -218,6 +218,8 @@ def _normalize_det_roi(roi: np.ndarray | None) -> np.ndarray | None:
     """Validate and coerce an ROI into a 3-channel uint8 BGR array for Det Mobile."""
     if roi is None or not isinstance(roi, np.ndarray) or roi.size == 0 or roi.ndim < 2:
         return None
+    if roi.dtype != np.uint8:
+        roi = np.clip(roi, 0, 255).astype(np.uint8)
     if roi.ndim == 2:
         return cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
     if roi.ndim == 3:
@@ -312,6 +314,8 @@ class OcrEngine:
     def _init_rapidocr_with_fallback(
         self,
         params_builder: Callable[..., dict[str, Any]],
+        *,
+        eager_det_check: bool = False,
     ) -> tuple[Any, bool]:
         import rapidocr
 
@@ -324,7 +328,17 @@ class OcrEngine:
                 return rapidocr.RapidOCR(params=cpu_params), False
             try:
                 dml_params = params_builder(use_dml=True)
-                return rapidocr.RapidOCR(params=dml_params), True
+                engine = rapidocr.RapidOCR(params=dml_params)
+                dml_active = True
+                if eager_det_check:
+                    load_det = getattr(engine, "_load_det_model", None)
+                    if callable(load_det):
+                        det_model = load_det()
+                        ort_sess = getattr(getattr(det_model, "session", None), "session", None)
+                        get_providers = getattr(ort_sess, "get_providers", None)
+                        if callable(get_providers):
+                            dml_active = "DmlExecutionProvider" in get_providers()
+                return engine, dml_active
             except Exception as exc:
                 logger.warning(
                     "Failed to initialize RapidOCR with DirectML (%s); falling back to CPU OCR.",
@@ -344,7 +358,8 @@ class OcrEngine:
         if self._det_engine is not None:
             return self._det_engine
         self._det_engine, self._det_dml_active = self._init_rapidocr_with_fallback(
-            lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml)
+            lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml),
+            eager_det_check=True,
         )
         return self._det_engine
 
@@ -354,7 +369,16 @@ class OcrEngine:
         rois: list[np.ndarray],
     ) -> list[list[tuple[float, float, float, float]]]:
         """Legacy vertical grid path retained exclusively for injected mock det_callable tests."""
-        h0, w0 = rois[0].shape[:2]
+        first_valid: np.ndarray | None = None
+        for raw_roi in rois:
+            normalized = _normalize_det_roi(raw_roi)
+            if normalized is not None:
+                first_valid = normalized
+                break
+        if first_valid is None:
+            return [[] for _ in rois]
+
+        h0, w0 = first_valid.shape[:2]
         if w0 > _GRID_MAX_WIDTH:
             scale = _GRID_MAX_WIDTH / float(w0)
             cell_w = _GRID_MAX_WIDTH
@@ -377,7 +401,10 @@ class OcrEngine:
             grid_h = _GRID_PAD_Y + len(chunk) * stride_y
             grid_w = cell_w + 2 * _GRID_PAD_X
             canvas = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
-            for idx, roi in enumerate(chunk):
+            for idx, raw_roi in enumerate(chunk):
+                roi = _normalize_det_roi(raw_roi)
+                if roi is None:
+                    continue
                 if roi.shape[0] != cell_h or roi.shape[1] != cell_w:
                     interp = cv2.INTER_AREA if roi.shape[1] > cell_w else cv2.INTER_CUBIC
                     resized = cv2.resize(roi, (cell_w, cell_h), interpolation=interp)
@@ -463,7 +490,11 @@ class OcrEngine:
                 continue
 
             _, _, h0, w0 = valid_entries[0]
-            scale = min(1.0, float(_DET_BATCH_MAX_WIDTH) / float(w0))
+            scale = min(
+                1.0,
+                float(_DET_BATCH_MAX_WIDTH) / float(w0),
+                float(_DET_LIMIT_SIDE_LEN) / float(h0),
+            )
             tw = max(32, round(w0 * scale))
             th = max(32, round(h0 * scale))
             rw = max(32, int(round(tw / 32.0)) * 32)

@@ -451,3 +451,141 @@ def test_detect_batch_preserves_small_subtitle_in_tall_roi():
     assert len(results[0]) >= 1
     assert any(0.02 < (y2 - y1) < 0.05 for (_x1, y1, _x2, y2) in results[0])
 
+
+def test_det_directml_lazy_load_failure_and_silent_cpu_fallback(monkeypatch, caplog):
+    import onnxruntime
+    import rapidocr
+
+    monkeypatch.setattr(
+        onnxruntime,
+        "get_available_providers",
+        lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    # Case 1: RapidOCR.__init__ succeeds with use_dml=True, but lazy _load_det_model() fails
+    init_flags: list[bool] = []
+
+    class FakeLazyFailRapidOCR:
+        def __init__(self, params=None):
+            self._use_dml = bool((params or {}).get("EngineConfig.onnxruntime.use_dml"))
+            init_flags.append(self._use_dml)
+
+        def _load_det_model(self):
+            if self._use_dml:
+                raise RuntimeError("DirectML session creation failed lazily")
+
+            class _FakeOrtSession:
+                def get_providers(self):
+                    return ["CPUExecutionProvider"]
+
+            class _FakeSession:
+                session = _FakeOrtSession()
+
+                def __call__(self, tensor: np.ndarray) -> np.ndarray:
+                    n, _c, h, w = tensor.shape
+                    return np.zeros((n, 1, h, w), dtype=np.float32)
+
+            class _FakeDetModel:
+                mean = [0.5, 0.5, 0.5]
+                std = [0.5, 0.5, 0.5]
+                session = _FakeSession()
+
+                @staticmethod
+                def postprocess_op(_pred, _shape):
+                    return np.empty((0, 4, 2), dtype=np.float32), []
+
+            return _FakeDetModel()
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakeLazyFailRapidOCR)
+    caplog.set_level(logging.WARNING)
+    eng1 = OcrEngine(provider="directml")
+    assert eng1.det_batch_size == 16
+    assert eng1.detect_grid_batch([_make_bgr(64, 320)]) == [[]]
+    assert init_flags == [True, False]
+    assert eng1.det_batch_size == 8
+    assert any("directml" in rec.message.lower() for rec in caplog.records)
+
+    # Case 2: _load_det_model() succeeds without raising, but ORT silently dropped DirectML to CPU
+    class FakeSilentCpuFallbackRapidOCR:
+        def __init__(self, params=None):
+            self.params = params or {}
+
+        def _load_det_model(self):
+            class _FakeOrtSession:
+                def get_providers(self):
+                    return ["CPUExecutionProvider"]
+
+            class _FakeSession:
+                session = _FakeOrtSession()
+
+                def __call__(self, tensor: np.ndarray) -> np.ndarray:
+                    n, _c, h, w = tensor.shape
+                    return np.zeros((n, 1, h, w), dtype=np.float32)
+
+            class _FakeDetModel:
+                mean = [0.5, 0.5, 0.5]
+                std = [0.5, 0.5, 0.5]
+                session = _FakeSession()
+
+                @staticmethod
+                def postprocess_op(_pred, _shape):
+                    return np.empty((0, 4, 2), dtype=np.float32), []
+
+            return _FakeDetModel()
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakeSilentCpuFallbackRapidOCR)
+    eng2 = OcrEngine(provider="directml")
+    assert eng2.det_batch_size == 16
+    assert eng2.detect_grid_batch([_make_bgr(64, 320)]) == [[]]
+    assert eng2.det_batch_size == 8
+
+
+def test_detect_batch_empty_zero_size_dtype_and_portrait_height_cap():
+    dark_roi = _load_bgr(FIXTURES_DIR / "sample_dark_bg.png")
+    empty_roi = np.empty((0, 0, 3), dtype=np.uint8)
+    float_roi = dark_roi.astype(np.float32)
+
+    engine = OcrEngine(provider="cpu")
+    assert engine.detect_grid_batch([]) == []
+
+    # Mixed zero-size ROI + uint8 ROI + float32 ROI in a real 4D batch
+    mixed = engine.detect_grid_batch([empty_roi, dark_roi, float_roi])
+    assert len(mixed) == 3
+    assert mixed[0] == []
+    assert len(mixed[1]) >= 1
+    assert len(mixed[2]) >= 1
+
+    # Pathological portrait ROI (w <= 640, h >> 960) stays capped at rh <= 960
+    det_model = engine._ensure_det_engine()._load_det_model()
+    seen_shapes: list[tuple[int, ...]] = []
+    orig_session = det_model.session
+
+    def spy_session(batch_tensor: np.ndarray) -> np.ndarray:
+        seen_shapes.append(tuple(batch_tensor.shape))
+        return orig_session(batch_tensor)
+
+    det_model.session = spy_session
+    portrait_roi = _make_bgr(2400, 400, color=(20, 20, 20))
+    assert engine.detect_grid_batch([portrait_roi]) == [[]]
+    assert len(seen_shapes) == 1
+    assert seen_shapes[0][2] <= 960
+
+    # Injected det_callable path also tolerates all-empty or leading-empty ROIs
+    called = 0
+
+    def fake_det(_canvas: np.ndarray):
+        nonlocal called
+        called += 1
+
+        class _Out:
+            boxes = None
+
+        return _Out()
+
+    det_mock = OcrEngine(det_callable=fake_det)
+    assert det_mock.detect_grid_batch([empty_roi]) == [[]]
+    assert called == 0
+    assert det_mock.detect_grid_batch([empty_roi, _make_bgr(64, 320)]) == [[], []]
+    assert called == 1
+
+
