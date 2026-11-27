@@ -128,12 +128,10 @@ def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: 
 
     store = PresetStore(config_dir=tmp_path)
 
-    # 1. Corrupt/truncated JSON returns empty cleanly
     store.presets_path.write_text('{"bad": ', encoding="utf-8")
     assert store.list_names() == []
     assert store.load("bad") is None
 
-    # 2. Invalid UTF-8 bytes or non-object JSON root return empty cleanly
     store.presets_path.write_bytes(b"\xff\xfe\xfd")
     assert store.list_names() == []
     assert store.load("any") is None
@@ -141,7 +139,6 @@ def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: 
     store.presets_path.write_text("[1, 2, 3]", encoding="utf-8")
     assert store.list_names() == []
 
-    # 3. Malformed entries return None on load() without crashing
     import json
 
     malformed_payload = {
@@ -185,7 +182,6 @@ def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: 
         conf_threshold=0.85,
     )
 
-    # 4. Atomic write via os.replace preserves previous file if replace fails
     replace_calls: list[tuple[Path, Path]] = []
     real_replace = os.replace
 

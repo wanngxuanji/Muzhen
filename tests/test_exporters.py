@@ -53,7 +53,6 @@ def test_format_ass_time_rounding_carry_and_clamping():
     assert format_ass_time(-100) == "0:00:00.00"
     assert format_ass_time(0) == "0:00:00.00"
     assert format_ass_time(3723456) == "1:02:03.46"
-    # Centisecond carry must roll into seconds/minutes/hours, never emit .100
     assert format_ass_time(9999) == "0:00:10.00"
     assert format_ass_time(59999) == "0:01:00.00"
     assert format_ass_time(3599999) == "1:00:00.00"
@@ -100,7 +99,7 @@ def test_export_ass_default_layout_actor_flag_and_newlines(tmp_path: Path):
 
     fields_1 = dialogue_lines[1].removeprefix("Dialogue: ").split(",", 9)
     assert fields_1[1] == "0:00:03.00"
-    assert fields_1[2] == "0:00:03.01"  # clamped >= start_cs + 1
+    assert fields_1[2] == "0:00:03.01"
     assert fields_1[3] == "Default"
     assert fields_1[4] == "CHECK_0.74"
     assert fields_1[9] == r"可疑文本\N换行"
@@ -252,7 +251,6 @@ def _build_cfr_pts(fps: Fraction, count: int) -> list[int]:
 
 
 def _build_vfr_pts(count: int) -> list[int]:
-    # Cycle through 12fps (83.33ms), 24fps (41.67ms), and 60fps (16.67ms)
     rates = [Fraction(12, 1), Fraction(24, 1), Fraction(60, 1)]
     pts: list[int] = [0]
     t = Fraction(0, 1)
@@ -264,7 +262,6 @@ def _build_vfr_pts(count: int) -> list[int]:
 
 
 def test_ass_midpoint_snapping_100_percent_libass_visibility_oracle(tmp_path: Path):
-    # Deterministic half-up fallback when frame_pts_ms is None or too short
     assert snap_ass_centiseconds(5, 25, None) == (1, 3)
     assert snap_ass_centiseconds(15, 35, [0]) == (2, 4)
 
@@ -283,13 +280,11 @@ def test_ass_midpoint_snapping_100_percent_libass_visibility_oracle(tmp_path: Pa
         cursor = 0
         for cue_idx in range(200):
             if cue_idx == 199:
-                # Final cue reaches EOF (covers last frame)
                 f_start = len(pts) - 5
                 f_end = len(pts)
                 start_ms = pts[f_start]
                 end_ms = pts[-1] + max(16, pts[-1] - pts[-2])
             else:
-                # Mix 0ms back-to-back cuts, 1-frame cues, short cues, and gaps
                 gap = 0 if (cue_idx % 3 == 0) else (1 if cue_idx % 3 == 1 else 2)
                 if cue_idx == 0:
                     gap = 0
@@ -319,7 +314,6 @@ def test_ass_midpoint_snapping_100_percent_libass_visibility_oracle(tmp_path: Pa
             assert prev_end_cs <= start_cs, f"{label} cue {cue_idx}: overlap {prev_end_cs} > {start_cs}"
             prev_end_cs = end_cs
 
-            # Libass visibility oracle: start_cs * 10 <= pts[f] < end_cs * 10
             check_lo = max(0, f_start - 3)
             check_hi = min(len(pts), f_end + 3)
             for f in range(check_lo, check_hi):
@@ -408,7 +402,6 @@ def test_ass_escapes_braces_and_literal_backslash_n_and_preserves_fonts_section(
     assert "\\\u200bhspace" in text_field
     assert "\\\u200bnend" in text_field
 
-    # Valid template PlayResX/PlayResY must be preserved even when video dimensions differ
     template_valid_res = tmp_path / "tpl_valid_res.ass"
     template_valid_res.write_text(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n",
@@ -460,7 +453,6 @@ def test_ass_and_srt_empty_cue_parity_chronological_sort_and_overlap_clamp(tmp_p
     export_ass(events, ass_path, width=1920, height=1080)
     export_srt(events, srt_path)
 
-    # Caller input must remain untouched
     assert [(ev.index, ev.start_ms, ev.end_ms, ev.text) for ev in events] == original_snapshot
 
     ass_dialogues = [
@@ -471,7 +463,6 @@ def test_ass_and_srt_empty_cue_parity_chronological_sort_and_overlap_clamp(tmp_p
     ]
     assert len(ass_dialogues) == len(srt_blocks) == 6
 
-    # Verify ASS strict ordering, zero overlaps, positive durations
     ass_prev_end = -1
     ass_texts: list[str] = []
     for line in ass_dialogues:
@@ -484,7 +475,6 @@ def test_ass_and_srt_empty_cue_parity_chronological_sort_and_overlap_clamp(tmp_p
         ass_texts.append(fields[9])
     assert ass_texts == ["碰撞前", "碰撞后", "重叠前句", "重叠后句", "同起点A", "同起点B"]
 
-    # Verify SRT strict ordering, zero overlaps, positive durations
     srt_prev_end = -1
     srt_texts: list[str] = []
     for idx, block in enumerate(srt_blocks, start=1):
@@ -501,34 +491,29 @@ def test_ass_and_srt_empty_cue_parity_chronological_sort_and_overlap_clamp(tmp_p
 
 
 def test_ass_snapping_edge_cases_trimmed_eof_short_and_vfr_fallback(tmp_path: Path):
-    # 1. Trimmed non-zero pts[0] > 0 keeps absolute timestamps & exact frame 0 / EOF visibility
     trimmed_pts = [90007, 90049, 90090, 90132, 90174]
     s0, e0 = snap_ass_centiseconds(90007, 90090, trimmed_pts)
-    assert s0 == 9000  # 90000ms <= 90007ms (frame 0 visible, NOT jumped to 0:00:00.00)
+    assert s0 == 9000
     assert [s0 * 10 <= p < e0 * 10 for p in trimmed_pts] == [True, True, False, False, False]
 
     s_eof, e_eof = snap_ass_centiseconds(90132, 90216, trimmed_pts)
     assert [s_eof * 10 <= p < e_eof * 10 for p in trimmed_pts] == [False, False, False, True, True]
 
-    # 2. Symmetric EOF boundary snapping when last_pts % 10 < 5 (pts=[0, 42, 83])
     short_pts = [0, 42, 83]
     c1_s, c1_e = snap_ass_centiseconds(42, 84, short_pts)
     c2_s, c2_e = snap_ass_centiseconds(84, 200, short_pts)
-    assert c1_e == c2_s == 9  # 90ms > 83ms; zero overlap and zero bleed
+    assert c1_e == c2_s == 9
     assert [c1_s * 10 <= p < c1_e * 10 for p in short_pts] == [False, True, True]
     assert [c2_s * 10 <= p < c2_e * 10 for p in short_pts] == [False, False, False]
 
-    # 3. Trimmed boundary (42, 44) on pts=[0, 42, 83] must NOT drop frame 42
     t_s, t_e = snap_ass_centiseconds(42, 44, short_pts)
     assert [t_s * 10 <= p < t_e * 10 for p in short_pts] == [False, True, False]
 
-    # 4. < 10ms frame-gap VFR fallback (pts=[0, 12, 18, 50]): lo_cs=2 > hi_cs=1 -> half-up fallback
     vfr_tight = [0, 12, 18, 50]
     v_s, v_e = snap_ass_centiseconds(18, 50, vfr_tight)
-    assert v_s == 2  # half-up(18) = 2
+    assert v_s == 2
     assert v_e > v_s
 
-    # 5. 3-cue cascading overlap collision + normal Windows path without spurious \u200b
     cascade_events = [
         _event(1, 1000, 1004, r"C:\path\to\file"),
         _event(2, 1004, 1008, "中段"),
@@ -564,7 +549,6 @@ def test_ass_snapping_edge_cases_trimmed_eof_short_and_vfr_fallback(tmp_path: Pa
 
 
 def test_snap_ass_centiseconds_ntsc_1ms_overshoot_stays_on_nearest_frame():
-    # 23.976fps: +1ms overshoot (501 over 500) must snap to frame 500, not jump to 542
     pts_23976 = [417, 459, 500, 542]
     exact_s, exact_e = snap_ass_centiseconds(500, 542, pts_23976)
     over_s, over_e = snap_ass_centiseconds(501, 542, pts_23976)
@@ -573,7 +557,6 @@ def test_snap_ass_centiseconds_ntsc_1ms_overshoot_stays_on_nearest_frame():
     assert 459 < over_s * 10 <= 500
     assert [over_s * 10 <= p < over_e * 10 for p in pts_23976] == [False, False, True, False]
 
-    # 29.97fps where nearest frame is frame 0 (idx == 1): 1035 over 1034 stays on 1034
     pts_2997_head = [1034, 1068, 1101]
     exact_s0, exact_e0 = snap_ass_centiseconds(1034, 1101, pts_2997_head)
     over_s0, over_e0 = snap_ass_centiseconds(1035, 1101, pts_2997_head)
@@ -581,7 +564,6 @@ def test_snap_ass_centiseconds_ntsc_1ms_overshoot_stays_on_nearest_frame():
     assert over_e0 == exact_e0
     assert [over_s0 * 10 <= p < over_e0 * 10 for p in pts_2997_head] == [True, True, False]
 
-    # 29.97fps where nearest frame is interior (idx == 2): 1035 over 1034 stays on 1034
     pts_2997_mid = [1001, 1034, 1068, 1101]
     exact_sm, exact_em = snap_ass_centiseconds(1034, 1101, pts_2997_mid)
     over_sm, over_em = snap_ass_centiseconds(1035, 1101, pts_2997_mid)
@@ -595,20 +577,17 @@ def test_snap_ass_centiseconds_tail_does_not_bleed_past_unaligned_trim_end():
     pts_23976 = [0, 42, 83, 125]
     start_cs, end_cs = snap_ass_centiseconds(0, 166, pts_23976)
     assert start_cs == 0
-    assert end_cs == 16  # 160ms <= 166ms, strictly > 125ms, never 170ms
+    assert end_cs == 16
     assert [start_cs * 10 <= p < end_cs * 10 for p in pts_23976] == [True, True, True, True]
 
-    # Even 169ms floors to 160ms rather than rounding up to 170ms
     _, end_cs_169 = snap_ass_centiseconds(0, 169, pts_23976)
     assert end_cs_169 == 16
 
-    # Tail just 3ms past last_pts still stays strictly > last_pts ((125 // 10) + 1 = 13)
     _, end_cs_128 = snap_ass_centiseconds(0, 128, pts_23976)
     assert end_cs_128 == 13
 
 
 def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: Path):
-    # (a) [V4+ Styles] placed after [Events] must not duplicate [V4+ Styles] and must use its style
     tpl_reordered = tmp_path / "styles_after_events.ass"
     tpl_reordered.write_text(
         "[Script Info]\n"
@@ -665,7 +644,6 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
     assert len(reordered_dialogues) == 1
     assert reordered_dialogues[0].removeprefix("Dialogue: ").split(",", 9)[3] == "LateStyle"
 
-    # (b) Empty [V4+ Styles] (no Style: lines, and no Format: line) must inject Format + Default style
     tpl_empty_styles = tmp_path / "empty_styles.ass"
     tpl_empty_styles.write_text(
         "[Script Info]\n"
@@ -692,7 +670,6 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
     assert "Style: Default," in empty_styles_text
     assert "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,空样式测试" in empty_styles_text
 
-    # (c) UTF-16 LE BOM (and UTF-16 BE BOM) templates load & list styles cleanly
     utf16_body = (
         "[Script Info]\r\n"
         "Title: UTF16 Template\r\n"
@@ -731,7 +708,6 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
     tpl_utf16_be.write_bytes(b"\xfe\xff" + utf16_body.encode("utf-16-be"))
     assert list_ass_template_styles(tpl_utf16_be) == ["Utf16Style"]
 
-    # (d) Unsafe style_name with commas/newlines is sanitized safely without breaking Dialogue columns
     out_sanitized = tmp_path / "out_sanitized_style.ass"
     export_ass(
         [_event(1, 0, 1000, "安全样式")],
@@ -744,13 +720,12 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
     sanitized_lines = out_sanitized.read_text(encoding="utf-8").splitlines()
     sanitized_dialogues = [l for l in sanitized_lines if l.startswith("Dialogue:")]
     assert len(sanitized_dialogues) == 1
-    assert "X" not in sanitized_lines  # newline must NOT inject an extra line
+    assert "X" not in sanitized_lines
     fields = sanitized_dialogues[0].removeprefix("Dialogue: ").split(",", 9)
     assert len(fields) == 10
     assert "," not in fields[3] and "\n" not in fields[3] and "\r" not in fields[3]
     assert fields[9] == "安全样式"
 
-    # Style name that becomes empty after stripping disallowed chars falls back to default_style
     out_fallback = tmp_path / "out_fallback_style.ass"
     export_ass(
         [_event(1, 0, 1000, "回退样式")],
@@ -765,7 +740,6 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
     ][0]
     assert fallback_dialogue.removeprefix("Dialogue: ").split(",", 9)[3] == "Utf16Style"
 
-    # No stray .tmp files left behind from atomic writes
     assert list(tmp_path.glob("*.tmp")) == []
 
 
@@ -787,5 +761,4 @@ def test_write_text_atomic_cleans_temp_file_and_preserves_target_on_error(
 
     assert target.read_text(encoding="utf-8") == "ORIGINAL CONTENT\n"
     assert list(tmp_path.glob("*.tmp")) == []
-
 

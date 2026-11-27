@@ -83,8 +83,6 @@ def fg_pixel_thresholds(
 
     scaled_min = max(16, int(round(_FG_PX_MIN_SCALE * frame_h * frame_h)))
     scaled_edge = max(8, int(round(_FG_PX_EDGE_SCALE * frame_h * frame_h)))
-    # Use the smaller of ratio-based and frame-scaled pixel counts so wide ROIs never drop
-    # short 1-2 character cues ("嗯。", "好！"), while keeping a safe absolute floor.
     fg_min_px = min(ratio_min_px, scaled_min)
     fg_edge_px = min(ratio_edge_px, scaled_edge, fg_min_px)
     return (max(1, fg_min_px), max(1, fg_edge_px))
@@ -115,10 +113,7 @@ def _has_directional_outline(
 
     has_bilateral_side = (left_dark >= 2) and (right_dark >= 2)
 
-    # Only evaluate opposite-side support on sides not clipped by the ROI border.
     if touches_top and not touches_bottom:
-        # Clipped at top (e.g. claw hanging from y=0): real glyphs still have dark outline on
-        # left & right flanks; an unbordered prop with dark tips only at bottom fails this.
         return (has_bilateral_side or (left_dark + right_dark >= 4 and bottom_dark >= 2)), has_bilateral_side
     if touches_bottom and not touches_top:
         return (has_bilateral_side or (left_dark + right_dark >= 4 and top_dark >= 2)), has_bilateral_side
@@ -127,8 +122,6 @@ def _has_directional_outline(
     if touches_right and not touches_left:
         return ((top_dark >= 2 and bottom_dark >= 2) or left_dark >= 2), has_bilateral_side
 
-    # Interior component: require dark outline on at least 2 quadrants/sides so one-sided
-    # background highlights next to a single dark edge are suppressed.
     active_sides = int(top_dark > 0) + int(bottom_dark > 0) + int(left_dark > 0) + int(right_dark > 0)
     return (active_sides >= 2), has_bilateral_side
 
@@ -159,7 +152,6 @@ def build_stroke_mask(
 
     radius = _outline_radius(roi_h, frame_h=frame_h)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
-    # Pre-filter: white blobs with zero dark pixels within outline radius cannot pass outline check.
     dark_near = cv2.dilate(dark_mask.astype(np.uint8), kernel) > 0
     min_blob_px = effective_min_blob_px(config, frame_h=frame_h)
 
@@ -176,7 +168,6 @@ def build_stroke_mask(
         w = int(stats[label_idx, cv2.CC_STAT_WIDTH])
         h = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
 
-        # Quick skip if bounding box has no dark pixels anywhere nearby
         if not np.any(dark_near[y : y + h, x : x + w]):
             continue
 
@@ -186,11 +177,9 @@ def build_stroke_mask(
         touches_right = (x + w) >= roi_w
         fill_ratio = area / float(max(1, w * h))
 
-        # Reject wide solid bars/clouds spanning >2.5*roi_h horizontally
         if w > 2.5 * roi_h and fill_ratio > 0.55:
             continue
 
-        # Reject solid background columns/shirts touching both top and bottom borders
         if touches_top and touches_bottom and w > 0.40 * roi_h and fill_ratio > 0.65:
             continue
 
@@ -201,7 +190,6 @@ def build_stroke_mask(
 
         comp = (labels[y1:y2, x1:x2] == label_idx).astype(np.uint8)
         dilated = cv2.dilate(comp, kernel)
-        # Exclude neighboring white strokes so closely packed CJK strokes do not dilute ring support.
         ring = (dilated > 0) & (white_bin[y1:y2, x1:x2] == 0)
         ring_px = int(np.count_nonzero(ring))
         if ring_px == 0:
@@ -238,8 +226,6 @@ def build_stroke_mask(
         if not passes_dir:
             continue
 
-        # Suppress thick border-clipped props (e.g. claw hanging from y=0 with dark tips only)
-        # while preserving real glyphs clipped slightly by a tight ROI.
         if (
             config.suppress_border_blobs
             and (touches_top or touches_bottom)
@@ -283,7 +269,6 @@ def build_stroke_mask(
                 if overlap_y >= 0.40 * c.h:
                     filtered_border.append(c)
                 elif c.has_bilateral_side_outline and c.border_contact_px < max(6, int(0.30 * c.w)):
-                    # Allow minor tip touch if close horizontally to the main text line
                     min_dx = min(
                         max(0, max(c.x - (ic.x + ic.w), ic.x - (c.x + c.w))) for ic in interior
                     )
@@ -291,8 +276,6 @@ def build_stroke_mask(
                         filtered_border.append(c)
             kept = interior + filtered_border
         elif not interior and border_touching:
-            # All components touch top/bottom edge: reject solitary wide-contact non-glyph props
-            # (like a hanging claw) while keeping real tight-ROI glyphs (even 1-3 chars).
             if len(border_touching) <= 2:
                 kept = [
                     c
@@ -340,7 +323,6 @@ def build_temporal_stable_mask(
         freq_cnt += (dil > 0).astype(np.uint8)
     freq = freq_cnt.astype(np.float32) * (1.0 / float(k_count))
 
-    # Robust luminance stability (single uint8 sort gives median + IQR, ~5x faster than 3 percentiles).
     if k_count >= 4 and len(frames_bgr) == k_count:
         v_stack = np.stack([fast_luma_channel(bgr) for bgr in frames_bgr], axis=0)
         v_sorted = np.sort(v_stack, axis=0)
@@ -353,11 +335,9 @@ def build_temporal_stable_mask(
         seed_core = freq >= 0.50
 
     if not np.any(seed_core):
-        # Fallback: pick the cleanest non-empty mask with highest pixel count.
         best_mask = max(masks, key=lambda m: int(np.count_nonzero(m)))
         return (best_mask > 0).astype(np.uint8) * 255
 
-    # Hysteresis reconstruction: recover partially glare-occluded glyphs aligned with seed_core.
     union_cand = (freq >= 0.35).astype(np.uint8)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(union_cand, connectivity=8)
 
@@ -378,7 +358,6 @@ def build_temporal_stable_mask(
 
         keep_comp = (seed_overlap / float(max(1, area))) >= 0.35
         if not keep_comp:
-            # Recover narrow/glared neighbor glyph on the same horizontal text band
             overlap_y = max(0, min(seed_y2 + 1, y + h) - max(seed_y1, y))
             dx = max(0, max(x - (seed_x2 + 1), seed_x1 - (x + w)))
             if overlap_y >= 0.45 * h and dx <= max(1.8 * band_h, 0.08 * roi_w):
@@ -390,8 +369,6 @@ def build_temporal_stable_mask(
     if not np.any(stable):
         stable[seed_core] = 255
 
-    # Refine back to un-dilated union of original stroke pixels inside the stable support
-    # so stroke widths stay crisp rather than bloated by dilation.
     orig_union = np.zeros((roi_h, roi_w), dtype=bool)
     for m in masks:
         orig_union |= m > 0
@@ -437,17 +414,14 @@ def score_candidate_frame(
 
     mask_bin = (mask > 0).astype(np.uint8)
 
-    # 1. Stroke completeness: fraction of stable strokes visible in this frame
     covered = int(np.count_nonzero((stable_bin > 0) & (cv2.dilate(mask_bin, k_tol) > 0)))
     completeness = float(covered) / float(stable_px)
 
-    # 2. Stroke-to-outline contrast on luminance channel
     v_chan = fast_luma_channel(bgr_roi)
     core_v = float(v_chan[stable_bin > 0].mean())
     ring_v = float(v_chan[ring_mask].mean()) if np.any(ring_mask) else 0.0
     contrast = max(0.0, min(220.0, core_v - ring_v)) / 220.0
 
-    # 3. Foreground edge sharpness (measured ONLY on stroke boundary, not background!)
     gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY) if bgr_roi.ndim == 3 else bgr_roi
     lap = cv2.Laplacian(gray, cv2.CV_64F)
     if np.any(edge_band):
@@ -455,11 +429,9 @@ def score_candidate_frame(
     else:
         fg_sharp = 0.0
 
-    # 4. Background leak penalty: extra mask pixels outside dilated stable text support
     leak_px = int(np.count_nonzero((mask_bin > 0) & (~near_stable)))
     bg_leak = min(2.0, float(leak_px) / float(stable_px))
 
-    # 5. Background clutter penalty: prefer flat/clean backgrounds outside the subtitle ring
     if np.any(bg_region):
         bg_clutter = float(np.log1p(max(0.0, float(lap[bg_region].var()))) / 10.0)
     else:

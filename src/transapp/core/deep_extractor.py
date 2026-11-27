@@ -89,8 +89,6 @@ class _DetectedSpan:
             self.samples.append(new_sample)
             return
 
-        # Keep first sample (samples[0]), latest sample (new_sample), and drop the most
-        # redundant interior slot whose removal produces the smallest adjacent frame gap.
         candidates = self.samples + [new_sample]
         best_drop = 1
         best_span = candidates[2].frame_idx - candidates[0].frame_idx
@@ -202,15 +200,11 @@ def _extract_patch_features(
         if crop.shape[1] < _SIG_W or crop.shape[0] < _SIG_H
         else cv2.INTER_AREA
     )
-    # Compute strokes directly on the compact 64x16 grid so internal character holes stay crisp
-    # instead of blurring into solid square blobs across distinct equal-width CJK sentences.
     small = cv2.resize(crop, (_SIG_W, _SIG_H), interpolation=interp).astype(np.float32)
     gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
     grad_mag = cv2.magnitude(gx, gy)
 
-    # Local bright-stroke signal suppresses smooth/moving background fills and abrupt
-    # background cuts while preserving white, yellow, colored, and light-outlined strokes.
     local_mean = cv2.GaussianBlur(small, (5, 5), 0)
     bright_stroke = np.maximum(0.0, small - local_mean)
     sig_map = bright_stroke * 2.5 + grad_mag * 0.25
@@ -222,8 +216,6 @@ def _extract_patch_features(
         thresh = max(10.0, float(np.percentile(sig_map, 72)), 0.30 * max_val)
         edge_mask = (sig_map >= thresh).astype(np.uint8)
 
-    # High-pass zero-mean luma patch removes low-frequency background brightness jumps
-    # and moving shapes while retaining exact signed glyph-fill (+) and outline (-) layout.
     luma = small - cv2.GaussianBlur(small, (7, 7), 0)
     luma -= float(luma.mean())
     luma_norm = float(np.linalg.norm(luma))
@@ -273,8 +265,6 @@ def _compute_tight_signature(
         )
         roi_gray = cv2.resize(full_gray, (_ROI_GRAY_W, _ROI_GRAY_H), interpolation=interp)
 
-    # _compare_tight_visual extracts shared-rect features directly from roi_gray when both
-    # signatures retain roi_gray, so skip redundant full-res patch extraction here.
     return TightSignature(
         boxes=list(boxes),
         union_rect=union_rect,
@@ -486,8 +476,6 @@ def _is_strict_same_cue(
         or _has_suspicious_noise(b)
     )
 
-    # Strict prefix/suffix containment (diff 1-2 chars, len(short) >= 4).
-    # Reject 2-char diff when both cues are clean and high-confidence (>= 0.93).
     short, long_ = (sca, scb) if len(sca) <= len(scb) else (scb, sca)
     diff_len = len(long_) - len(short)
     if len(short) >= 4 and 1 <= diff_len <= 2:
@@ -496,8 +484,6 @@ def _is_strict_same_cue(
                 return False
             return True
 
-    # Protect same-length 1-char minimal pairs on >= 4 chars (Hanzi or digits),
-    # while allowing low-confidence (< 0.85) boundary typos on 4..9 char cues to cluster.
     is_same_len_one_char_sub = (
         len(sca) == len(scb) and sum(1 for x, y in zip(sca, scb) if x != y) == 1
     )
@@ -701,7 +687,6 @@ def _choose_majority_vote(
     )
     win_vote = best_vote_for_text[winner]
 
-    # Character-level alignment consensus when >= 3 votes have no repeated/pooled candidate
     if len(votes) >= 3 and max(pooled_counts.values()) < 2:
         cons = _char_level_consensus(votes, config.conf_threshold)
         if cons is not None:
@@ -710,7 +695,6 @@ def _choose_majority_vote(
                 winner = cons_text
                 win_vote = best_vote_for_text.get(winner, pivot_vote)
 
-    # Prefer a clean fuller Hanzi containment candidate when strongly supported
     best_fuller: tuple[tuple[float, int, int], str] | None = None
     for cand, cnt in counts.items():
         if (
@@ -742,7 +726,6 @@ def _choose_majority_vote(
             or _has_low_conf_ascii_edge_noise(txt, conf, config.conf_threshold)
         )
 
-    # Selective brightness-filtered retry on up to 2 distinct frames when noisy or low-confidence
     if _needs_retry(winner, win_conf):
         retry_candidates: list[_FrameVote] = [win_vote]
         interior_pool = votes[1:-1] if len(votes) >= 3 else votes
@@ -889,7 +872,6 @@ def detect_subtitle_spans(
 
             if active is None:
                 if curr_sig is not None:
-                    # EMPTY -> TEXT onset refinement
                     start_idx = curr_idx
                     onset_sig = curr_sig
                     onset_frames_rev: list[tuple[int, int, np.ndarray]] = []
@@ -925,7 +907,6 @@ def detect_subtitle_spans(
                     )
             else:
                 if curr_sig is None:
-                    # TEXT -> EMPTY offset refinement (no Stage 1 blind flash gluing!)
                     if prev_idx is not None and curr_idx - prev_idx > 1:
                         mid_idxs = list(range(prev_idx + 1, curr_idx))
                         mid_boxes_list = ocr_engine.detect_grid_batch(
@@ -958,7 +939,6 @@ def detect_subtitle_spans(
                 elif active.last_sig is None or _tight_signatures_same_cue(
                     active.last_sig, curr_sig
                 ):
-                    # TEXT_A -> TEXT_A continuation
                     active.end_idx = curr_idx
                     active.end_ms = curr_rel_ms
                     active.last_sig = curr_sig
@@ -973,7 +953,6 @@ def detect_subtitle_spans(
                     )
                     active.add_sample(curr_idx, curr_rel_ms, curr_bgr)
                 else:
-                    # TEXT_A -> TEXT_B (0ms back-to-back cut or short gap + new cue)
                     sig_a = active.last_sig
                     sig_b = curr_sig
                     b_start_idx = curr_idx
@@ -1104,9 +1083,6 @@ def detect_subtitle_spans(
         if dur >= config.min_duration_ms:
             eligible.append(sp)
             continue
-        # Keep short spans (including 1-frame 40ms boundary/jitter pieces) if adjacent to a
-        # neighboring span so Stage 2 + postprocess can merge real fragments and filter noise;
-        # drop only truly isolated sub-threshold flashes.
         near_prev = idx > 0 and (sp.start_ms - spans[idx - 1].end_ms) <= neighbor_gap
         near_next = idx + 1 < len(spans) and (spans[idx + 1].start_ms - sp.end_ms) <= neighbor_gap
         if near_prev or near_next:
@@ -1260,7 +1236,6 @@ def recognize_spans_with_voting(
         if cancel_check is not None and cancel_check():
             raise ExtractionCancelled("Deep OCR recognition cancelled")
 
-        # Eagerly flush pending_cluster once span gap exceeds flash_bridge_max_ms (O(1) RAM)
         if (
             pending_cluster is not None
             and (span.start_ms - pending_cluster.end_ms) > config.flash_bridge_max_ms
@@ -1336,7 +1311,6 @@ def recognize_spans_with_voting(
                 absorbed = _find_sandwich_noise(evaluated)
                 anchors = [(idx, v) for k, (idx, v) in enumerate(evaluated) if k not in absorbed]
 
-                # Bounded-stack binary-search split on disagreeing adjacent evaluated samples
                 pending_intervals: list[tuple[int, _FrameVote, int, _FrameVote]] = []
                 for pair_idx in range(len(anchors) - 1, 0, -1):
                     lo_idx, lo_vote = anchors[pair_idx - 1]
@@ -1361,7 +1335,6 @@ def recognize_spans_with_voting(
                         extra_probes_used += 1
                     mid_vote = eval_sample(probe_idx)
                     if mid_vote is None:
-                        # Probe expanding offsets -1, +1, -2, +2, ... inside (lo_idx, hi_idx)
                         max_offset = max(mid - lo_idx - 1, hi_idx - mid - 1)
                         for offset in range(1, max_offset + 1):
                             for cand in (mid - offset, mid + offset):

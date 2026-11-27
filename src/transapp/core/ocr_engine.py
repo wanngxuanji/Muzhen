@@ -121,16 +121,12 @@ def _group_and_format_boxes(raw_output: Any) -> tuple[str, float]:
     if not boxes:
         return ("", 0.0)
 
-    # When a strong Hanzi subtitle box exists in the ROI, drop detached low-confidence non-Hanzi
-    # background fragments (e.g. wall inscriptions or clothing artifacts).
     has_strong_hanzi = any(_HANZI_RE.search(b.text) and b.score >= 0.85 for b in boxes)
     if has_strong_hanzi:
         filtered = [b for b in boxes if _HANZI_RE.search(b.text) or b.score >= 0.85]
         if filtered:
             boxes = filtered
 
-    # When a strong Hanzi subtitle line (>= 0.90) exists, drop detached tiny or off-band
-    # low-confidence 1-char Hanzi background outliers while keeping genuine 2-line subtitles.
     main_boxes = [b for b in boxes if _HANZI_RE.search(b.text) and b.score >= 0.90]
     if main_boxes:
         main_cy = float(np.median([b.cy for b in main_boxes]))
@@ -242,7 +238,6 @@ def _dim_dark_background(bgr_roi: np.ndarray, brightness_min: int = 175) -> np.n
     """Softly attenuate dark background pixels while preserving bright text anti-aliasing."""
     v = cv2.max(cv2.max(bgr_roi[:, :, 0], bgr_roi[:, :, 1]), bgr_roi[:, :, 2])
     bright = (v >= brightness_min).astype(np.uint8)
-    # Keep a 4px halo around bright text so dark outlines remain intact
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     keep = cv2.dilate(bright, kernel)
     alpha = cv2.GaussianBlur(keep.astype(np.float32), (5, 5), 0.0)
@@ -481,7 +476,6 @@ class OcrEngine:
                     continue
                 cell_y0 = _GRID_PAD_Y + cell_idx * stride_y
                 cell_y1 = cell_y0 + cell_h
-                # Ensure the detected box actually lies inside the cell rather than padding
                 if by2 <= cell_y0 + 1.0 or by1 >= cell_y1 - 1.0:
                     continue
                 nx1 = max(0.0, min(1.0, bx1 / float(cell_w)))
@@ -570,7 +564,6 @@ class OcrEngine:
             preds = det_model.session(batch_tensor)
             for idx, (orig_idx, _roi, orig_h, orig_w) in enumerate(valid_entries):
                 pred_map = preds[idx : idx + 1]
-                # Fast empty-map short-circuit: no box mean can exceed the map maximum
                 if float(pred_map.max()) < box_thresh:
                     continue
                 boxes, _scores = det_model.postprocess_op(pred_map, (orig_h, orig_w))
@@ -589,8 +582,6 @@ class OcrEngine:
         if not rois:
             return []
 
-        # When a test injects only a mock Rec callable (no Det model), derive text boxes
-        # cleanly via stroke mask without triggering Rec call counters during Stage 1 detection.
         if self._injected_callable and not self._injected_det_callable:
             from transapp.core.models import ExtractConfig
             from transapp.core.subtitle_mask import build_stroke_mask, mask_fg_ratio

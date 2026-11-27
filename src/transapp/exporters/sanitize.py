@@ -38,7 +38,6 @@ def prepare_export_cues(events: Sequence[SubtitleEvent]) -> list[SubtitleEvent]:
                 text="\n".join(lines),
             )
         )
-    # Python's Timsort is guaranteed stable, preserving original order on ties.
     cleaned.sort(key=lambda ev: (ev.start_ms, ev.end_ms, int(ev.index)))
     return cleaned
 

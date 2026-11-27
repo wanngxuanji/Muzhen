@@ -11,15 +11,15 @@ _HORIZONTAL_WS_RE = re.compile(r"[ \t\f\v\u00a0\u3000]+")
 _ALL_WS_RE = re.compile(r"\s+")
 
 _CJK_CHARS = (
-    r"\u2e80-\u2eff"  # CJK Radicals Supplement
-    r"\u2f00-\u2fdf"  # Kangxi Radicals
-    r"\u3005\u3007"   # Ideographic iteration mark (々) & zero (〇)
-    r"\u3040-\u30ff"  # Hiragana & Katakana
-    r"\u3400-\u4dbf"  # CJK Extension A
-    r"\u4e00-\u9fff"  # CJK Unified Ideographs
-    r"\uac00-\ud7af"  # Hangul Syllables
-    r"\uf900-\ufaff"  # CJK Compatibility Ideographs
-    r"\U00020000-\U0002ebef"  # CJK Extensions B-G
+    r"\u2e80-\u2eff"
+    r"\u2f00-\u2fdf"
+    r"\u3005\u3007"
+    r"\u3040-\u30ff"
+    r"\u3400-\u4dbf"
+    r"\u4e00-\u9fff"
+    r"\uac00-\ud7af"
+    r"\uf900-\ufaff"
+    r"\U00020000-\U0002ebef"
 )
 
 _CJK_FULLWIDTH_PUNCT = (
@@ -45,7 +45,6 @@ _DISALLOWED_TEXT_CHAR_RE = re.compile(
     rf"[^0-9a-zA-Z\uff10-\uff19\uff21-\uff3a\uff41-\uff5a{_ALLOWED_ASCII_PUNCT}\n {_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}]"
 )
 
-# Punctuation stripped during similarity comparison (per spec) while preserved in display text.
 _SIMILARITY_STRIP_RE = re.compile(
     rf"[\s{re.escape(_CJK_FULLWIDTH_PUNCT)},.!?%:'\"()/;\-\[\]~&+=–•]+"
 )
@@ -164,7 +163,6 @@ def _is_strict_containment(a: str, b: str) -> bool:
 def _should_merge(prev: _MergedCue, curr: _MergedCue, config: ExtractConfig) -> bool:
     gap_ms = curr.start_ms - prev.end_ms
     if gap_ms < 0:
-        # Guard against blindly merging overlapping distinct cues; only coalesce exact duplicates.
         return _strip_for_similarity(prev.text) == _strip_for_similarity(curr.text)
 
     if gap_ms <= config.merge_gap_ms:
@@ -178,10 +176,6 @@ def _should_merge(prev: _MergedCue, curr: _MergedCue, config: ExtractConfig) -> 
             return True
         return False
 
-    # Tier-2 fallback (merge_gap_ms < gap <= flash_bridge_max_ms):
-    # Disallow Levenshtein character substitutions (protects "放过你的" vs "放过他的") and
-    # disallow identical repeats (protects genuine repeated cues like "快跑!"..."快跑!").
-    # Only merge clean prefix/suffix truncation pairs (e.g. glare-dropped leading "一").
     if gap_ms <= config.flash_bridge_max_ms:
         if _is_strict_containment(prev.text, curr.text) and not (
             _has_suspicious_noise(prev.text) or _has_suspicious_noise(curr.text)
@@ -200,8 +194,6 @@ def _pick_merged_winner(
         win_thumb = curr.thumbnail_png if curr.confidence > prev.confidence else prev.thumbnail_png
         return (prev.text, win_conf, win_thumb)
 
-    # Prefer the fuller clean text when one is a strict prefix/suffix containment of the other
-    # (e.g. "一个蕴藏着神秘力量的" over glare-clipped "个蕴藏着神秘力量的") if confidence is healthy.
     if _is_strict_containment(prev.text, curr.text):
         prev_clean = not _has_suspicious_noise(prev.text)
         curr_clean = not _has_suspicious_noise(curr.text)
@@ -237,10 +229,8 @@ def _is_ghost_cue(cue: _MergedCue, config: ExtractConfig) -> bool:
 
     stripped = _strip_for_similarity(cue.text)
     dur_ms = cue.end_ms - cue.start_ms
-    # Rule A: 1-char ultra-low-conf transient ghost
     if len(stripped) == 1 and cue.confidence < 0.72 and dur_ms < 400:
         return True
-    # Rule B: short disallowed-symbol ghost below confidence threshold
     if (
         len(stripped) <= 3
         and _has_suspicious_noise(cue.text)
@@ -316,8 +306,6 @@ def postprocess_segments(
                 clamped.append(cue)
         merged = clamped
 
-    # Filter out zero-duration cues and cues shorter than min_duration_ms AFTER merging so valid
-    # leading/trailing fragments attached to a real cue are not discarded prematurely.
     merged = [
         cue
         for cue in merged
@@ -327,10 +315,8 @@ def postprocess_segments(
     if config.filter_non_cjk_low_conf:
         merged = [cue for cue in merged if not _is_ghost_cue(cue, config)]
 
-    # Re-merge flanking cues once intervening short/ghost artifacts have been removed.
     merged = _merge_adjacent_cues(merged, config)
 
-    # Clamp overlaps AFTER duration and ghost filtering so discarded ghosts cannot truncate valid cues.
     non_overlapping: list[_MergedCue] = []
     for cue in merged:
         while non_overlapping and non_overlapping[-1].end_ms > cue.start_ms:

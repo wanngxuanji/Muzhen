@@ -33,7 +33,6 @@ def test_majority_voting_overrides_edge_latin_artifacts_and_recovers_fuller_text
     dummy_engine = OcrEngine(ocr_callable=lambda _img: (None, None))
     img = _solid_roi(10)
 
-    # 1 noisy frame "好N" / "可是M" cannot beat 3 clean frames "太好了"
     votes_clean = [
         _FrameVote(100, "好N", 0.73, img),
         _FrameVote(260, "太好了", 0.99, img),
@@ -44,7 +43,6 @@ def test_majority_voting_overrides_edge_latin_artifacts_and_recovers_fuller_text
     assert txt == "太好了"
     assert conf == pytest.approx(0.99)
 
-    # Clean fuller containment "一个蕴藏着神秘力量的" beats glare-clipped "个蕴藏着神秘力量的"
     votes_yi = [
         _FrameVote(100, "个蕴藏着神秘力量的", 0.98, img),
         _FrameVote(260, "个蕴藏着神秘力量的", 0.98, img),
@@ -82,14 +80,8 @@ def test_majority_voting_brightness_retry_cleans_persistent_edge_latin_noise():
 def test_extract_subtitles_deep_bridges_flash_and_splits_back_to_back_cues():
     cfg = ExtractConfig(coarse_step=1, min_duration_ms=120, flash_bridge_max_ms=320)
 
-    # Frame timeline (25fps, 40ms/frame):
-    # 0..9:   "场战斗结束一年后" (glare-clipped leading char + 1 noisy frame)
-    # 10..14: 200ms blank flash gap (no boxes detected; > merge_gap_ms=160, <= flash_bridge_max_ms=320)
-    # 15..22: "那场战斗结束一年后" (fuller cue resuming after flash -> Tier-2 bridges into 1 cue)
-    # 23..32: "新战斗陀螺" (back-to-back cue with same box area -> split internally by Stage 2 text!)
     class ScriptedDet:
         def __call__(self, canvas: np.ndarray):
-            # Each cell encodes its frame index in channel 0
             h, w = canvas.shape[:2]
             stride = 76 + 16
             boxes = []
@@ -159,7 +151,6 @@ def _make_patterned_roi(
         img = np.full((h, w, 3), (30, 30, 30), dtype=np.uint8)
 
     if pattern_id is not None:
-        # Draw 6 distinct high-contrast outlined glyph patterns inside the exact same box
         x0 = int(round(_FIXED_BOX[0] * w)) + 8
         y0 = int(round(_FIXED_BOX[1] * h)) + 4
         cell_w = 44
@@ -193,7 +184,6 @@ def _make_patterned_roi(
                     cv2.line(img, (cx + 12, cy + 3), (cx + 12, cy + 28), color, thick)
                     cv2.line(img, (cx + 26, cy + 3), (cx + 26, cy + 28), color, thick)
 
-    # Encode frame_idx in top-left corner pixel (far outside _FIXED_BOX) for mock Det lookup
     img[0, 0] = (frame_idx & 0xFF, (frame_idx >> 8) & 0xFF, 0)
     return img
 
@@ -216,7 +206,6 @@ class _BoxLookupEngine(OcrEngine):
 
 
 def test_ring_buffer_refines_onset_offset_to_exact_frame_zero_drift():
-    # 25fps (40ms/frame), 40 frames: cues on exact inclusive frames [5..18] and [22..35]
     frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
     frames: list[FrameSlice] = []
     for i in range(40):
@@ -248,7 +237,6 @@ def test_ring_buffer_refines_onset_offset_to_exact_frame_zero_drift():
 
 
 def test_zero_ms_back_to_back_equal_width_cues_split_at_exact_cut_frame():
-    # 3 consecutive equal-width cues [4..15], [16..27], [28..40] with 0ms gap & moving background
     frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
     frames: list[FrameSlice] = []
     for i in range(45):
@@ -279,7 +267,6 @@ def test_zero_ms_back_to_back_equal_width_cues_split_at_exact_cut_frame():
     assert spans[1].end_ms == spans[2].start_ms == 1120
     assert spans[2].end_ms == 1640
 
-    # Also test odd-frame cut boundary ([4..14] -> [15..26])
     frame_boxes_odd: dict[int, list[tuple[float, float, float, float]]] = {}
     frames_odd: list[FrameSlice] = []
     for i in range(32):
@@ -307,8 +294,8 @@ def test_short_160ms_cue_all_phases_caught_and_40ms_flash_dropped():
 
     for phase in (0, 1):
         cue_start = 6 + phase
-        cue_end = cue_start + 3  # 4 inclusive frames = 160ms at 25fps
-        flash_idx = 24 + phase   # 1 isolated frame = 40ms
+        cue_end = cue_start + 3
+        flash_idx = 24 + phase
         frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
         frames: list[FrameSlice] = []
         for i in range(34):
@@ -332,15 +319,14 @@ def test_short_160ms_cue_all_phases_caught_and_40ms_flash_dropped():
 
 
 def test_vfr_timeline_uses_actual_next_frame_pts_no_overlap():
-    # Mixed 12fps (~83ms), 25fps (40ms), and 60fps (~17ms) VFR PTS timeline
     pts: list[int] = [0]
     for i in range(1, 40):
         if i <= 14:
-            step = 83  # ~12fps
+            step = 83
         elif i <= 26:
-            step = 40  # 25fps
+            step = 40
         else:
-            step = 17  # ~60fps
+            step = 17
         pts.append(pts[-1] + step)
 
     frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
@@ -393,7 +379,6 @@ def test_span_sample_reservoir_bounded_at_24_with_full_tail_coverage():
     assert len(sp.samples) == 24
     assert sp.samples[0].frame_idx == 2
     assert sp.samples[-1].frame_idx == 101
-    # Verify uniform interior coverage (no huge tail gap like old stride *= 2)
     sample_idxs = [s.frame_idx for s in sp.samples]
     assert sample_idxs == sorted(sample_idxs)
     max_gap = max(b - a for a, b in zip(sample_idxs, sample_idxs[1:]))
@@ -418,7 +403,6 @@ def _make_encoded_span(
     for fidx, pts in zip(frame_indices, pts_ms_list):
         base = (luma_overrides or {}).get(fidx, 100)
         img = np.full((76, 480, 3), (base, base, base), dtype=np.uint8)
-        # Encode fidx across a 16x16 block in channel 0 (scaled by 8) to survive JPEG Q95 losslessly
         img[0:16, 0:16, 0] = min(248, fidx * 8)
         span.add_sample(fidx, pts, img)
     return span
@@ -430,7 +414,7 @@ def _decode_encoded_fidx(bgr: np.ndarray) -> int:
 
 def test_stage2_early_exit_saves_ocr_calls_on_clean_consensus():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
-    frame_pts_ms = [i * 180 for i in range(11)]  # 10 samples spanning 0..1800ms (dur=1800ms)
+    frame_pts_ms = [i * 180 for i in range(11)]
     span = _make_encoded_span(list(range(10)), frame_pts_ms[:10], end_ms=1800)
 
     called_frames: list[int] = []
@@ -442,7 +426,6 @@ def test_stage2_early_exit_saves_ocr_calls_on_clean_consensus():
         def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
             fidx = _decode_encoded_fidx(bgr_roi)
             called_frames.append(fidx)
-            # Edge frames 0 and 9 would be noisy if probed; interior frames are clean
             if fidx in (0, 9):
                 return ("G太好了", 0.72)
             return ("太好了", 0.98)
@@ -461,7 +444,6 @@ def test_stage2_early_exit_saves_ocr_calls_on_clean_consensus():
 
 def test_stage2_binary_search_splits_one_char_minimal_pair_to_exact_frame():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
-    # 25fps (40ms/frame), single 24-sample span: frames 0..11 = A, frames 12..23 = B
     frame_pts_ms = [i * 40 for i in range(25)]
     span = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
 
@@ -488,7 +470,6 @@ def test_stage2_binary_search_splits_one_char_minimal_pair_to_exact_frame():
     assert abs(segs[0].end_ms - frame_pts_ms[12]) <= 40
     assert segs[1].start_ms == segs[0].end_ms
     assert segs[1].end_ms == frame_pts_ms[24]
-    # Binary search must not brute-force all 24 frames
     assert len(called_frames) < 16
 
 
@@ -498,7 +479,6 @@ def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts(
     img1 = _solid_roi(11)
     img2 = _solid_roi(22)
 
-    # Varied edge-noise prefixes pool weight onto clean vote "我们是救世"
     votes_varied = [
         _FrameVote(100, "G我们是救世", 0.78, img1, frame_idx=1),
         _FrameVote(200, "Y我们是救世", 0.76, img1, frame_idx=2),
@@ -508,7 +488,6 @@ def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts(
     assert txt == "我们是救世"
     assert conf == pytest.approx(0.99)
 
-    # Even 2 identical noisy votes lose to 1 clean vote once pooled
     votes_2v1 = [
         _FrameVote(100, "G我们是救世", 0.78, img1, frame_idx=1),
         _FrameVote(200, "G我们是救世", 0.78, img1, frame_idx=2),
@@ -518,7 +497,6 @@ def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts(
     assert txt_2v1 == "我们是救世"
     assert conf_2v1 == pytest.approx(0.95)
 
-    # Stray symbol artifact "#一人" triggers brightness_filter=True retry (and 2nd frame retry if needed)
     class SymbolRetryEngine(OcrEngine):
         def __init__(self):
             super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
@@ -539,7 +517,6 @@ def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts(
     assert txt_sym == "一人"
     assert conf_sym == pytest.approx(0.95)
 
-    # 2nd distinct frame retry kicks in when 1st frame retry remains noisy
     eng_two = SymbolRetryEngine()
     votes_two = [
         _FrameVote(100, "#一人", 0.62, img1, frame_idx=1),
@@ -553,7 +530,6 @@ def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts(
 
 def test_stage2_middle_noise_vote_does_not_shatter_single_cue():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
-    # 5-sample span: [A, A, GARBAGE, A, A] -> must remain 1 single cue A
     frame_pts_ms = [i * 200 for i in range(6)]
     span = _make_encoded_span(list(range(5)), frame_pts_ms[:5], end_ms=frame_pts_ms[5])
 
@@ -580,7 +556,6 @@ def test_stage2_char_level_consensus_and_clean_fuller_containment_single_support
     dummy_engine = OcrEngine(provider="cpu", ocr_callable=lambda _img: (None, None))
     img = _solid_roi(33)
 
-    # 3 differing 1-char-error votes -> character-level alignment consensus reconstructs exact line
     votes_char = [
         _FrameVote(100, "你们一起去公园", 0.85, img, frame_idx=1),
         _FrameVote(200, "我们一起去公院", 0.86, img, frame_idx=2),
@@ -589,7 +564,6 @@ def test_stage2_char_level_consensus_and_clean_fuller_containment_single_support
     txt_char, _, _ = _choose_majority_vote(votes_char, dummy_engine, cfg)
     assert txt_char == "我们一起去公园"
 
-    # cnt=1 clean fuller Hanzi containment (>= 0.92) beats 3x truncated votes
     votes_fuller = [
         _FrameVote(100, "个蕴藏着神秘力量的", 0.98, img, frame_idx=1),
         _FrameVote(200, "个蕴藏着神秘力量的", 0.98, img, frame_idx=2),
@@ -609,14 +583,13 @@ def test_tight_signature_empty_boxes_and_opposite_metric_floor():
     assert not np.any(empty_sig.edge_mask)
     assert not np.any(empty_sig.luma_patch)
 
-    # Opposite-metric floor (>= 0.30) rejects single-metric fluke
     edge = np.zeros((16, 64), dtype=np.uint8)
     edge[4:12, 10:50] = 1
     la = np.zeros((16, 64), dtype=np.float32)
     lb = np.zeros((16, 64), dtype=np.float32)
     la[4:12, 10:30] = 1.0
     la /= float(np.linalg.norm(la))
-    lb[4:12, 10:30] = -1.0  # Inverted luma -> NCC = -1.0 < 0.30 despite edge_iou == 1.0
+    lb[4:12, 10:30] = -1.0
     lb /= float(np.linalg.norm(lb))
     sig_a = TightSignature(boxes=[_FIXED_BOX], union_rect=_FIXED_BOX, edge_mask=edge, luma_patch=la)
     sig_b = TightSignature(boxes=[_FIXED_BOX], union_rect=_FIXED_BOX, edge_mask=edge, luma_patch=lb)
@@ -626,7 +599,6 @@ def test_tight_signature_empty_boxes_and_opposite_metric_floor():
 def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
 
-    # 1) Glare/white-flash dodge on n >= 8: anchor frame 4 is a white flash (luma=250) -> dodged!
     frame_pts_ms = [i * 150 for i in range(11)]
     span_glare = _make_encoded_span(
         list(range(10)), frame_pts_ms[:10], end_ms=1500, luma_overrides={4: 250}
@@ -650,7 +622,6 @@ def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
     assert len(glare_calls) == 3
     assert 4 not in glare_calls
 
-    # 2) Empty FP early-exit: 8-sample span (dur=800 <= 1200) returning empty stops after 3 probes
     empty_pts = [i * 100 for i in range(9)]
     span_empty = _make_encoded_span(list(range(8)), empty_pts[:8], end_ms=800)
     empty_calls: list[int] = []
@@ -667,7 +638,6 @@ def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
     assert segs_empty == []
     assert len(empty_calls) == 3
 
-    # 3) Stage 2 short low-conf ghost guard drops <=2-vote <=2-char conf < 0.72, keeps conf >= 0.72
     ghost_pts = [0, 160, 320]
     span_ghost = _make_encoded_span([0, 1], [0, 160], end_ms=320)
     span_real = _make_encoded_span([0, 1], [0, 160], end_ms=320)
@@ -691,7 +661,6 @@ def test_stage2_streams_pending_cluster_inline_and_honors_cancel_on_flush():
 
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=200)
     frame_pts_ms = [i * 100 for i in range(40)]
-    # 3 distinct cues separated by > flash_bridge_max_ms
     span1 = _make_encoded_span([0, 1, 2, 3, 4], [0, 100, 200, 300, 400], end_ms=500)
     span2 = _make_encoded_span([10, 11, 12, 13, 14], [1000, 1100, 1200, 1300, 1400], end_ms=1500)
     span3 = _make_encoded_span([20, 21, 22, 23, 24], [2000, 2100, 2200, 2300, 2400], end_ms=2500)
@@ -721,12 +690,10 @@ def test_stage2_streams_pending_cluster_inline_and_honors_cancel_on_flush():
         [span1, span2, span3], frame_pts_ms, StreamingTrackEngine(), cfg
     )
     assert [s.text for s in segs] == ["第一句字幕", "第二句字幕", "第三句字幕"]
-    # Span 1 must be flushed BEFORE span 3 OCR begins (O(1) streaming finalization)
     first_flush_pos = timeline.index("flush_thumb")
     first_span3_ocr_pos = timeline.index("ocr_span3")
     assert first_flush_pos < first_span3_ocr_pos
 
-    # Also verify cancel_check is respected during final _flush_cluster
     span_cancel = _make_encoded_span([0, 1, 2, 3, 4], [0, 100, 200, 300, 400], end_ms=500)
     ocr_done = {"count": 0}
 
@@ -750,8 +717,6 @@ def test_stage2_streams_pending_cluster_inline_and_honors_cancel_on_flush():
 
 def test_stage2_binary_search_handles_none_midpoint_after_true_cut():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
-    # 24-sample span: true cut at sample 6 (frames 0..5 = A, 6..23 = B), blank glare on 8..12
-    # so midpoint between lo=4 (A) and hi=15 (B) is None AFTER the true cut at 6.
     frame_pts_ms = [i * 40 for i in range(25)]
     span = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
 
@@ -777,8 +742,6 @@ def test_stage2_binary_search_handles_none_midpoint_after_true_cut():
 
 def test_stage2_absorbed_high_conf_sandwich_noise_excluded_from_voting():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
-    # 3-sample span: [truncated(0.88), GARBAGE(0.92), fuller(0.89)]
-    # Sandwich noise has HIGHER conf than either real vote, so it must be excluded from voting!
     frame_pts_ms = [0, 200, 400, 600]
     span = _make_encoded_span([0, 1, 2], [0, 200, 400], end_ms=600)
 
@@ -830,7 +793,6 @@ def test_tight_signature_invariant_to_dbnet_box_jitter_on_short_two_char_cue():
 
     def _draw_two_char_roi(variant: int, bg_shift: int) -> np.ndarray:
         img = np.zeros((h, w, 3), dtype=np.uint8)
-        # Fast-moving high-contrast anime jacket / speed-line background
         for x in range(0, w, 24):
             c = 185 if ((x + bg_shift) // 24) % 2 == 0 else 45
             cv2.rectangle(img, (x, 0), (min(w, x + 12), h), (c, 90, 210 - c // 2), -1)
@@ -883,13 +845,11 @@ def test_adjacent_one_frame_spans_are_kept_while_isolated_40ms_flash_is_dropped(
     while truly isolated 1-frame 40ms flashes are still dropped."""
     frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
     frames: list[FrameSlice] = []
-    # Isolated 1-frame flash at frame 2; shattered cue made of alternating 1-frame spans on [20..27]
     for i in range(40):
         if i == 2:
             pat = 0
             frame_boxes[i] = [_FIXED_BOX]
         elif 20 <= i <= 27:
-            # Force distinct patterns on every frame so Stage 1 emits 1-frame spans with 0ms gaps
             pat = i % 3
             frame_boxes[i] = [_FIXED_BOX]
         else:
@@ -900,9 +860,7 @@ def test_adjacent_one_frame_spans_are_kept_while_isolated_40ms_flash_is_dropped(
     cfg = ExtractConfig(coarse_step=1, min_duration_ms=120, flash_bridge_max_ms=320)
     spans, _pts = detect_subtitle_spans(frames, fps=25.0, start_pts_ms=0, ocr_engine=eng, config=cfg)
 
-    # Isolated frame 2 must be dropped
     assert all(sp.start_idx != 2 for sp in spans)
-    # Every frame of the adjacent [20..27] sequence must be preserved (0 frames clipped/dropped)
     covered = set()
     for sp in spans:
         covered.update(range(sp.start_idx, sp.end_idx + 1))
@@ -974,7 +932,6 @@ def test_compute_tight_signature_skips_unused_fullres_patch_and_uses_640x64_roi_
     assert sig_a.roi_gray.shape == (64, 640)
     assert resize_interps[-1] == cv2.INTER_AREA
 
-    # Small ROI upscaling must use INTER_LINEAR instead of INTER_AREA
     small_roi = _solid_roi(7, h=40, w=320)
     sig_small = _compute_tight_signature(small_roi, [short_box])
     assert extract_calls["count"] == 0
@@ -982,7 +939,6 @@ def test_compute_tight_signature_skips_unused_fullres_patch_and_uses_640x64_roi_
     assert sig_small.roi_gray.shape == (64, 640)
     assert resize_interps[-1] == cv2.INTER_LINEAR
 
-    # Jittered 1080p 2-char cue still matches; distinct 2-char cue still splits
     jittered_box = (
         short_box[0] + 0.015,
         short_box[1] - 0.05,
@@ -1002,7 +958,6 @@ def test_onset_and_offset_refinement_retains_faded_boundary_frames_with_overlapp
     detached_box = (0.02, 0.24, 0.14, 0.76)
 
     def _make_faded_roi(frame_idx: int) -> np.ndarray:
-        # Very low-contrast faded frame (fails strict stroke IoU/NCC against crisp text)
         img = np.full((76, 480, 3), (78, 82, 86), dtype=np.uint8)
         cv2.line(img, (110, 38), (370, 38), (94, 98, 102), 2)
         img[0, 0] = (frame_idx & 0xFF, (frame_idx >> 8) & 0xFF, 0)
@@ -1014,7 +969,6 @@ def test_onset_and_offset_refinement_retains_faded_boundary_frames_with_overlapp
         img[0, 0] = (frame_idx & 0xFF, (frame_idx >> 8) & 0xFF, 0)
         return img
 
-    # Sanity-check that the faded boundary frame genuinely fails strict visual matching
     crisp_ref = _make_patterned_roi(5, 0, moving_bg=False)
     faded_sample = _make_faded_roi(4)
     assert (
@@ -1025,9 +979,6 @@ def test_onset_and_offset_refinement_retains_faded_boundary_frames_with_overlapp
         is False
     )
 
-    # 25fps, coarse_step=3 -> coarse indices: 0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36
-    # Cue 1: faded onset at 4, crisp [5..18], faded offset at 19, detached side FP at 20
-    # Cue 2: detached side FP at 25, faded onset at 26, crisp [27..33]
     frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
     frames: list[FrameSlice] = []
     for i in range(37):
@@ -1088,7 +1039,6 @@ def test_numeric_and_grade_prefixed_cues_are_not_merged_or_stripped():
     assert conf == pytest.approx(0.98)
     assert eng.retry_called is False
 
-    # High-confidence grade prefix ("S级") must not trigger forced retry either
     eng_grade = SpyRetryEngine()
     votes_grade = [
         _FrameVote(100, "S级", 0.96, img, frame_idx=1),
@@ -1104,8 +1054,6 @@ def test_stage2_bounded_stack_splits_three_cues_and_transition_glitch_cleanly():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
     frame_pts_ms = [i * 40 for i in range(25)]
 
-    # 1) 3-cue span where middle cue sits strictly inside a binary-search interval
-    # (initial probes at 4, 11, 19 hit A, C, C while B occupies frames 6..10)
     span_three = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
 
     class ThreeCueEngine(OcrEngine):
@@ -1129,7 +1077,6 @@ def test_stage2_bounded_stack_splits_three_cues_and_transition_glitch_cleanly():
     assert segs_three[2].start_ms == segs_three[1].end_ms
     assert segs_three[2].end_ms == frame_pts_ms[24]
 
-    # Also test balanced 3-cue span [0..7]=A, [8..15]=B, [16..23]=C
     span_three_eq = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
 
     class ThreeCueBalancedEngine(OcrEngine):
@@ -1149,8 +1096,6 @@ def test_stage2_bounded_stack_splits_three_cues_and_transition_glitch_cleanly():
     assert abs(segs_eq[0].end_ms - frame_pts_ms[8]) <= 40
     assert abs(segs_eq[1].end_ms - frame_pts_ms[16]) <= 40
 
-    # 2) 2-cue span with 1-frame midpoint glitch at frame 12: [0..11]=A, [12]="乱码", [13..23]=B
-    # Must converge around frame 12 without hallucinating a long glitch cue!
     span_glitch = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
 
     class MidGlitchEngine(OcrEngine):
@@ -1179,7 +1124,6 @@ def test_stage2_pending_cluster_preserves_repeated_dialogue_across_240ms_gap():
         merge_gap_ms=160,
         flash_bridge_max_ms=320,
     )
-    # 25fps (40ms/frame): span 1 = 0..400ms (frames 0..9), 240ms gap (frames 10..15), span 2 = 640..1040ms (frames 16..25)
     frame_pts_ms = [i * 40 for i in range(27)]
     span1 = _make_encoded_span(list(range(0, 10)), frame_pts_ms[0:10], end_ms=frame_pts_ms[10])
     span2 = _make_encoded_span(list(range(16, 26)), frame_pts_ms[16:26], end_ms=frame_pts_ms[26])
@@ -1198,7 +1142,6 @@ def test_stage2_pending_cluster_preserves_repeated_dialogue_across_240ms_gap():
         (640, 1040, "快跑！"),
     ]
 
-    # Clean truncation containment across the same 240ms gap still bridges into 1 segment
     span1_t = _make_encoded_span(list(range(0, 10)), frame_pts_ms[0:10], end_ms=frame_pts_ms[10])
     span2_t = _make_encoded_span(list(range(16, 26)), frame_pts_ms[16:26], end_ms=frame_pts_ms[26])
 
@@ -1220,20 +1163,16 @@ def test_stage2_pending_cluster_preserves_repeated_dialogue_across_240ms_gap():
 def test_short_3char_distinct_dialogue_pairs_are_not_merged():
     assert _is_strict_same_cue("对不起", "真的对不起", 0.99, 0.99) is False
     assert _is_strict_same_cue("快走吧", "我们快走吧", 0.99, 0.99) is False
-    # Clean 2-char diff containment on >=4 chars at high conf (>=0.93) also stays distinct
     assert _is_strict_same_cue("不会放过你", "真的不会放过你", 0.96, 0.95) is False
-    # Lower-confidence glare clipping still clusters
     assert _is_strict_same_cue("不会放过你", "真的不会放过你", 0.88, 0.96) is True
 
 
 def test_low_conf_boundary_1char_glitch_clusters_and_valid_160ms_cue_survives():
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
 
-    # 1) 4-9 char cue with low-conf (0.74) 1-char typo on frame 0 clusters cleanly with [1..10]
     assert _is_strict_same_cue("战斗开使了", "战斗开始了", 0.74, 0.98) is True
     assert _is_strict_same_cue("战斗开使了", "战斗开始了", 0.92, 0.98) is False
 
-    # Force frame 0 to be evaluated (n=11, dur=3300ms > 2800ms disables early exit; expansion probes frame 0)
     pts_long = [i * 300 for i in range(12)]
     span_glitch = _make_encoded_span(list(range(11)), pts_long[:11], end_ms=pts_long[11])
 
@@ -1253,7 +1192,6 @@ def test_low_conf_boundary_1char_glitch_clusters_and_valid_160ms_cue_survives():
     assert segs_edge[0].start_ms == 0
     assert segs_edge[0].end_ms == pts_long[11]
 
-    # 2) 1-vote 160ms cue at conf=0.86 >= conf_threshold=0.85 must NOT be dropped by _flush_cluster
     pts_short = [0, 160]
     span_160 = _make_encoded_span([0], [0], end_ms=160)
 
@@ -1270,7 +1208,6 @@ def test_low_conf_boundary_1char_glitch_clusters_and_valid_160ms_cue_survives():
 
 
 def test_stage2_subgroups_stop_at_evaluated_none_gap_and_alternating_sandwich_safe():
-    # 1) Alternating [A, B, A, B] must NEVER double-absorb both k=1 and k=2
     img = _solid_roi(88)
     eval_alt = [
         (0, _FrameVote(0, "第一句台词", 0.98, img, frame_idx=0)),
@@ -1282,7 +1219,6 @@ def test_stage2_subgroups_stop_at_evaluated_none_gap_and_alternating_sandwich_sa
     assert not ({1, 2}.issubset(absorbed))
     assert absorbed == {1}
 
-    # 2) sub_groups g_end must stop at evaluated None silence gap instead of stretching to next cue
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
     frame_pts_ms = [i * 40 for i in range(21)]
     span_gap = _make_encoded_span(list(range(20)), frame_pts_ms[:20], end_ms=frame_pts_ms[20])

@@ -113,14 +113,11 @@ def test_segmenter_fade_in_hysteresis_and_sharp_peak_selection():
     h, w = 96, 640
     bg = _make_blank_roi(h, w)
 
-    # Calibrate soft fade-in frames so fg_ratio lies inside [fg_ratio_edge, fg_ratio_min)
     soft_1 = _make_faded_cue(bg, "FADE IN CUE D", alpha=0.80, blur_ksize=5)
     soft_2 = _make_faded_cue(bg, "FADE IN CUE D", alpha=0.82, blur_ksize=5)
-    # Force exact edge-band density if needed by checking mask ratios
     soft_1_ratio = mask_fg_ratio(build_stroke_mask(soft_1, cfg))
     soft_2_ratio = mask_fg_ratio(build_stroke_mask(soft_2, cfg))
     if not (cfg.fg_ratio_edge <= soft_1_ratio < cfg.fg_ratio_min):
-        # Construct deterministic edge fade frames from solid mask strokes
         solid_ref = _draw_outlined_cue(bg, "FADE IN CUE D", org_x=90)
         solid_mask = build_stroke_mask(solid_ref, cfg)
         ys, xs = np.where(solid_mask > 0)
@@ -128,7 +125,6 @@ def test_segmenter_fade_in_hysteresis_and_sharp_peak_selection():
         keep_2 = len(ys) // 5
         soft_1 = bg.copy()
         soft_2 = bg.copy()
-        # Keep dark border around a partial subset of white strokes to produce edge-level density
         for frame_out, count in ((soft_1, keep_1), (soft_2, keep_2)):
             sub_mask = np.zeros((h, w), dtype=np.uint8)
             sub_mask[ys[:count], xs[:count]] = 255
@@ -205,7 +201,6 @@ def test_segmenter_empty_blank_single_frame_and_coarse_step_3_boundaries():
     assert single_res[0].end_ms == 290
     assert single_res[0].frame_index == 0
 
-    # coarse_step=3: Cue 1 (0..3), 1-frame blank gap (4), Cue 2 starts on non-coarse tail (5..7) -> EOF
     cfg_step3 = ExtractConfig(coarse_step=3)
     bg = _make_blank_roi(96, 640)
     cue_1 = _draw_outlined_cue(bg, "ALPHA", org_x=40)
@@ -249,7 +244,6 @@ def test_segmenter_gradual_fade_in_and_fade_out_do_not_split():
     solid = _draw_outlined_cue(bg, "SMOOTH FADE CUE", org_x=60)
     solid_mask = build_stroke_mask(solid, cfg)
 
-    # Create a mid-fade frame with fg_ratio >= fg_ratio_min (~35% of solid strokes, IoU < 0.55)
     mid_fade = _make_partial_stroke_frame(bg, solid_mask, 0.32)
     edge_fade = _make_partial_stroke_frame(bg, solid_mask, 0.05)
     mid_ratio = mask_fg_ratio(build_stroke_mask(mid_fade, cfg))
@@ -260,17 +254,17 @@ def test_segmenter_gradual_fade_in_and_fade_out_do_not_split():
     stream = [
         FrameSlice(0, 0, bg),
         FrameSlice(1, 40, bg),
-        FrameSlice(2, 80, edge_fade),   # coarse: edge-band fade-in
-        FrameSlice(3, 120, mid_fade),   # mid fade-in
-        FrameSlice(4, 160, mid_fade),   # coarse: >= fg_ratio_min, still ramping
+        FrameSlice(2, 80, edge_fade),
+        FrameSlice(3, 120, mid_fade),
+        FrameSlice(4, 160, mid_fade),
         FrameSlice(5, 200, solid),
-        FrameSlice(6, 240, solid),      # coarse: full solid
+        FrameSlice(6, 240, solid),
         FrameSlice(7, 280, solid),
-        FrameSlice(8, 320, solid),      # coarse: full solid
+        FrameSlice(8, 320, solid),
         FrameSlice(9, 360, solid),
-        FrameSlice(10, 400, edge_fade), # coarse: soft edge-band fade-out
-        FrameSlice(11, 440, edge_fade), # edge-band fade-out
-        FrameSlice(12, 480, bg),        # coarse: blank
+        FrameSlice(10, 400, edge_fade),
+        FrameSlice(11, 440, edge_fade),
+        FrameSlice(12, 480, bg),
         FrameSlice(13, 520, bg),
     ]
     segs = segment_roi_frames(stream, cfg)
@@ -303,7 +297,6 @@ def test_segmenter_long_cue_decimation_picks_interior_peak():
     blurred = _draw_outlined_cue(bg, "LONG CUE", blur_ksize=5)
     sharp = _draw_outlined_cue(bg, "LONG CUE")
 
-    # 150 active frames (> _MAX_CANDIDATE_FRAMES=64) with sharpest frames around the middle
     stream = [
         FrameSlice(i, i * 40, sharp if 60 <= i <= 90 else blurred)
         for i in range(150)
@@ -350,11 +343,9 @@ def test_segmenter_back_to_back_two_line_to_one_line_splits_without_delay():
     mask_1 = build_stroke_mask(one_line, cfg)
     fg_2 = mask_fg_ratio(mask_2)
     fg_1 = mask_fg_ratio(mask_1)
-    # Confirm this hits the exact hazardous regime: fg_1 >= fg_ratio_min, fg_1 < 0.6 * fg_2, IoU < split_iou_min
     assert fg_1 >= cfg.fg_ratio_min
     assert fg_1 < fg_2 * 0.6
 
-    # Case A: even-frame transition (0..9 two-line, 10..12 short 3-frame one-line, 13..15 blank)
     stream_even = [
         FrameSlice(i, i * 40, two_line if i < 10 else (one_line if i < 13 else bg))
         for i in range(16)
@@ -364,7 +355,6 @@ def test_segmenter_back_to_back_two_line_to_one_line_splits_without_delay():
     assert (segs_even[0].start_ms, segs_even[0].end_ms) == (0, 400)
     assert (segs_even[1].start_ms, segs_even[1].end_ms) == (400, 520)
 
-    # Case B: odd-frame transition (0..8 two-line, 9..16 one-line, 17..19 blank)
     stream_odd = [
         FrameSlice(i, i * 40, two_line if i < 9 else (one_line if i < 17 else bg))
         for i in range(20)
@@ -382,7 +372,6 @@ def test_segmenter_bridges_240ms_flash_gap_but_keeps_quiet_repeated_dialogue_sep
     flash_bg = _make_blank_roi(h, w, (245, 245, 245))
     cue = _draw_outlined_cue(dark_bg, "FLASH BRIDGE", org_x=80)
 
-    # Case 1: 240ms bright flash whiteout (frames 10..15) inside a single cue -> bridged into 1 segment
     flash_stream = [
         FrameSlice(i, i * 40, flash_bg if 10 <= i < 16 else cue)
         for i in range(26)
@@ -394,7 +383,6 @@ def test_segmenter_bridges_240ms_flash_gap_but_keeps_quiet_repeated_dialogue_sep
     assert flash_segs[0].stable_mask is not None
     assert int(np.count_nonzero(flash_segs[0].stable_mask)) > 0
 
-    # Case 2: 240ms clean dark quiet gap between genuine repeated dialogue -> stays 2 separate segments
     repeat_stream = [
         FrameSlice(i, i * 40, dark_bg if 10 <= i < 16 else cue)
         for i in range(26)
@@ -411,7 +399,6 @@ def test_segmenter_ema_anchor_resists_transient_bright_prop_poisoning():
     dark_bg = _make_blank_roi(h, w, (24, 28, 32))
     clean_cue = _draw_outlined_cue(dark_bg, "STEADY CUE", org_x=60)
 
-    # Transient huge white outlined prop passing on the right side for 2 frames (would poison anchor_fg!)
     poisoned_cue = clean_cue.copy()
     poisoned_cue[10:86, 400:610] = (8, 8, 8)
     poisoned_cue[16:80, 406:604] = (248, 248, 248)
@@ -424,7 +411,6 @@ def test_segmenter_ema_anchor_resists_transient_bright_prop_poisoning():
     assert len(segs) == 1
     assert segs[0].start_ms == 0
     assert segs[0].end_ms == 960
-    # Peak selection must pick a clean frame without the right-side bright prop
     assert float(segs[0].peak_bgr[20:76, 410:600].mean()) < 60.0
 
 
@@ -434,7 +420,6 @@ def test_segmenter_partial_glare_continuation_preserves_single_cue_and_clean_pea
     dark_bg = _make_blank_roi(h, w, (24, 28, 32))
     full_cue = _draw_outlined_cue(dark_bg, "FULL LINE TEXT", org_x=40)
 
-    # Localized bright glare washes out left half of the cue for several frames
     glared_cue = full_cue.copy()
     glared_cue[:, 0:260] = (248, 248, 248)
 
@@ -446,7 +431,6 @@ def test_segmenter_partial_glare_continuation_preserves_single_cue_and_clean_pea
     assert len(segs) == 1
     assert segs[0].start_ms == 0
     assert segs[0].end_ms == 960
-    # Chosen peak must be an un-glared full frame
     assert float(segs[0].peak_bgr[:, 0:60].mean()) < 80.0
 
 
@@ -457,8 +441,6 @@ def test_segmenter_uses_rel_ms_for_nonzero_start_pts():
     cue = _draw_outlined_cue(bg, "OFFSET PTS", org_x=80)
     progress_calls: list[tuple[int, int]] = []
 
-    # Frames carry raw pts_ms starting at 5000ms, while 0-based rel_ms starts at 0ms.
-    # Cue appears on frames 5..14 (rel_ms 200..560, ending at frame 15 rel_ms 600).
     stream = [
         FrameSlice(
             frame_index=i,

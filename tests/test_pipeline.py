@@ -60,7 +60,6 @@ def _make_synthetic_subtitle_mp4(
 
         for idx in range(total_frames):
             pts_ms = int(round(idx * 1000.0 / fps))
-            # Vary background color and draw moving shapes behind ROI so background changes constantly.
             bg_r = 40 + (idx * 7) % 160
             bg_g = 90 + (idx * 5) % 130
             bg_b = 180 - (idx * 4) % 140
@@ -165,14 +164,12 @@ def test_pipeline_end_to_end_synthetic_mp4_and_exporters(tmp_path: Path):
     config = ExtractConfig(provider="cpu")
     pipeline = ExtractionPipeline()
 
-    # Single-frame preview on cue 1
     frame_preview = pipeline.test_single_frame(video_path, 600, roi, config)
     assert isinstance(frame_preview, FrameTestResult)
     assert mask_fg_ratio(frame_preview.mask) > config.fg_ratio_min
     assert "你好" in frame_preview.text or "世界" in frame_preview.text
     assert frame_preview.confidence >= 0.70
 
-    # Full pipeline extraction with progress tracking
     progress_calls: list[tuple[str, int, int]] = []
     result = pipeline.run(
         video_path,
@@ -213,7 +210,6 @@ def test_pipeline_end_to_end_synthetic_mp4_and_exporters(tmp_path: Path):
     assert ocr_calls == [(("ocr", 1, 2)), (("ocr", 2, 2))]
     assert done_calls == [("done", 2, 2)]
 
-    # Exporters consume ExtractResult cleanly
     ass_path = tmp_path / "out.ass"
     srt_path = tmp_path / "out.srt"
     export_ass(result.events, ass_path, video_width=result.width, video_height=result.height)
@@ -258,7 +254,6 @@ def test_pipeline_cancellation_raises_and_closes_video_reader(tmp_path: Path, mo
     roi = RoiRect(0.10, 0.74, 0.80, 0.20)
     config = ExtractConfig()
 
-    # 1) Cancel mid-scan
     scan_checks = 0
 
     def cancel_mid_scan() -> bool:
@@ -276,7 +271,6 @@ def test_pipeline_cancellation_raises_and_closes_video_reader(tmp_path: Path, mo
     assert tracker["closed"] == 1
     assert tracker["open_now"] == 0
 
-    # 2) Cancel during OCR stage (reader must already be closed!)
     seen_stages: list[str] = []
 
     def progress_cb(stage: str, cur: int, tot: int) -> None:
@@ -304,7 +298,6 @@ def test_pipeline_cancellation_raises_and_closes_video_reader(tmp_path: Path, mo
     assert tracker["open_now"] == 0
     assert "done" not in seen_stages
 
-    # 3) Cancel immediately before opening reader
     with pytest.raises(ExtractionCancelled):
         pipeline.run(video_path, roi, config, cancel_check=lambda: True)
     assert tracker["open_now"] == 0
@@ -341,7 +334,6 @@ def test_pipeline_skips_ocr_for_segments_below_min_duration(tmp_path: Path):
     from transapp.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "short_flash.mp4"
-    # 1 frame / 40ms flash at 25fps -> raw segment duration ~40ms < min_duration_ms=120
     _make_synthetic_subtitle_mp4(video_path, duration_sec=0.6, cues=((200, 230, "闪"),))
 
     ocr_calls = 0
@@ -391,12 +383,10 @@ def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path)
 
     scan_calls = [c for c in progress_calls if c[0] == "scan"]
     assert len(scan_calls) >= 5
-    # Frame 0 must start at 0, not jump straight to total_ms even though start_pts_ms >= duration_ms.
     assert scan_calls[0][1] == 0
     assert scan_calls[-1][1] > 0
     assert all(0 <= cur <= tot for _, cur, tot in scan_calls)
     assert [cur for _, cur, _ in scan_calls] == sorted(cur for _, cur, _ in scan_calls)
-    # Exported event timestamps must also be normalized relative to start_pts_ms (aligning with Preview).
     assert len(result.events) == 1
     assert 0 <= result.events[0].start_ms <= 200
     assert result.events[0].end_ms <= 600
@@ -429,7 +419,6 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     assert res.text == "你好"
     assert res.confidence == pytest.approx(0.88)
 
-    # Concurrent _resolve_ocr_engine calls must initialize OcrEngine only once under _engine_lock.
     init_calls = 0
 
     class _SlowFakeOcrEngine:
@@ -464,7 +453,6 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     assert len(resolved) == 4
     assert all(eng is resolved[0] for eng in resolved)
 
-    # Changing ocr_model must rebuild cached engine
     accurate_eng = shared_pipeline._resolve_ocr_engine(
         ExtractConfig(provider="cpu", ocr_model="accurate")
     )
@@ -486,7 +474,6 @@ def test_pipeline_run_clamps_event_end_ms_to_video_duration(tmp_path: Path, monk
         cues=((200, 1000, "结尾测试"),),
     )
 
-    # Simulate an OCR segment whose end_ms overshoots the container duration_ms
     def fake_recognize(spans, frame_pts_ms, ocr, config, **kwargs):
         return [
             OcrSegment(
@@ -540,7 +527,6 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     roi = RoiRect(0.10, 0.74, 0.80, 0.20)
     pipeline = ExtractionPipeline()
 
-    # Invalid trim bounds must raise ValueError before scanning
     with pytest.raises(ValueError, match="trim_start_ms"):
         pipeline.run(video_path, roi, ExtractConfig(provider="cpu", trim_start_ms=2000, trim_end_ms=2000))
     with pytest.raises(ValueError, match="trim_start_ms"):
@@ -548,7 +534,6 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     with pytest.raises(ValueError, match="trim_start_ms"):
         pipeline.run(video_path, roi, ExtractConfig(provider="cpu", trim_start_ms=None, trim_end_ms=0))
 
-    # Case 1: Trim [900ms, 2000ms] skips OP & ED, keeps ONLY middle cue with absolute ~1200ms start
     progress_calls: list[tuple[str, int, int]] = []
     result = pipeline.run(
         video_path,
@@ -560,7 +545,7 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     assert len(result.events) == 1
     ev = result.events[0]
     assert "正文" in ev.text or "台词" in ev.text
-    assert 1120 <= ev.start_ms <= 1280  # absolute video-relative ms, NOT shifted to ~300ms
+    assert 1120 <= ev.start_ms <= 1280
     assert 1720 <= ev.end_ms <= 1920
     assert result.frame_pts_ms[0] >= 900
     assert result.frame_pts_ms[-1] <= 2000
@@ -571,7 +556,6 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     assert scan_calls[0][1] <= 80
     assert scan_calls[-1][1] >= 1000
 
-    # Case 2: Cue still active at trim_end_ms=1600 must be clamped so end_ms <= 1600
     clamped_result = pipeline.run(
         video_path,
         roi,
@@ -583,7 +567,6 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     assert clamped_ev.end_ms <= 1600
     assert clamped_ev.end_ms >= 1520
 
-    # Case 3: trim_end_ms > duration_ms still clamps scan progress total to duration_ms (~100%)
     overshoot_progress: list[tuple[str, int, int]] = []
     overshoot_result = pipeline.run(
         video_path,
@@ -631,8 +614,8 @@ def test_test_single_frame_uses_zero_based_rel_ms_on_nonzero_start_pts(tmp_path:
     res = pipeline.test_single_frame(video_path, 600, roi, ExtractConfig())
 
     assert len(seen_targets) == 1
-    assert seen_targets[0] == 5600  # start_pts_ms (5000) + rel frame_ms (600)
-    assert abs(res.pts_ms - 600) <= 60  # returned FrameTestResult.pts_ms is 0-based rel_ms
+    assert seen_targets[0] == 5600
+    assert abs(res.pts_ms - 600) <= 60
     assert mask_fg_ratio(res.mask) > ExtractConfig().fg_ratio_min
     assert res.text == "偏移单帧"
 
@@ -654,7 +637,6 @@ def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_ov
     )
     roi = RoiRect(0.10, 0.74, 0.80, 0.20)
 
-    # 1. Missing video path must NOT evict _cached_ocr_engine even when config changes provider/model
     cached_pipeline = ExtractionPipeline()
     sentinel_engine = OcrEngine(provider="cpu", ocr_model="fast")
     cached_pipeline._cached_ocr_engine = sentinel_engine
@@ -666,7 +648,6 @@ def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_ov
         )
     assert cached_pipeline._cached_ocr_engine is sentinel_engine
 
-    # 2. trim_start_ms >= meta.duration_ms must raise ValueError (without evicting cached engine)
     with VideoReader(video_path) as probe_reader:
         actual_duration_ms = probe_reader.metadata.duration_ms
     assert actual_duration_ms > 0
@@ -686,12 +667,10 @@ def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_ov
             ExtractConfig(provider="cpu", trim_start_ms=actual_duration_ms + 500),
         )
 
-    # 3. Under-reported container header duration_ms must not clip valid tail cue when trim_end is None
     class ShortHeaderVideoReader(VideoReader):
         @property
         def metadata(self):
             base = super().metadata
-            # Under-report header duration by 2 frames (80ms) relative to real 1000ms video
             return dc_replace(base, duration_ms=max(100, base.duration_ms - 80))
 
     monkeypatch.setattr(pipeline_mod, "VideoReader", ShortHeaderVideoReader)
@@ -721,9 +700,6 @@ def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_ov
     result = tail_pipeline.run(video_path, roi, ExtractConfig(coarse_step=1))
     assert len(result.events) == 1
     expected_tail = result.frame_pts_ms[-1] + 40
-    assert result.duration_ms < expected_tail  # header genuinely under-reported
-    assert result.events[0].end_ms == expected_tail  # tail cue preserved intact
-
-
-
+    assert result.duration_ms < expected_tail
+    assert result.events[0].end_ms == expected_tail
 

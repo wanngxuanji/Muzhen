@@ -40,7 +40,6 @@ def test_text_similarity_cases():
     assert text_similarity("", "你好") == 0.0
     assert text_similarity("不用亲眼\n看见", "不用 亲眼 看见") == 1.0
 
-    # 1-char difference on a 12-char CJK line -> 11/12 ~= 0.917 >= 0.85
     sim_12 = text_similarity("今天天气真的很好啊对不对", "今天天气真的很好啊对不时")
     assert sim_12 == pytest.approx(11 / 12)
     assert sim_12 >= 0.85
@@ -51,10 +50,10 @@ def test_text_similarity_cases():
 def test_postprocess_merges_flickering_similar_cues_and_flags_low_conf():
     cfg = ExtractConfig(min_duration_ms=120, merge_gap_ms=160, merge_similarity=0.85, conf_threshold=0.85)
     segs = [
-        OcrSegment(100, 180, "废", 0.40, b"png"),  # too short -> dropped
+        OcrSegment(100, 180, "废", 0.40, b"png"),
         OcrSegment(400, 1000, "不用亲眼看见即将开始的地狱", 0.94, b"png1"),
-        OcrSegment(1080, 1700, "不用亲眼看见即将开始的池狱", 0.72, b"png2"),  # gap=80ms, 1-char OCR typo -> merge
-        OcrSegment(2200, 3200, "大家都怎么样了", 0.78, b"png3"),  # low conf -> keep & flag!
+        OcrSegment(1080, 1700, "不用亲眼看见即将开始的池狱", 0.72, b"png2"),
+        OcrSegment(2200, 3200, "大家都怎么样了", 0.78, b"png3"),
     ]
     events = postprocess_segments(segs, cfg)
     assert len(events) == 2
@@ -85,14 +84,11 @@ def test_postprocess_empty_and_duration_and_empty_text_filtering():
 def test_postprocess_three_cue_chain_merge_and_tie_breaking():
     cfg = ExtractConfig(min_duration_ms=120, merge_gap_ms=160, merge_similarity=0.85, conf_threshold=0.85)
     segs = [
-        # 3-cue flicker chain: 1st (0.75) -> 2nd (0.95, wins text/thumb) -> 3rd (0.80)
         OcrSegment(100, 500, "不用亲眼看见即将开始的池狱", 0.75, b"p1"),
         OcrSegment(580, 900, "不用亲眼看见即将开始的地狱", 0.95, b"p2"),
         OcrSegment(1050, 1400, "不用亲眼看见即将开始的地狱。", 0.80, b"p3"),
-        # Tie-breaking: equal confidence -> pick longer normalized text
         OcrSegment(2000, 2400, "不用亲眼看见即将开始的地狱", 0.90, b"t1"),
         OcrSegment(2500, 2900, "不用亲眼看见即将开始的地狱！", 0.90, b"t2"),
-        # Tie-breaking: equal confidence (< conf_threshold flicker) & equal length -> keep earlier segment
         OcrSegment(3500, 3900, "不用亲眼看见即将开始的地狱", 0.80, b"e1"),
         OcrSegment(4000, 4400, "不用亲眼看见即将开始的池狱", 0.80, b"e2"),
     ]
@@ -118,8 +114,8 @@ def test_postprocess_does_not_merge_long_gaps_or_distinct_cues():
     cfg = ExtractConfig(min_duration_ms=120, merge_gap_ms=160, merge_similarity=0.85, conf_threshold=0.85)
     segs = [
         OcrSegment(100, 500, "完全相同的台词", 0.95, b"a"),
-        OcrSegment(661, 1000, "完全相同的台词", 0.95, b"b"),  # gap = 161ms > 160ms
-        OcrSegment(1100, 1500, "这是另一句完全不同的对话", 0.95, b"c"),  # gap = 100ms, distinct text
+        OcrSegment(661, 1000, "完全相同的台词", 0.95, b"b"),
+        OcrSegment(1100, 1500, "这是另一句完全不同的对话", 0.95, b"c"),
     ]
     events = postprocess_segments(segs, cfg)
     assert len(events) == 3
@@ -130,10 +126,8 @@ def test_postprocess_does_not_merge_long_gaps_or_distinct_cues():
 def test_postprocess_flagging_noise_vs_valid_dialogue():
     cfg = ExtractConfig(conf_threshold=0.85)
     segs = [
-        # Valid Chinese punctuation + ASCII letters/digits/common punctuation -> NOT flagged
         OcrSegment(0, 500, "「你好，世界！」这是第100集：2026-11-27，100% OK? Yes, it's fine!", 0.85, b"ok1"),
         OcrSegment(1000, 1500, "『真的吗？』——嗯…大概吧～（开玩笑的）【注】《序章》、·", 0.95, b"ok2"),
-        # Stray OCR noise symbols even at high confidence -> flagged
         OcrSegment(2000, 2500, "大家|怎么^样", 0.96, b"bad1"),
         OcrSegment(3000, 3500, "测试\ufffd乱码□", 0.99, b"bad2"),
         OcrSegment(4000, 4500, "还行@#$", 0.92, b"bad3"),
@@ -160,13 +154,13 @@ def test_postprocess_allows_iteration_marks_and_halfwidth_parens_slash_semicolon
 
 def test_postprocess_drops_low_conf_non_cjk_garbage_keeps_low_conf_cjk_and_high_conf_ascii():
     segs = [
-        OcrSegment(0, 280, "VNY", 0.654, b"collar"),          # non-CJK low-conf artifact -> dropped
-        OcrSegment(400, 900, "II / -", 0.78, b"noise"),        # non-CJK low-conf artifact -> dropped
-        OcrSegment(900, 1100, "マ", 0.99, b"kana_ghost"),       # single Katakana ghost -> dropped
-        OcrSegment(1120, 1280, "バハ", 0.53, b"kana_low"),      # pure Katakana low-conf -> dropped
-        OcrSegment(1290, 1450, "》", 0.92, b"punct_only"),      # punctuation-only ghost -> dropped
-        OcrSegment(1500, 1800, "大家都怎么样了", 0.72, b"cjk"),  # CJK low-conf -> kept & flagged
-        OcrSegment(2000, 2800, "Episode 01", 0.96, b"title"),  # non-CJK high-conf -> kept
+        OcrSegment(0, 280, "VNY", 0.654, b"collar"),
+        OcrSegment(400, 900, "II / -", 0.78, b"noise"),
+        OcrSegment(900, 1100, "マ", 0.99, b"kana_ghost"),
+        OcrSegment(1120, 1280, "バハ", 0.53, b"kana_low"),
+        OcrSegment(1290, 1450, "》", 0.92, b"punct_only"),
+        OcrSegment(1500, 1800, "大家都怎么样了", 0.72, b"cjk"),
+        OcrSegment(2000, 2800, "Episode 01", 0.96, b"title"),
     ]
 
     filtered = postprocess_segments(segs, ExtractConfig(conf_threshold=0.85, filter_non_cjk_low_conf=True))
@@ -189,16 +183,12 @@ def test_postprocess_two_tier_smart_merge_containment_and_guards():
         conf_threshold=0.85,
     )
     segs = [
-        # Tier-2 containment across 280ms flash gap (#61/#62): fuller clean text wins even if slightly lower conf
         OcrSegment(2000, 2640, "个蕴藏着神秘力量的", 0.99, b"clipped"),
         OcrSegment(2920, 3400, "一个蕴藏着神秘力量的", 0.97, b"full"),
-        # Guard 1: 1-char substitution ("你的" vs "他的", sim=0.857) across 220ms (> 160ms) MUST NOT merge
         OcrSegment(5000, 5600, "我不会放过你的", 0.96, b"you"),
         OcrSegment(5820, 6400, "我不会放过他的", 0.96, b"him"),
-        # Guard 2: genuine repeated short cue ("快跑!") across 240ms (> 160ms) MUST NOT merge
         OcrSegment(8000, 8400, "快跑！", 0.98, b"run1"),
         OcrSegment(8640, 9000, "快跑！", 0.98, b"run2"),
-        # Leading 80ms fragment (< min_duration_ms) + 800ms main cue (gap=40ms) merges BEFORE duration filter
         OcrSegment(10000, 10080, "战斗开始", 0.91, b"frag"),
         OcrSegment(10120, 10920, "战斗开始", 0.99, b"main"),
     ]
@@ -242,13 +232,10 @@ def test_postprocess_does_not_merge_0ms_one_char_substitution_and_clamps_duratio
         conf_threshold=0.85,
     )
     segs = [
-        # Back-to-back 0ms gap, equal length >= 4, 1 clean Hanzi substitution, both high conf -> MUST NOT merge
         OcrSegment(0, 1000, "我不会放过你的", 0.96, b"you"),
         OcrSegment(1000, 2000, "我不会放过他的", 0.96, b"him"),
-        # Overlapping distinct cues (gap_ms < 0) -> MUST NOT merge, and prev.end_ms clamped to curr.start_ms
         OcrSegment(2100, 2600, "第一句重叠台词", 0.95, b"ov1"),
         OcrSegment(2450, 3200, "第二句完全不同", 0.95, b"ov2"),
-        # Cue starting past duration_ms -> dropped
         OcrSegment(3100, 3600, "超出片尾", 0.95, b"past"),
     ]
     events = postprocess_segments(segs, cfg, duration_ms=3000)
@@ -261,7 +248,6 @@ def test_postprocess_does_not_merge_0ms_one_char_substitution_and_clamps_duratio
     assert all(ev.end_ms <= 3000 for ev in events)
     assert all(events[i].end_ms <= events[i + 1].start_ms for i in range(len(events) - 1))
 
-    # Overlapping identical cues (gap_ms < 0) still coalesce cleanly; edge Latin noise still merges
     edge_and_dup = [
         OcrSegment(100, 500, "G我们是救世主", 0.90, b"g1"),
         OcrSegment(550, 950, "Y我们是救世主", 0.92, b"g2"),
@@ -278,14 +264,14 @@ def test_postprocess_does_not_merge_0ms_one_char_substitution_and_clamps_duratio
 def test_postprocess_drops_short_low_conf_hanzi_and_symbol_ghosts_keeps_real_dialogue():
     cfg = ExtractConfig(min_duration_ms=120, conf_threshold=0.85, filter_non_cjk_low_conf=True)
     segs = [
-        OcrSegment(0, 240, "生", 0.52, b"ghost1"),           # Rule A: 1-char, conf < 0.72, dur < 400 -> drop
-        OcrSegment(400, 640, "#一人", 0.56, b"ghost2"),      # Rule B: len <= 3, suspicious symbol, conf < 0.85 -> drop
-        OcrSegment(800, 1040, "八#", 0.70, b"ghost3"),       # Rule B: len <= 3, suspicious symbol, conf < 0.85 -> drop
-        OcrSegment(1200, 1440, "|了", 0.65, b"ghost4"),      # Rule B: len <= 3, suspicious symbol, conf < 0.85 -> drop
-        OcrSegment(1600, 1840, "嗯", 0.95, b"real1"),        # Real 1-char high-conf dialogue -> keep
-        OcrSegment(2000, 2600, "生", 0.60, b"real_long"),    # 1-char dur >= 400ms -> keep & flag
-        OcrSegment(2800, 3400, "大家都怎么样了", 0.72, b"low_cjk"),  # Clean low-conf CJK -> keep & flag
-        OcrSegment(3600, 4200, "大家|怎么^样", 0.75, b"long_sym"),   # len >= 4 with symbol -> keep & flag
+        OcrSegment(0, 240, "生", 0.52, b"ghost1"),
+        OcrSegment(400, 640, "#一人", 0.56, b"ghost2"),
+        OcrSegment(800, 1040, "八#", 0.70, b"ghost3"),
+        OcrSegment(1200, 1440, "|了", 0.65, b"ghost4"),
+        OcrSegment(1600, 1840, "嗯", 0.95, b"real1"),
+        OcrSegment(2000, 2600, "生", 0.60, b"real_long"),
+        OcrSegment(2800, 3400, "大家都怎么样了", 0.72, b"low_cjk"),
+        OcrSegment(3600, 4200, "大家|怎么^样", 0.75, b"long_sym"),
     ]
     events = postprocess_segments(segs, cfg)
     assert [(e.index, e.text, e.flagged) for e in events] == [
@@ -305,7 +291,6 @@ def test_postprocess_preserves_fuller_winner_confidence_without_masking_flag():
         conf_threshold=0.85,
     )
     segs = [
-        # Shorter clipped cue has higher conf (0.88 >= 0.85), fuller cue wins via containment with lower conf (0.81 < 0.85)
         OcrSegment(1000, 1500, "个蕴藏着神秘力量的", 0.88, b"clipped"),
         OcrSegment(1600, 2200, "一个蕴藏着神秘力量的", 0.81, b"full"),
     ]
@@ -319,7 +304,6 @@ def test_postprocess_preserves_fuller_winner_confidence_without_masking_flag():
 
 
 def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duration_cues():
-    # 1) Overlapping ghost must NOT truncate or drop a valid preceding cue
     cfg = ExtractConfig(min_duration_ms=120, conf_threshold=0.85, filter_non_cjk_low_conf=True)
     ghost_overlap = [
         OcrSegment(1000, 2000, "这是一句真实台词", 0.98, b"real"),
@@ -330,7 +314,6 @@ def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duratio
         (1000, 2000, "这是一句真实台词"),
     ]
 
-    # 2) Same-start_ms overlapping distinct cues (even with min_duration_ms=0) yield zero overlaps and zero 0ms cues
     cfg_zero = ExtractConfig(min_duration_ms=0, conf_threshold=0.85, filter_non_cjk_low_conf=True)
     same_start = [
         OcrSegment(1000, 1500, "第一句", 0.95, b"a"),
@@ -346,7 +329,6 @@ def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duratio
         for i in range(len(same_start_events) - 1)
     )
 
-    # 3) duration_ms=0 does not discard valid cues; 0ms cue is dropped even when min_duration_ms=0
     zero_dur_segs = [
         OcrSegment(1000, 1000, "好", 0.95, b"zero"),
         OcrSegment(1200, 1800, "你好世界", 0.95, b"valid"),
@@ -407,8 +389,6 @@ def test_pick_merged_winner_uses_stripped_length_for_containment():
         merge_similarity=0.85,
         conf_threshold=0.85,
     )
-    # Truncated text has extra punctuation making raw len("个神秘力量！！！") == 8 > len("一个神秘力量") == 6;
-    # stripped length (6 > 5) must pick the fuller clean text even when truncated has slightly higher conf!
     segs = [
         OcrSegment(1000, 1500, "个神秘力量！！！", 0.96, b"punct_trunc"),
         OcrSegment(1580, 2200, "一个神秘力量", 0.95, b"full"),
@@ -419,7 +399,6 @@ def test_pick_merged_winner_uses_stripped_length_for_containment():
     assert events[0].thumbnail_png == b"full"
     assert events[0].confidence == pytest.approx(0.95)
 
-    # Also verify reverse order ("一个神秘力量" 0.95 followed by "个神秘力量！！！" 0.94)
     segs_rev = [
         OcrSegment(1000, 1500, "一个神秘力量", 0.95, b"full"),
         OcrSegment(1580, 2200, "个神秘力量！！！", 0.94, b"punct_trunc"),
@@ -429,6 +408,4 @@ def test_pick_merged_winner_uses_stripped_length_for_containment():
     assert events_rev[0].text == "一个神秘力量"
     assert events_rev[0].thumbnail_png == b"full"
     assert events_rev[0].confidence == pytest.approx(0.95)
-
-
 

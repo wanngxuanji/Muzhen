@@ -99,7 +99,6 @@ class _CandidateSampler:
             raw_idxs = np.linspace(lo, hi, num=min(_MAX_TEMPORAL_SAMPLES, hi - lo + 1))
             sample_indices = list(dict.fromkeys(int(round(v)) for v in raw_idxs))
 
-        # Order evaluation closest to midpoint first so exact score ties prefer the interior center.
         ordered_indices = sorted(sample_indices, key=lambda i: (abs(i - mid), i))
         sample_slices = [self.items[i][1] for i in ordered_indices]
         sample_bgrs = [s.bgr_roi for s in sample_slices]
@@ -221,7 +220,6 @@ def _detect_gap_disturbance(
     mean_v = float(cv2.mean(v_chan)[0])
     if mean_v >= baseline_luma + 22.0:
         return True
-    # Equivalent to P90(v) >= 215 without sorting the entire ROI array
     if mean_v >= baseline_luma + 10.0 and cv2.countNonZero(v_chan >= 215) >= int(0.10 * v_chan.size):
         return True
     if prev_bgr is not None and prev_bgr.shape == bgr_roi.shape:
@@ -405,7 +403,6 @@ def segment_roi_frames(
                 )
             return
 
-        # --- Pending-Close Hold State (bridging flash/scene-cut gaps up to flash_bridge_max_ms) ---
         if active.pending_end_slice is not None:
             active.gap_flash_detected = active.gap_flash_detected or _detect_gap_disturbance(
                 bf.slice.bgr_roi, active.baseline_luma, active.gap_prev_bgr
@@ -426,8 +423,6 @@ def segment_roi_frames(
                             active.gap_flash_detected and iou_b >= 0.38 and cont_b >= 0.78
                         )
                     elif active.gap_flash_detected:
-                        # For gaps > merge_gap_ms (160..320ms), require confirmed flash/scene-cut
-                        # evidence so genuine repeated dialogue ("快跑!"..."快跑!") is never merged.
                         can_bridge = (iou_b >= 0.48) or (iou_b >= 0.36 and cont_b >= 0.78)
 
                 if can_bridge:
@@ -443,8 +438,6 @@ def segment_roi_frames(
                     active.last_confirmed_slice = bf.slice
                     return
 
-                # Distinct next cue (or clean quiet gap > merge_gap_ms): finalize previous cue
-                # at its exact tentative end boundary and open the new cue from bf.
                 close_active_at(active.pending_end_slice.rel_ms, active.pending_closed_pos)
                 active = _open_segment_from_buffer(
                     buf,
@@ -464,7 +457,6 @@ def segment_roi_frames(
                 close_active_at(active.pending_end_slice.rel_ms, active.pending_closed_pos)
             return
 
-        # --- Normal ACTIVE evaluation ---
         iou = mask_iou(active.anchor_mask, curr_mask, dilate_px=dil_px)
         is_same_solid = curr_fg_px >= fg_min_px and iou >= config.split_iou_min
         is_early_fade_ramp = (
@@ -486,10 +478,6 @@ def segment_roi_frames(
             _extend_active(active, buf, bf)
             return
 
-        # Transient background prop spike: all anchor strokes remain intact (>=90% contained)
-        # while a passing bright outlined object temporarily inflates curr_fg_px. Hold for up to
-        # 2 coarse steps without polluting anchor_ema or sampler; if it persists (e.g. genuine
-        # 1-line -> 2-line change), fall through and split normally.
         if (
             curr_fg_px > int(round(active.anchor_fg_px * 1.35))
             and active.transient_spike_count < _MAX_FADE_TAIL_STEPS
@@ -501,8 +489,6 @@ def segment_roi_frames(
             active.last_confirmed_slice = bf.slice
             return
 
-        # Partial-glare continuation: localized bright glare hides part of the active subtitle
-        # while remaining strokes still match the anchor. Do not split or pollute sampler/anchor.
         if (
             curr_fg_px >= fg_edge_px
             and curr_fg_px < active.anchor_fg_px
@@ -528,7 +514,6 @@ def segment_roi_frames(
             _extend_active(active, buf, bf)
             return
 
-        # Transition: ACTIVE -> EMPTY or ACTIVE_A -> ACTIVE_B. Refine exact boundary in ring buffer.
         has_next_cue = curr_fg_px >= fg_min_px
         tail = [b for b in buf if active.last_confirmed_pos < b.pos <= bf.pos]
         end_boundary = bf.slice
@@ -559,8 +544,6 @@ def segment_roi_frames(
                 break
 
         if not has_next_cue and config.flash_bridge_max_ms > 0:
-            # Enter Pending-Close Hold instead of finalizing immediately so brief flash/scene-cut
-            # dropouts can bridge cleanly back into the same cue.
             active.pending_end_slice = end_boundary
             active.pending_closed_pos = active.last_confirmed_pos
             active.gap_flash_detected = _detect_gap_disturbance(

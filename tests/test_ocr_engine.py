@@ -35,7 +35,6 @@ def test_prepare_roi_for_ocr_normalizes_scale_without_synthetic_borders():
 
     small_roi = _make_bgr(28, 160, color=(200, 180, 160))
     prep_small = _prepare_roi_for_ocr(small_roi)
-    # Upscaled to >= 56 height without adding black top/bottom borders
     assert prep_small.shape[0] == 56
     assert prep_small.shape[1] == 320
     assert int(prep_small[0, 0, 0]) == 200
@@ -53,13 +52,9 @@ def test_prepare_roi_for_ocr_normalizes_scale_without_synthetic_borders():
 def test_recognize_roi_sorts_multiline_boxes_and_uses_min_confidence():
     def fake_ocr(_img: np.ndarray):
         items = [
-            # Bottom line, right box
             [[[200.0, 60.0], [300.0, 60.0], [300.0, 80.0], [200.0, 80.0]], "world", 0.95],
-            # Top line, right box
             [[[150.0, 12.0], [250.0, 12.0], [250.0, 32.0], [150.0, 32.0]], "B", 0.91],
-            # Bottom line, left box (within 0.5 * line_height of y=70, lowest score)
             [[[20.0, 63.0], [120.0, 63.0], [120.0, 83.0], [20.0, 83.0]], "hello", 0.73],
-            # Top line, left box
             [[[20.0, 10.0], [100.0, 10.0], [100.0, 30.0], [20.0, 30.0]], "A", 0.99],
         ]
         return (items, [0.01])
@@ -135,7 +130,6 @@ def test_process_segments_emits_progress_and_respects_cancellation():
     assert all(seg.thumbnail_png.startswith(b"\x89PNG\r\n\x1a\n") for seg in out)
     assert progress == [(1, 3), (2, 3), (3, 3)]
 
-    # Cancellation before second segment
     calls = 0
     cancel_progress: list[tuple[int, int]] = []
     check_count = 0
@@ -204,7 +198,6 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     )
     assert OcrEngine.available_providers() == ["cpu", "directml"]
 
-    # When DmlExecutionProvider is unavailable, directml falls back to CPU with warning
     init_params: list[dict] = []
 
     class FakeRapidOCR:
@@ -225,7 +218,7 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
 
     caplog.set_level(logging.WARNING)
     engine = OcrEngine(provider="directml")
-    assert init_params == []  # lazy init
+    assert init_params == []
     text, conf = engine.recognize_roi(_make_bgr(64, 160))
     assert (text, conf) == ("回退成功", pytest.approx(0.92))
     assert len(init_params) == 1
@@ -242,7 +235,6 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     assert "EngineConfig.onnxruntime.use_dml" not in init_params[0]
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # When DmlExecutionProvider is listed but RapidOCR init fails, still fall back to CPU with warning
     caplog.clear()
     init_params.clear()
     monkeypatch.setattr(
@@ -261,7 +253,6 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     assert init_params[1]["Det.model_type"] == rapidocr.ModelType.MOBILE
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # Default CPU provider passes ch_PP-OCRv5 server params with use_cls disabled
     init_params.clear()
     cpu_engine = OcrEngine(provider="cpu", ocr_model="accurate")
     assert cpu_engine.recognize_roi(_make_bgr(64, 160)) == ("回退成功", pytest.approx(0.92))
@@ -289,7 +280,6 @@ def test_real_rapidocr_recognizes_sample_fixtures(fixture_name: str, expected_te
 
 
 def test_group_boxes_drops_detached_low_conf_non_hanzi_noise_and_keeps_grid_mapping():
-    # Wall inscription "1X1- TO X1-" (0.76) beside strong Hanzi subtitle "停下来了" (0.99) -> dropped
     def fake_noisy(_img: np.ndarray):
         items = [
             [[[120.0, 20.0], [240.0, 20.0], [240.0, 50.0], [120.0, 50.0]], "停下来了", 0.99],
@@ -302,11 +292,9 @@ def test_group_boxes_drops_detached_low_conf_non_hanzi_noise_and_keeps_grid_mapp
     assert text == "停下来了"
     assert conf == pytest.approx(0.99)
 
-    # Grid detection batch maps boxes back to their respective cell indices
     class FakeDetGrid:
         def __call__(self, canvas: np.ndarray):
             class _DetOut:
-                # Cell 0 occupies y in [20, 84], cell 2 occupies y in [188, 252]
                 boxes = np.array(
                     [
                         [[50.0, 28.0], [250.0, 28.0], [250.0, 68.0], [50.0, 68.0]],
@@ -348,8 +336,6 @@ def test_det_mobile_params_and_batch_size(monkeypatch):
     assert OcrEngine(provider="directml").det_batch_size == 16
     assert OcrEngine(provider="cpu").det_batch_size == 8
 
-    # When DirectML falls back to CPU on Det init, det_batch_size drops to 8,
-    # and a fake RapidOCR without _load_det_model falls back to per-ROI det_engine(roi) calls.
     seen_shapes: list[tuple[int, ...]] = []
 
     class FakePerRoiRapidOCR:
@@ -386,7 +372,6 @@ def test_det_mobile_params_and_batch_size(monkeypatch):
 def test_detect_batch_4d_native_tensor_and_empty_map_short_circuit():
     dark_roi = _load_bgr(FIXTURES_DIR / "sample_dark_bg.png")
     bright_roi = _load_bgr(FIXTURES_DIR / "sample_bright_bg.png")
-    # Bright colored blank anime ROI (orange BGR) that previously triggered black-grid edge false positives
     blank_bright_orange = _make_bgr(dark_roi.shape[0], dark_roi.shape[1], color=(40, 165, 255))
 
     engine = OcrEngine(provider="cpu")
@@ -417,26 +402,22 @@ def test_detect_batch_4d_native_tensor_and_empty_map_short_circuit():
     assert len(results[0]) >= 1, "Expected subtitle box on sample_dark_bg.png"
     assert results[1] == [], "Blank bright orange ROI must produce zero boxes"
     assert len(results[2]) >= 1, "Expected subtitle box on sample_bright_bg.png"
-    # Must execute as a single 4D NCHW batch (N=3, C=3, rh, rw)
     assert len(session_shapes) == 1
     assert len(session_shapes[0]) == 4
     assert session_shapes[0][0] == 3
     assert session_shapes[0][1] == 3
-    # Empty-map short-circuit must skip postprocess_op for the blank frame
     assert postprocess_calls == 2
 
 
 def test_detect_batch_preserves_small_subtitle_in_tall_roi():
     from transapp.core.ocr_engine import _polys_to_normalized_boxes
 
-    # Exact 3% height box is kept (previously dropped by > 0.05); <= 2% tiny sliver is dropped
     poly_3pct = np.array([[100.0, 900.0], [500.0, 900.0], [500.0, 930.0], [100.0, 930.0]], dtype=np.float32)
     poly_1pct = np.array([[100.0, 100.0], [500.0, 100.0], [500.0, 115.0], [100.0, 115.0]], dtype=np.float32)
     kept = _polys_to_normalized_boxes([poly_3pct, poly_1pct], orig_w=1000, orig_h=1000)
     assert len(kept) == 1
     assert (kept[0][3] - kept[0][1]) == pytest.approx(0.03)
 
-    # Real Det Mobile on a tall ROI (height=1800) where a 1-line subtitle occupies ~4% (< 5%) of ROI height
     dark_roi = _load_bgr(FIXTURES_DIR / "sample_dark_bg.png")
     h_sub, w_sub = dark_roi.shape[:2]
     bg_color = tuple(int(c) for c in np.median(dark_roi[0, :, :], axis=0))
@@ -462,7 +443,6 @@ def test_det_directml_lazy_load_failure_and_silent_cpu_fallback(monkeypatch, cap
         lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
     )
 
-    # Case 1: RapidOCR.__init__ succeeds with use_dml=True, but lazy _load_det_model() fails
     init_flags: list[bool] = []
 
     class FakeLazyFailRapidOCR:
@@ -505,7 +485,6 @@ def test_det_directml_lazy_load_failure_and_silent_cpu_fallback(monkeypatch, cap
     assert eng1.det_batch_size == 8
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # Case 2: _load_det_model() succeeds without raising, but ORT silently dropped DirectML to CPU
     class FakeSilentCpuFallbackRapidOCR:
         def __init__(self, params=None):
             self.params = params or {}
@@ -548,14 +527,12 @@ def test_detect_batch_empty_zero_size_dtype_and_portrait_height_cap():
     engine = OcrEngine(provider="cpu")
     assert engine.detect_grid_batch([]) == []
 
-    # Mixed zero-size ROI + uint8 ROI + float32 ROI in a real 4D batch
     mixed = engine.detect_grid_batch([empty_roi, dark_roi, float_roi])
     assert len(mixed) == 3
     assert mixed[0] == []
     assert len(mixed[1]) >= 1
     assert len(mixed[2]) >= 1
 
-    # Pathological portrait ROI (w <= 640, h >> 960) stays capped at rh <= 960
     det_model = engine._ensure_det_engine()._load_det_model()
     seen_shapes: list[tuple[int, ...]] = []
     orig_session = det_model.session
@@ -570,7 +547,6 @@ def test_detect_batch_empty_zero_size_dtype_and_portrait_height_cap():
     assert len(seen_shapes) == 1
     assert seen_shapes[0][2] <= 960
 
-    # Injected det_callable path also tolerates all-empty or leading-empty ROIs
     called = 0
 
     def fake_det(_canvas: np.ndarray):
@@ -593,14 +569,10 @@ def test_ocr_engine_drops_offband_tiny_hanzi_and_serializes_concurrent_calls():
     import threading
     import time
 
-    # 1) Off-band low-conf 1-char Hanzi & tiny low-conf 1-char Hanzi are dropped when strong Hanzi (>=0.90) exists
     def fake_spatial_outliers(_img: np.ndarray):
         items = [
-            # Strong main subtitle line: cy=50, h=30, score=0.98
             [[[80.0, 35.0], [340.0, 35.0], [340.0, 65.0], [80.0, 65.0]], "不用亲眼看见", 0.98],
-            # Detached off-band 1-char low-conf Hanzi: cy=10 (|10-50|=40 > 0.8*30=24), score=0.62 -> drop
             [[[20.0, 0.0], [45.0, 0.0], [45.0, 20.0], [20.0, 20.0]], "生", 0.62],
-            # Tiny 1-char low-conf Hanzi on same band: h=12 (< 0.55*30=16.5), score=0.70 -> drop
             [[[360.0, 44.0], [375.0, 44.0], [375.0, 56.0], [360.0, 56.0]], "人", 0.70],
         ]
         return (items, [0.01])
@@ -610,7 +582,6 @@ def test_ocr_engine_drops_offband_tiny_hanzi_and_serializes_concurrent_calls():
     assert text == "不用亲眼看见"
     assert conf == pytest.approx(0.98)
 
-    # 2) Genuine 2-line subtitle where both lines are full-height & high-score MUST be preserved
     def fake_two_line(_img: np.ndarray):
         items = [
             [[[80.0, 10.0], [320.0, 10.0], [320.0, 38.0], [80.0, 38.0]], "第一行台词", 0.96],
@@ -623,7 +594,6 @@ def test_ocr_engine_drops_offband_tiny_hanzi_and_serializes_concurrent_calls():
     assert text2 == "第一行台词\n嗯"
     assert conf2 == pytest.approx(0.93)
 
-    # 3) DirectML / ONNX thread safety: _inference_lock serializes concurrent recognize_roi & detect_grid_batch
     active = 0
     max_active = 0
     state_lock = threading.Lock()
@@ -746,7 +716,6 @@ def test_ensure_engine_eagerly_verifies_rec_model_and_falls_back_to_cpu_on_dml_e
     assert True in rec_load_flags
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # Silent DML drop on rec model must also report dml_active=False
     class FakeSilentRecCpuRapidOCR:
         def __init__(self, params=None):
             self._use_dml = bool((params or {}).get("EngineConfig.onnxruntime.use_dml"))
@@ -791,7 +760,6 @@ def test_detect_native_4d_batch_preserves_min_64px_height_for_1080p_roi():
     det_model.postprocess_op = _FakeDetModel.postprocess_op()
     engine = OcrEngine(provider="cpu")
 
-    # 1080p subtitle ROIs: 1536x108 and 1920x90 must never be crushed to rh=32px
     for roi_h, roi_w in ((108, 1536), (90, 1920)):
         seen_shapes.clear()
         out = engine._detect_native_4d_batch(det_model, [_make_bgr(roi_h, roi_w)])
@@ -825,14 +793,10 @@ def test_prepare_roi_for_ocr_single_resize_on_wide_1080p_roi(monkeypatch):
     assert out.shape == (56, 960, 3)
     assert calls[0][1] == cv2.INTER_AREA
 
-    # Wide-short ROI that shrinks width (1200->960) while upscaling height (40->56) also resizes once
     calls.clear()
     roi_short_wide = _make_bgr(40, 1200, color=(90, 90, 90))
     out2 = _prepare_roi_for_ocr(roi_short_wide)
     assert len(calls) == 1
     assert out2.shape == (56, 960, 3)
     assert calls[0][1] == cv2.INTER_CUBIC
-
-
-
 

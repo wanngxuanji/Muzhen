@@ -10,6 +10,7 @@ def test_get_ui_assets_dir_resolves_dev_and_frozen_meipass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from transapp.core import paths
+    from transapp.ui.theme import build_studio_dark_qss
 
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
@@ -27,8 +28,6 @@ def test_get_ui_assets_dir_resolves_dev_and_frozen_meipass(
 
     assert paths.is_frozen() is True
     assert paths.get_ui_assets_dir() == frozen_assets
-
-    from transapp.ui.theme import build_studio_dark_qss
 
     frozen_qss = build_studio_dark_qss()
     assert (frozen_assets / "chevron_down.svg").as_posix() in frozen_qss

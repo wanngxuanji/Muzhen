@@ -604,8 +604,6 @@ class ReviewTable(QWidget):
         self._refresh_find_status()
         self._emit_dirty_if_changed()
 
-    # === Undo / Redo Snapshot Helpers ===
-
     def _snapshot_events(self) -> list[SubtitleEvent]:
         """Create fresh SubtitleEvent copies sharing immutable ``thumbnail_png`` bytes."""
         return [dc_replace(ev) for ev in self._events]
@@ -678,8 +676,6 @@ class ReviewTable(QWidget):
     def _reindex_events(self) -> None:
         for idx, ev in enumerate(self._events, start=1):
             ev.index = idx
-
-    # === Selection Helpers ===
 
     def _selected_visible_rows(self) -> list[int]:
         sel_model = self.table.selectionModel()
@@ -776,8 +772,6 @@ class ReviewTable(QWidget):
 
     def _update_delete_button_state(self) -> None:
         self._update_action_buttons_state()
-
-    # === Timing & QA Operations ===
 
     def jump_to_selected_start(self) -> bool:
         """Emit ``jump_requested`` for the selected cue's ``start_ms``."""
@@ -986,8 +980,6 @@ class ReviewTable(QWidget):
         else:
             self.nudge_selected_timing(sign, by_frames=True)
 
-    # === Multi-Row Delete, Merge & Split ===
-
     def delete_selected_rows(self) -> bool:
         """Remove all currently selected subtitle events in one undoable step and re-index."""
         self.commit_or_close_active_editor()
@@ -1039,7 +1031,6 @@ class ReviewTable(QWidget):
         else:
             flag_reason = ""
 
-        # Deduplicate near-identical adjacent texts (>= 0.80), otherwise join with \n
         merged_parts: list[tuple[str, float]] = [(group[0].text, group[0].confidence)]
         for ev in group[1:]:
             prev_text, prev_conf = merged_parts[-1]
@@ -1138,8 +1129,6 @@ class ReviewTable(QWidget):
         self.events_changed.emit()
         self.events_modified.emit()
         return True
-
-    # === Collapsible Find & Replace ===
 
     def open_find_bar(self, focus_replace: bool = False) -> None:
         """Show the inline Find & Replace bar and focus the Find or Replace input."""
@@ -1329,8 +1318,6 @@ class ReviewTable(QWidget):
         self.events_changed.emit()
         self.events_modified.emit()
         return total_replaced
-
-    # === Table Rendering & Styling ===
 
     def _update_filter_counts(self) -> None:
         total = len(self._events)

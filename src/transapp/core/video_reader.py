@@ -184,7 +184,6 @@ class VideoReader:
                     break
 
                 full_bgr = frame.to_ndarray(format="bgr24")
-                # Copy only the ROI slice so the full-frame buffer can be freed immediately.
                 bgr_roi = np.ascontiguousarray(full_bgr[y1:y2, x1:x2])
                 yield FrameSlice(
                     frame_index=frame_index,
@@ -204,7 +203,6 @@ class VideoReader:
 
         result = self._decode_near_ms(container, stream, clamped_ms, seek_ms=clamped_ms)
         if result is None:
-            # Seeking past EOF or mid-stream can yield zero frames; fall back near tail then start.
             tail_ms = max(self._start_pts_ms, self._start_pts_ms + self._metadata.duration_ms - 5000)
             if self._start_pts_ms < tail_ms < clamped_ms:
                 result = self._decode_near_ms(container, stream, clamped_ms, seek_ms=tail_ms)
@@ -410,7 +408,6 @@ class VideoReader:
         height = int(stream.codec_context.height or stream.height or 0)
         fps = float(self._fps_frac)
 
-        # Always probe frame 0 once to anchor signed origin_pts_ms to the actual first decoded frame.
         first_dims, first_pts_ticks, first_pts_ms = self._probe_first_frame(container, stream)
         origin_known = first_pts_ms is not None
         if first_pts_ms is not None:
