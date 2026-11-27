@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 import os
 from pathlib import Path
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
 
 from muzhen import __version__
 from muzhen.core.audio_player import AudioPreviewPlayer
+from muzhen.core.discord_rpc import DiscordRpcClient, PresenceState
 from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
@@ -101,7 +104,7 @@ def _make_panel_header(title_text: str) -> tuple[QFrame, QHBoxLayout, QLabel]:
     layout = QHBoxLayout(header)
     layout.setContentsMargins(2, 0, 6, 0)
     layout.setSpacing(6)
-    title = _ShrinkableLabel(title_text, max_min_width=84)
+    title = QLabel(title_text)
     title.setObjectName("panelTitle")
     layout.addWidget(title)
     layout.addStretch(1)
@@ -409,6 +412,7 @@ class MainWindow(QMainWindow):
         update_check_fn: Callable[[str], UpdateInfo | None] | None = None,
         open_url_fn: Callable[[str], bool] | None = None,
         language: str | None = None,
+        discord_rpc: DiscordRpcClient | None = None,
     ) -> None:
         super().__init__(parent)
         self._preset_store = preset_store if preset_store is not None else PresetStore()
@@ -482,6 +486,29 @@ class MainWindow(QMainWindow):
         self._active_panel: QFrame | None = None
         self._focus_tracking_active: bool = False
 
+        self._rpc_enabled: bool = self._update_prefs.get_discord_rpc_enabled()
+        self._rpc_hide_filename: bool = self._update_prefs.get_discord_rpc_hide_filename()
+        self._rpc_show_github: bool = self._update_prefs.get_discord_rpc_show_github_button()
+        self._rpc_session_started_at: int = int(time.time())
+        self._rpc_extract_started_at: int = 0
+        self._rpc_extract_provider: str = "cpu"
+        self._rpc_extract_model: str = "accurate"
+        self._rpc_last_stage: str = ""
+        if discord_rpc is not None:
+            self._discord_rpc = discord_rpc
+            self._discord_rpc.configure(
+                enabled=self._rpc_enabled,
+                hide_filename=self._rpc_hide_filename,
+                show_github_button=self._rpc_show_github,
+            )
+        else:
+            self._discord_rpc = DiscordRpcClient(
+                app_version=__version__,
+                enabled=self._rpc_enabled,
+                hide_filename=self._rpc_hide_filename,
+                show_github_button=self._rpc_show_github,
+            )
+
         self.setAcceptDrops(True)
         self.setWindowTitle(f"Muzhen - V{__version__}")
         target_w, target_h = 1160, 680
@@ -500,8 +527,11 @@ class MainWindow(QMainWindow):
         self._refresh_presets()
         self._retranslate_ui()
         self._update_controls_state()
+        self._publish_discord_presence(mode="idle", urgent=True)
 
         in_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        if discord_rpc is not None or not in_pytest:
+            self._discord_rpc.start()
         if auto_check_updates and (update_check_fn is not None or not in_pytest):
             self._update_startup_timer.start(1200)
 
@@ -736,6 +766,54 @@ class MainWindow(QMainWindow):
         lang_row.addWidget(self.language_combo, 1)
         body_layout.addLayout(lang_row)
 
+        body_layout.addWidget(_make_divider())
+
+        self.lbl_discord_rpc = _make_section_label(tr(self._lang, "discord_rpc"))
+        body_layout.addWidget(self.lbl_discord_rpc)
+
+        rpc_seg = QFrame()
+        rpc_seg.setObjectName("segmentedControl")
+        rpc_seg_layout = QHBoxLayout(rpc_seg)
+        rpc_seg_layout.setContentsMargins(2, 2, 2, 2)
+        rpc_seg_layout.setSpacing(2)
+        self.btn_rpc_on = QPushButton(tr(self._lang, "rpc_on"))
+        self.btn_rpc_off = QPushButton(tr(self._lang, "rpc_off"))
+        self._rpc_toggle_group = QButtonGroup(self)
+        self._rpc_toggle_group.setExclusive(True)
+        for rpc_btn in (self.btn_rpc_on, self.btn_rpc_off):
+            rpc_btn.setProperty("variant", "segment")
+            rpc_btn.setCheckable(True)
+            rpc_btn.setFixedHeight(22)
+            rpc_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            rpc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._rpc_toggle_group.addButton(rpc_btn)
+            rpc_seg_layout.addWidget(rpc_btn, 1)
+        if self._rpc_enabled:
+            self.btn_rpc_on.setChecked(True)
+        else:
+            self.btn_rpc_off.setChecked(True)
+        body_layout.addWidget(rpc_seg)
+
+        self.rpc_privacy_widget = QWidget()
+        rpc_privacy_layout = QVBoxLayout(self.rpc_privacy_widget)
+        rpc_privacy_layout.setContentsMargins(2, 2, 0, 0)
+        rpc_privacy_layout.setSpacing(4)
+
+        self.chk_rpc_hide_filename = QCheckBox(tr(self._lang, "rpc_hide_filename"))
+        self.chk_rpc_hide_filename.setChecked(self._rpc_hide_filename)
+        self.chk_rpc_hide_filename.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chk_rpc_hide_filename.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.chk_rpc_show_github = QCheckBox(tr(self._lang, "rpc_show_github"))
+        self.chk_rpc_show_github.setChecked(self._rpc_show_github)
+        self.chk_rpc_show_github.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chk_rpc_show_github.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        rpc_privacy_layout.addWidget(self.chk_rpc_hide_filename)
+        rpc_privacy_layout.addWidget(self.chk_rpc_show_github)
+        self.rpc_privacy_widget.setVisible(self._rpc_enabled)
+        body_layout.addWidget(self.rpc_privacy_widget)
+
         body_layout.addStretch(1)
         scroll.setWidget(inspector_body)
         inspector_outer.addWidget(scroll, 1)
@@ -809,7 +887,7 @@ class MainWindow(QMainWindow):
         self.btn_check_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_check_update.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_author_star = QPushButton("wanngxuanji")
+        self.btn_author_star = QPushButton("Muzhen")
         self.btn_author_star.setProperty("variant", "ghost")
         self.btn_author_star.setIcon(make_icon("star", color="#E5B54D", size=12))
         self.btn_author_star.setIconSize(QSize(12, 12))
@@ -835,12 +913,12 @@ class MainWindow(QMainWindow):
         monitor_header, monitor_hdr_layout, monitor_title = _make_panel_header(
             tr(self._lang, "panel_monitor")
         )
-        self.video_name_label = QLabel("")
+        self.video_name_label = _ShrinkableLabel("", max_min_width=64)
         self.video_name_label.setObjectName("videoNameLabel")
         self.video_name_label.setMaximumWidth(150)
         self.video_name_label.setVisible(False)
 
-        self.video_meta_badge = QLabel("")
+        self.video_meta_badge = _ShrinkableLabel("", max_min_width=72)
         self.video_meta_badge.setObjectName("metaBadge")
         self.video_meta_badge.setVisible(False)
 
@@ -852,7 +930,7 @@ class MainWindow(QMainWindow):
         self.btn_browse_video.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_browse_video.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.roi_label = _ShrinkableLabel("", max_min_width=72)
+        self.roi_label = QLabel()
         self.roi_label.setObjectName("roiPill")
 
         monitor_hdr_layout.addWidget(self.video_name_label)
@@ -907,7 +985,7 @@ class MainWindow(QMainWindow):
             step_btn.setAutoRepeat(True)
             step_btn.setAutoRepeatDelay(250)
             step_btn.setAutoRepeatInterval(55)
-        self.time_label = _ShrinkableLabel("0:00:00.00 / 0:00:00.00", max_min_width=100)
+        self.time_label = QLabel("0:00:00.00 / 0:00:00.00")
         self.time_label.setObjectName("timecodeBadge")
         scrub_row.addWidget(self.btn_seek_start)
         scrub_row.addWidget(self.btn_play_pause)
@@ -929,7 +1007,7 @@ class MainWindow(QMainWindow):
         self.btn_set_in.setFixedHeight(24)
         self.btn_set_in.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.lbl_trim_range = _ShrinkableLabel(tr(self._lang, "trim_full"), max_min_width=64)
+        self.lbl_trim_range = QLabel(tr(self._lang, "trim_full"))
         self.lbl_trim_range.setObjectName("trimRangeBadge")
         self.lbl_trim_range.setProperty("active", False)
         self.lbl_trim_range.setFixedHeight(24)
@@ -1002,7 +1080,7 @@ class MainWindow(QMainWindow):
         subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header(
             tr(self._lang, "panel_subtitles")
         )
-        self.btn_export = _CompactButton()
+        self.btn_export = QPushButton()
         self.btn_export.setProperty("variant", "primary")
         self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=12))
         self.btn_export.setIconSize(QSize(12, 12))
@@ -1069,6 +1147,9 @@ class MainWindow(QMainWindow):
         self.btn_check_update.clicked.connect(lambda: self.check_for_updates_async(manual=True))
         self.btn_author_star.clicked.connect(self._on_author_star_clicked)
         self.language_combo.currentIndexChanged.connect(self._on_language_combo_changed)
+        self.btn_rpc_on.toggled.connect(self._on_discord_rpc_settings_changed)
+        self.chk_rpc_hide_filename.toggled.connect(self._on_discord_rpc_settings_changed)
+        self.chk_rpc_show_github.toggled.connect(self._on_discord_rpc_settings_changed)
 
         self.btn_seek_start.clicked.connect(self._seek_to_start)
         self.btn_play_pause.clicked.connect(self.toggle_playback)
@@ -1101,6 +1182,7 @@ class MainWindow(QMainWindow):
         self.review_table.snap_end_requested.connect(self._on_review_snap_end)
         self.review_table.split_requested.connect(self._on_review_split_requested)
         self.review_table.dirty_changed.connect(self._on_review_dirty_changed)
+        self.review_table.events_changed.connect(self._on_review_events_changed)
         self.review_table.transport_key_forwarded.connect(self._on_review_transport_key)
 
     def selected_provider(self) -> str:
@@ -1156,6 +1238,78 @@ class MainWindow(QMainWindow):
     def _on_author_star_clicked(self) -> None:
         self._open_url_fn(GITHUB_REPO_URL)
 
+    def _on_discord_rpc_settings_changed(self, _checked: bool = False) -> None:
+        enabled = self.btn_rpc_on.isChecked()
+        hide_filename = self.chk_rpc_hide_filename.isChecked()
+        show_github = self.chk_rpc_show_github.isChecked()
+
+        self._rpc_enabled = enabled
+        self._rpc_hide_filename = hide_filename
+        self._rpc_show_github = show_github
+        self.rpc_privacy_widget.setVisible(enabled)
+
+        try:
+            self._update_prefs.set_discord_rpc_enabled(enabled)
+            self._update_prefs.set_discord_rpc_hide_filename(hide_filename)
+            self._update_prefs.set_discord_rpc_show_github_button(show_github)
+        except OSError:
+            pass
+
+        self._discord_rpc.configure(
+            enabled=enabled,
+            hide_filename=hide_filename,
+            show_github_button=show_github,
+        )
+
+    def _publish_discord_presence(
+        self,
+        *,
+        mode: str,
+        stage: str = "",
+        progress_current: int = 0,
+        progress_total: int = 0,
+        urgent: bool | None = None,
+    ) -> None:
+        fname = self._video_path.name if self._video_path is not None else ""
+        width = self._video_meta.width if self._video_meta is not None else 0
+        height = self._video_meta.height if self._video_meta is not None else 0
+        fps = float(self._video_meta.fps) if self._video_meta is not None else 0.0
+
+        total_cues = 0
+        flagged_cues = 0
+        if mode == "reviewing":
+            events = self.review_table.events()
+            total_cues = len(events)
+            flagged_cues = sum(1 for ev in events if ev.flagged)
+
+        started_at = (
+            self._rpc_extract_started_at
+            if mode == "extracting" and self._rpc_extract_started_at > 0
+            else self._rpc_session_started_at
+        )
+        self._discord_rpc.update(
+            PresenceState(
+                mode=mode,
+                filename=fname,
+                width=width,
+                height=height,
+                fps=fps,
+                provider=self._rpc_extract_provider,
+                ocr_model=self._rpc_extract_model,
+                stage=stage,
+                progress_current=progress_current,
+                progress_total=progress_total,
+                total_cues=total_cues,
+                flagged_cues=flagged_cues,
+                started_at=started_at,
+            ),
+            urgent=urgent,
+        )
+
+    def _on_review_events_changed(self) -> None:
+        if self._extract_result is not None and not self._is_extracting():
+            self._publish_discord_presence(mode="reviewing", urgent=True)
+
     def _retranslate_ui(self) -> None:
         lang = self._lang
         self._panel_titles[self.settings_panel].setText(tr(lang, "panel_settings"))
@@ -1198,6 +1352,14 @@ class MainWindow(QMainWindow):
         if auto_idx >= 0:
             self.language_combo.setItemText(auto_idx, tr(lang, "lang_auto"))
 
+        self.lbl_discord_rpc.setText(tr(lang, "discord_rpc"))
+        self.btn_rpc_on.setText(tr(lang, "rpc_on"))
+        self.btn_rpc_off.setText(tr(lang, "rpc_off"))
+        self.chk_rpc_hide_filename.setText(tr(lang, "rpc_hide_filename"))
+        self.chk_rpc_hide_filename.setToolTip(tr(lang, "rpc_hide_filename_tip"))
+        self.chk_rpc_show_github.setText(tr(lang, "rpc_show_github"))
+        self.chk_rpc_show_github.setToolTip(tr(lang, "rpc_show_github_tip"))
+
         self.btn_start.setText(tr(lang, "btn_extract"))
         self.btn_stop.setText(tr(lang, "btn_stop"))
 
@@ -1208,7 +1370,7 @@ class MainWindow(QMainWindow):
             self.btn_update_available.setText(
                 tr(lang, "btn_update_available", version=self._available_update.latest_version)
             )
-        self.btn_author_star.setToolTip(f"{tr(lang, 'star_github_tip')} — wanngxuanji")
+        self.btn_author_star.setToolTip(f"{tr(lang, 'star_github_tip')} — {GITHUB_REPO}")
 
         self.btn_browse_video.setToolTip(tr(lang, "open_video_tip"))
         self.btn_seek_start.setToolTip(tr(lang, "tip_seek_start"))
@@ -1835,6 +1997,7 @@ class MainWindow(QMainWindow):
             self._set_status("status_open_video_failed")
             self._update_roi_label(self.roi_canvas.roi())
             self._update_controls_state()
+            self._publish_discord_presence(mode="idle", urgent=True)
             QMessageBox.warning(self, tr(self._lang, "dlg_open_video_error_title"), str(exc))
             return
 
@@ -1872,6 +2035,7 @@ class MainWindow(QMainWindow):
         self._update_roi_label(self.roi_canvas.roi())
         self.seek_to_ms(self._start_pts_ms)
         self._update_controls_state()
+        self._publish_discord_presence(mode="preview", urgent=True)
 
     def _browse_video(self) -> None:
         start_dir = str(self._video_path.parent) if self._video_path is not None else ""
@@ -2292,12 +2456,13 @@ class MainWindow(QMainWindow):
         self._set_status("status_extracting")
 
         cancel_event = threading.Event()
+        config = self.build_config()
         thread = QThread(self)
         worker = _ExtractionWorker(
             pipeline=self._pipeline,
             video_path=self._video_path,
             roi=self.roi_canvas.roi(),
-            config=self.build_config(),
+            config=config,
             cancel_event=cancel_event,
         )
         worker.moveToThread(thread)
@@ -2314,6 +2479,11 @@ class MainWindow(QMainWindow):
         self._cancel_event = cancel_event
         self._worker_thread = thread
         self._worker = worker
+        self._rpc_extract_started_at = int(time.time())
+        self._rpc_extract_provider = config.provider
+        self._rpc_extract_model = config.ocr_model
+        self._rpc_last_stage = ""
+        self._publish_discord_presence(mode="extracting", urgent=True)
         thread.start()
         self._update_controls_state()
 
@@ -2336,10 +2506,28 @@ class MainWindow(QMainWindow):
                 current=format_ass_time(current),
                 total=format_ass_time(total),
             )
+            stage_changed = self._rpc_last_stage != "scan"
+            self._rpc_last_stage = "scan"
+            self._publish_discord_presence(
+                mode="extracting",
+                stage="scan",
+                progress_current=current,
+                progress_total=total,
+                urgent=stage_changed,
+            )
         elif stage == "ocr":
             pct = 70 + int(round(29.0 * current / max(1, total)))
             self.progress_bar.setValue(max(70, min(99, pct)))
             self._set_status("status_ocr_progress", current=current, total=total)
+            stage_changed = self._rpc_last_stage != "ocr"
+            self._rpc_last_stage = "ocr"
+            self._publish_discord_presence(
+                mode="extracting",
+                stage="ocr",
+                progress_current=current,
+                progress_total=total,
+                urgent=stage_changed,
+            )
         elif stage == "done":
             self.progress_bar.setValue(100)
             self._set_status("status_done_simple", total=total)
@@ -2361,6 +2549,7 @@ class MainWindow(QMainWindow):
             flagged=flagged_count,
         )
         self._update_controls_state()
+        self._publish_discord_presence(mode="reviewing", urgent=True)
 
     @Slot()
     def _on_worker_cancelled(self) -> None:
@@ -2371,6 +2560,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._set_status("status_cancelled")
         self._update_controls_state()
+        self._publish_discord_presence(
+            mode="preview" if self._video_meta is not None else "idle",
+            urgent=True,
+        )
 
     @Slot(str)
     def _on_worker_failed(self, message: str) -> None:
@@ -2381,6 +2574,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._set_status("status_extraction_failed")
         self._update_controls_state()
+        self._publish_discord_presence(
+            mode="preview" if self._video_meta is not None else "idle",
+            urgent=True,
+        )
         QMessageBox.critical(self, tr(self._lang, "dlg_extract_error_title"), message)
 
     def _stop_and_wait_worker(self) -> None:
@@ -2756,6 +2953,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._disconnect_focus_tracking()
+        self._discord_rpc.stop()
         if self._update_startup_timer.isActive():
             self._update_startup_timer.stop()
         self._cleanup_update_worker()

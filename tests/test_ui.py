@@ -3259,7 +3259,8 @@ def test_settings_footer_author_star_opens_github_and_update_controls_in_setting
     assert window.settings_panel.isAncestorOf(window.btn_author_star)
     assert window.btn_check_update.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.btn_author_star.focusPolicy() == Qt.FocusPolicy.NoFocus
-    assert "wanngxuanji" in window.btn_author_star.text()
+    assert window.btn_author_star.text() == "Muzhen"
+    assert "wanngxuanji/Muzhen" in window.btn_author_star.toolTip()
 
     window.btn_author_star.click()
     assert opened_urls == ["https://github.com/wanngxuanji/Muzhen"]
@@ -3415,6 +3416,107 @@ def test_minimum_size_hint_fits_1280x672_without_stylesheet_across_languages(
         window.close()
     finally:
         app.setStyleSheet(prev_qss)
+
+
+def test_discord_rpc_settings_privacy_persistence_i18n_and_state_sync(
+    qtbot, tmp_path: Path
+):
+    from muzhen.core.discord_rpc import DiscordRpcClient
+    from muzhen.core.updater import UpdatePrefsStore
+    from muzhen.ui.i18n import tr
+    from muzhen.ui.main_window import MainWindow
+
+    prefs_path = tmp_path / "prefs" / "update_prefs.json"
+    prefs = UpdatePrefsStore(prefs_path)
+
+    ep = tmp_path / "Episode_07.mp4"
+    _make_synthetic_subtitle_mp4(ep, duration_sec=0.8, cues=((150, 650, "你好世界"),))
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "你好世界", 0.72]],
+            [0.01],
+        )
+    )
+    rpc = DiscordRpcClient(
+        app_version="2.1.0",
+        transport_factory=lambda: None,
+        reconnect_interval_sec=60.0,
+    )
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+        unsaved_confirm_fn=lambda: True,
+        update_prefs_store=prefs,
+        language="en",
+        discord_rpc=rpc,
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.btn_rpc_on.isChecked() is True
+    assert window.btn_rpc_off.isChecked() is False
+    assert window.rpc_privacy_widget.isVisible() is True
+    assert window.chk_rpc_hide_filename.isChecked() is True
+    assert window.chk_rpc_show_github.isChecked() is True
+    assert rpc.is_running is True
+    assert rpc.current_activity_payload()["details"] == "Idle"
+
+    window.load_video(ep)
+    preview_payload = rpc.current_activity_payload()
+    assert preview_payload["details"] == "Previewing video"
+    assert "Episode_07" not in preview_payload["details"]
+    assert "buttons" in preview_payload
+
+    window.chk_rpc_hide_filename.setChecked(False)
+    assert prefs.get_discord_rpc_hide_filename() is False
+    assert rpc.current_activity_payload()["details"] == "Previewing Episode_07.mp4"
+
+    window.chk_rpc_show_github.setChecked(False)
+    assert prefs.get_discord_rpc_show_github_button() is False
+    assert "buttons" not in rpc.current_activity_payload()
+
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+
+    review_payload = rpc.current_activity_payload()
+    assert review_payload["details"] == "Editing Episode_07.mp4"
+    assert "1 cues" in review_payload["state"]
+    assert "1 flagged" in review_payload["state"]
+
+    window.review_table.table.selectRow(0)
+    window.review_table.mark_selected_ok()
+    assert rpc.current_activity_payload()["state"] == "1 cues"
+
+    for lang_code in ("vi", "zh", "en"):
+        window.set_language(lang_code, persist=False)
+        assert window.lbl_discord_rpc.text() == tr(lang_code, "discord_rpc")
+        assert window.btn_rpc_on.text() == tr(lang_code, "rpc_on")
+        assert window.btn_rpc_off.text() == tr(lang_code, "rpc_off")
+        assert window.chk_rpc_hide_filename.text() == tr(lang_code, "rpc_hide_filename")
+        assert window.chk_rpc_show_github.text() == tr(lang_code, "rpc_show_github")
+
+    window.btn_rpc_off.click()
+    assert window.rpc_privacy_widget.isVisible() is False
+    assert prefs.get_discord_rpc_enabled() is False
+    assert rpc.enabled is False
+
+    window.close()
+    assert rpc.is_running is False
+
+    reloaded = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        update_prefs_store=UpdatePrefsStore(prefs_path),
+        language="en",
+    )
+    qtbot.addWidget(reloaded)
+    reloaded.show()
+    assert reloaded.btn_rpc_off.isChecked() is True
+    assert reloaded.rpc_privacy_widget.isVisible() is False
+    assert reloaded.chk_rpc_hide_filename.isChecked() is False
+    assert reloaded.chk_rpc_show_github.isChecked() is False
+    reloaded.close()
 
 
 

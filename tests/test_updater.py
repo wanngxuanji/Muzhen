@@ -264,3 +264,35 @@ def test_update_prefs_store_persists_language_and_preserves_skipped_version(
 
     prefs_path.write_text('["not", "an", "object"]', encoding="utf-8")
     assert reloaded.get_language() == "auto"
+
+
+def test_update_prefs_store_persists_discord_rpc_flags_and_preserves_other_keys(
+    tmp_path: Path,
+) -> None:
+    prefs_path = tmp_path / "prefs" / "update_prefs.json"
+    store = UpdatePrefsStore(prefs_path)
+
+    assert store.get_discord_rpc_enabled() is True
+    assert store.get_discord_rpc_hide_filename() is True
+    assert store.get_discord_rpc_show_github_button() is True
+
+    store.set_language("vi")
+    store.set_skipped_version("v2.1.0")
+    store.set_discord_rpc_enabled(False)
+    store.set_discord_rpc_hide_filename(False)
+    store.set_discord_rpc_show_github_button(False)
+
+    reloaded = UpdatePrefsStore(prefs_path)
+    assert reloaded.get_language() == "vi"
+    assert reloaded.get_skipped_version() == "v2.1.0"
+    assert reloaded.get_discord_rpc_enabled() is False
+    assert reloaded.get_discord_rpc_hide_filename() is False
+    assert reloaded.get_discord_rpc_show_github_button() is False
+
+    prefs_path.write_text(
+        '{"discord_rpc_enabled": "yes", "discord_rpc_hide_filename": 0}',
+        encoding="utf-8",
+    )
+    assert reloaded.get_discord_rpc_enabled() is True
+    assert reloaded.get_discord_rpc_hide_filename() is True
+    assert reloaded.get_discord_rpc_show_github_button() is True
