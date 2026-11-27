@@ -2795,6 +2795,37 @@ def test_test_current_frame_runs_asynchronously_and_preset_oserror_warns(
     window.close()
 
 
+def test_theme_uses_premiere_graphite_tokens_and_active_panel_selectors(qtbot):
+    from transapp.ui.icons import ICON_NAMES, make_icon
+    from transapp.ui.theme import PALETTE_TOKENS, STUDIO_DARK_QSS, build_studio_dark_qss
+
+    assert PALETTE_TOKENS["bg_gutter"] == "#111111"
+    assert PALETTE_TOKENS["bg_root"] == "#161616"
+    assert PALETTE_TOKENS["bg_panel"] == "#1D1D1D"
+    assert PALETTE_TOKENS["bg_header"] == "#232323"
+    assert PALETTE_TOKENS["bg_control"] == "#2A2A2A"
+    assert PALETTE_TOKENS["border_hairline"] == "#2E2E2E"
+    assert PALETTE_TOKENS["accent"] == "#2D8CEB"
+    assert PALETTE_TOKENS["timecode_blue"] == "#3EA6FF"
+    assert PALETTE_TOKENS["roi_emerald"] == "#10B981"
+
+    qss = build_studio_dark_qss()
+    assert qss == STUDIO_DARK_QSS
+    assert 'QFrame[panel="true"][activePanel="true"]' in STUDIO_DARK_QSS
+    assert "QFrame#panelHeader" in STUDIO_DARK_QSS
+    assert "QLabel#panelTitle" in STUDIO_DARK_QSS
+    assert 'QPushButton[variant="toggle"]' in STUDIO_DARK_QSS
+    assert "#3EA6FF" in STUDIO_DARK_QSS
+    assert "letter-spacing: 0.9px" not in STUDIO_DARK_QSS
+    assert "/*" not in STUDIO_DARK_QSS
+
+    assert "sidebar" in ICON_NAMES
+    sidebar_icon = make_icon("sidebar")
+    assert not sidebar_icon.isNull()
+    assert not sidebar_icon.pixmap(16, 16).isNull()
+
+
+
 
 
 

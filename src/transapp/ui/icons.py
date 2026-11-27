@@ -16,6 +16,10 @@ _SVG_PATHS: dict[str, str] = {
         '<line x1="17" y1="9" x2="22" y2="9"/>'
         '<line x1="17" y1="15" x2="22" y2="15"/>'
     ),
+    "sidebar": (
+        '<rect x="3" y="3" width="18" height="18" rx="2"/>'
+        '<line x1="9" y1="3" x2="9" y2="21"/>'
+    ),
     "folder": (
         '<path d="M3 6a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.6.8l1.2 1.6a1 1 0 0 0 .8.4H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
     ),
@@ -109,7 +113,7 @@ ICON_NAMES: tuple[str, ...] = tuple(_SVG_PATHS.keys())
 def _render_svg_pixmap(svg_body: str, color: str, size: int) -> QPixmap:
     svg_xml = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
-        f'fill="none" stroke="{color}" stroke-width="2" '
+        f'fill="none" stroke="{color}" stroke-width="1.5" '
         'stroke-linecap="round" stroke-linejoin="round">'
         f"{svg_body}</svg>"
     )
@@ -129,8 +133,8 @@ def _render_svg_pixmap(svg_body: str, color: str, size: int) -> QPixmap:
 def make_icon(
     name: str,
     *,
-    color: str = "#DCE3EE",
-    disabled_color: str = "#525B6D",
+    color: str = "#B8B8B8",
+    disabled_color: str = "#5A5A5A",
     size: int = 16,
 ) -> QIcon:
     """Create a HiDPI QIcon from the built-in vector icon set."""
