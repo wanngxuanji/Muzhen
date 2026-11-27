@@ -3,16 +3,38 @@
 from __future__ import annotations
 
 import ctypes
+from datetime import datetime
+import os
 from pathlib import Path
 import sys
+import traceback
 
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from transapp.ui.main_window import MainWindow
 from transapp.ui.theme import apply_studio_theme
 
 _APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "transapp.ico"
+
+
+def _crash_log_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "TransApp" / "crash.log"
+    return Path.home() / ".transapp" / "crash.log"
+
+
+def _write_startup_crash_log(tb_text: str) -> Path | None:
+    log_path = _crash_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== TransApp startup crash ({timestamp}) ===\n{tb_text}\n")
+        return log_path
+    except Exception:
+        return None
 
 
 def _set_windows_app_id() -> None:
@@ -33,23 +55,43 @@ def load_app_icon() -> QIcon:
 
 def main() -> int:
     """Create or reuse QApplication, apply Studio Dark theme, open MainWindow, and run."""
-    _set_windows_app_id()
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    app.setApplicationName("TransApp")
-    app.setOrganizationName("TransApp")
-    apply_studio_theme(app)
+    app: QApplication | None = None
+    try:
+        _set_windows_app_id()
+        existing = QApplication.instance()
+        if isinstance(existing, QApplication):
+            app = existing
+        else:
+            app = QApplication(sys.argv)
+        app.setApplicationName("TransApp")
+        app.setOrganizationName("TransApp")
+        apply_studio_theme(app)
 
-    icon = load_app_icon()
-    if not icon.isNull():
-        app.setWindowIcon(icon)
+        icon = load_app_icon()
+        if not icon.isNull():
+            app.setWindowIcon(icon)
 
-    window = MainWindow()
-    if not icon.isNull():
-        window.setWindowIcon(icon)
-    window.show()
-    return app.exec()
+        window = MainWindow()
+        if not icon.isNull():
+            window.setWindowIcon(icon)
+        window.show()
+        return app.exec()
+    except Exception as exc:
+        tb_text = traceback.format_exc()
+        log_path = _write_startup_crash_log(tb_text)
+        try:
+            if app is None:
+                existing = QApplication.instance()
+                app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
+            log_note = f"\n\nChi tiết lỗi đã lưu tại:\n{log_path}" if log_path is not None else ""
+            QMessageBox.critical(
+                None,
+                "TransApp - Lỗi khởi động",
+                f"Không thể khởi động TransApp:\n{exc}{log_note}",
+            )
+        except Exception:
+            pass
+        return 1
 
 
 if __name__ == "__main__":

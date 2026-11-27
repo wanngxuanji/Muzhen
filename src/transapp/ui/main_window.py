@@ -338,7 +338,7 @@ class MainWindow(QMainWindow):
         brand_icon.setPixmap(make_icon("film", color="#3B82F6", size=18).pixmap(18, 18))
         brand_title = QLabel("TransApp")
         brand_title.setObjectName("brandTitle")
-        version_badge = QLabel("v1")
+        version_badge = QLabel("v2")
         version_badge.setObjectName("versionBadge")
         top_bar_layout.addWidget(brand_icon)
         top_bar_layout.addWidget(brand_title)

@@ -311,7 +311,7 @@ def _finalize_segment(
     frame_h: int | None = None,
 ) -> RawSegment:
     peak, stable_mask = active.sampler.select_peak_and_mask(config, frame_h=frame_h)
-    start_ms = active.start_slice.pts_ms
+    start_ms = active.start_slice.rel_ms
     safe_end_ms = end_ms if end_ms > start_ms else start_ms + 1
     return RawSegment(
         start_ms=start_ms,
@@ -411,7 +411,7 @@ def segment_roi_frames(
                 bf.slice.bgr_roi, active.baseline_luma, active.gap_prev_bgr
             )
             active.gap_prev_bgr = bf.slice.bgr_roi
-            gap_ms = bf.slice.pts_ms - active.pending_end_slice.pts_ms
+            gap_ms = bf.slice.rel_ms - active.pending_end_slice.rel_ms
 
             if curr_fg_px >= fg_min_px:
                 can_bridge = False
@@ -445,7 +445,7 @@ def segment_roi_frames(
 
                 # Distinct next cue (or clean quiet gap > merge_gap_ms): finalize previous cue
                 # at its exact tentative end boundary and open the new cue from bf.
-                close_active_at(active.pending_end_slice.pts_ms, active.pending_closed_pos)
+                close_active_at(active.pending_end_slice.rel_ms, active.pending_closed_pos)
                 active = _open_segment_from_buffer(
                     buf,
                     bf,
@@ -461,7 +461,7 @@ def segment_roi_frames(
                 return
 
             if gap_ms > config.flash_bridge_max_ms:
-                close_active_at(active.pending_end_slice.pts_ms, active.pending_closed_pos)
+                close_active_at(active.pending_end_slice.rel_ms, active.pending_closed_pos)
             return
 
         # --- Normal ACTIVE evaluation ---
@@ -569,7 +569,7 @@ def segment_roi_frames(
             active.gap_prev_bgr = bf.slice.bgr_roi
             return
 
-        close_active_at(end_boundary.pts_ms, active.last_confirmed_pos)
+        close_active_at(end_boundary.rel_ms, active.last_confirmed_pos)
 
         if has_next_cue:
             active = _open_segment_from_buffer(
@@ -595,12 +595,12 @@ def segment_roi_frames(
         except StopIteration:
             break
 
-        if prev_pts_ms is not None and frame_slice.pts_ms > prev_pts_ms:
-            recent_deltas.append(frame_slice.pts_ms - prev_pts_ms)
-        prev_pts_ms = frame_slice.pts_ms
+        if prev_pts_ms is not None and frame_slice.rel_ms > prev_pts_ms:
+            recent_deltas.append(frame_slice.rel_ms - prev_pts_ms)
+        prev_pts_ms = frame_slice.rel_ms
 
         if on_frame_progress is not None:
-            on_frame_progress(frame_slice.frame_index, frame_slice.pts_ms)
+            on_frame_progress(frame_slice.frame_index, frame_slice.rel_ms)
 
         bf = _BufferedFrame(pos=pos, slice=frame_slice)
         buf.append(bf)
@@ -615,9 +615,9 @@ def segment_roi_frames(
 
     if active is not None:
         if active.pending_end_slice is not None:
-            close_active_at(active.pending_end_slice.pts_ms, active.pending_closed_pos)
+            close_active_at(active.pending_end_slice.rel_ms, active.pending_closed_pos)
         else:
-            eof_end_ms = active.last_confirmed_slice.pts_ms + _estimate_frame_step_ms(recent_deltas)
+            eof_end_ms = active.last_confirmed_slice.rel_ms + _estimate_frame_step_ms(recent_deltas)
             close_active_at(eof_end_ms, active.last_confirmed_pos)
 
     return segments

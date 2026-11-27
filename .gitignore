@@ -19,6 +19,12 @@ assets/*.mp4
 assets/*.mkv
 assets/*.avi
 assets/*.mov
+assets/**/*.mp4
+assets/**/*.mkv
+assets/**/*.avi
+assets/**/*.mov
+assets/**/*.ts
+assets/**/*.webm
 *.ass
 *.srt
 !tests/fixtures/**

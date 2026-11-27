@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 
 import numpy as np
@@ -23,10 +24,24 @@ class RoiRect:
 
     def clamped(self) -> RoiRect:
         """Return a copy clamped so the rectangle lies inside [0.0, 1.0]^2."""
-        x = max(0.0, min(1.0, float(self.x)))
-        y = max(0.0, min(1.0, float(self.y)))
-        w = max(0.0, min(1.0 - x, float(self.w)))
-        h = max(0.0, min(1.0 - y, float(self.h)))
+        raw_x = float(self.x)
+        raw_y = float(self.y)
+        raw_w = float(self.w)
+        raw_h = float(self.h)
+
+        if not math.isfinite(raw_x):
+            raw_x = 0.0
+        if not math.isfinite(raw_y):
+            raw_y = 0.0
+        if not math.isfinite(raw_w):
+            raw_w = 0.01
+        if not math.isfinite(raw_h):
+            raw_h = 0.01
+
+        x = max(0.0, min(0.99, raw_x))
+        y = max(0.0, min(0.99, raw_y))
+        w = max(0.01, min(1.0 - x, raw_w))
+        h = max(0.01, min(1.0 - y, raw_h))
         return RoiRect(x=x, y=y, w=w, h=h)
 
     def to_pixels(self, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:

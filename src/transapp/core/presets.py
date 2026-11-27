@@ -143,6 +143,16 @@ class PresetStore:
 
     def save(self, preset: RoiPreset) -> None:
         """Save or overwrite a preset."""
+        if not isinstance(preset.name, str) or not preset.name.strip():
+            raise ValueError("Preset name must be non-empty")
+        for coord_name in ("x", "y", "w", "h"):
+            val = getattr(preset.roi, coord_name)
+            if _parse_finite_float(val) is None:
+                raise ValueError(f"Preset ROI coordinate {coord_name!r} must be finite")
+        conf = _parse_finite_float(preset.conf_threshold)
+        if conf is None or not (0.0 <= conf <= 1.0):
+            raise ValueError("Preset conf_threshold must be a finite float in [0.0, 1.0]")
+
         data = self._read_all()
         data[preset.name] = asdict(preset)
         self._write_all(data)

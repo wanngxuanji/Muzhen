@@ -212,3 +212,41 @@ def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: 
         store.save(RoiPreset(name="failed_atomic", roi=RoiRect(0.1, 0.1, 0.2, 0.2)))
     assert store.presets_path.read_bytes() == before_bytes
     assert [p for p in store.config_dir.glob("*.tmp")] == []
+
+
+def test_roi_rect_clamped_handles_nan_and_inf():
+    import math
+
+    clamped = RoiRect(float("nan"), float("inf"), float("-inf"), 0.2).clamped()
+    for val in (clamped.x, clamped.y, clamped.w, clamped.h):
+        assert math.isfinite(val)
+    assert 0.0 <= clamped.x <= 1.0
+    assert 0.0 <= clamped.y <= 1.0
+    assert clamped.w >= 0.01
+    assert clamped.h >= 0.01
+    assert clamped.x + clamped.w <= 1.0
+    assert clamped.y + clamped.h <= 1.0
+
+
+def test_preset_store_save_rejects_blank_name_and_non_finite_roi(tmp_path: Path):
+    import pytest
+
+    store = PresetStore(config_dir=tmp_path)
+
+    with pytest.raises(ValueError):
+        store.save(RoiPreset(name="   ", roi=RoiRect(0.1, 0.8, 0.8, 0.12)))
+
+    with pytest.raises(ValueError):
+        store.save(RoiPreset(name="", roi=RoiRect(0.1, 0.8, 0.8, 0.12)))
+
+    for bad_roi in (
+        RoiRect(float("nan"), 0.8, 0.8, 0.12),
+        RoiRect(0.1, float("inf"), 0.8, 0.12),
+        RoiRect(0.1, 0.8, float("-inf"), 0.12),
+        RoiRect(0.1, 0.8, 0.8, float("nan")),
+    ):
+        with pytest.raises(ValueError):
+            store.save(RoiPreset(name="bad_roi", roi=bad_roi))
+
+    assert not store.presets_path.exists()
+    assert store.list_names() == []

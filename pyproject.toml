@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transapp"
-version = "0.1.0"
+version = "2.0.0"
 description = "Windows desktop app for extracting hardcoded Chinese/CJK subtitles from video into ASS/SRT"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
+    "pillow>=10.0",
 ]
 
 [project.gui-scripts]

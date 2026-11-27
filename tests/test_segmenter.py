@@ -448,3 +448,35 @@ def test_segmenter_partial_glare_continuation_preserves_single_cue_and_clean_pea
     assert segs[0].end_ms == 960
     # Chosen peak must be an un-glared full frame
     assert float(segs[0].peak_bgr[:, 0:60].mean()) < 80.0
+
+
+def test_segmenter_uses_rel_ms_for_nonzero_start_pts():
+    cfg = ExtractConfig(coarse_step=2)
+    h, w = 96, 640
+    bg = _make_blank_roi(h, w)
+    cue = _draw_outlined_cue(bg, "OFFSET PTS", org_x=80)
+    progress_calls: list[tuple[int, int]] = []
+
+    # Frames carry raw pts_ms starting at 5000ms, while 0-based rel_ms starts at 0ms.
+    # Cue appears on frames 5..14 (rel_ms 200..560, ending at frame 15 rel_ms 600).
+    stream = [
+        FrameSlice(
+            frame_index=i,
+            pts_ms=5000 + i * 40,
+            bgr_roi=cue if 5 <= i < 15 else bg,
+            rel_ms=i * 40,
+        )
+        for i in range(20)
+    ]
+
+    segs = segment_roi_frames(
+        stream,
+        cfg,
+        on_frame_progress=lambda fi, ts: progress_calls.append((fi, ts)),
+    )
+
+    assert len(segs) == 1
+    assert segs[0].start_ms == 200
+    assert segs[0].end_ms == 600
+    assert progress_calls[0] == (0, 0)
+    assert progress_calls[-1] == (19, 760)
