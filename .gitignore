@@ -7,8 +7,9 @@ __pycache__/
 dist/
 build/
 
-# SDD / Superpowers scratch
+# SDD / Superpowers scratch & internal planning docs
 .superpowers/
+docs/superpowers/
 
 # Local Windows shortcut files
 *.lnk
