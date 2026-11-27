@@ -507,7 +507,7 @@ def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_
     assert window._worker is None
     assert window.current_result is None
     assert window.review_table.events() == []
-    assert window.status_label.text() == "Sẵn sàng"
+    assert window.status_label.text() == "Ready"
 
     critical_calls: list[str] = []
     monkeypatch.setattr(
@@ -542,7 +542,7 @@ def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_
 
     assert window.current_result is None
     assert window.review_table.events() == []
-    assert window.status_label.text() == "Sẵn sàng"
+    assert window.status_label.text() == "Ready"
     assert critical_calls == []
     window.close()
 
@@ -758,7 +758,7 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
     window._close_preview_reader()
     video_path.unlink()
     window.seek_to_ms(5040)
-    assert "Lỗi seek frame:" in window.status_label.text()
+    assert "Frame seek error:" in window.status_label.text()
     window.close()
 
 
@@ -906,8 +906,8 @@ def test_review_table_delete_selected_row_and_reindex_under_filter(qtbot, tmp_pa
 
     remaining = table.events()
     assert [(e.index, e.text) for e in remaining] == [(1, "第一句"), (2, "第三句")]
-    assert table.radio_all.text() == "Tất cả (2)"
-    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (1)"
+    assert table.radio_all.text() == "All (2)"
+    assert table.radio_flagged.text() == "Flagged (1)"
     assert table.table.rowCount() == 1
     assert table.table.item(0, 0).text() == "2 !"
     assert len(emitted) == 1
@@ -1017,7 +1017,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     window.frame_slider.set_trim_range(100, 500)
     window.frame_slider.repaint()
     window.frame_slider.set_trim_range(None, None)
-    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.lbl_trim_range.text() == "Full episode"
     assert window.btn_set_in.isEnabled() is False
     assert window.btn_set_out.isEnabled() is False
     assert window.btn_clear_trim.isEnabled() is False
@@ -1113,7 +1113,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     window.btn_clear_trim.click()
     assert window.build_config().trim_start_ms is None
     assert window.build_config().trim_end_ms is None
-    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.lbl_trim_range.text() == "Full episode"
     assert window.btn_clear_trim.isEnabled() is False
 
     window.seek_to_ms(320)
@@ -1142,7 +1142,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     window.load_video(ep2)
     assert window.build_config().trim_start_ms is None
     assert window.build_config().trim_end_ms is None
-    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.lbl_trim_range.text() == "Full episode"
     assert window.btn_clear_trim.isEnabled() is False
     assert window.frame_slider.trim_range() == (None, None)
     window.close()
@@ -1256,7 +1256,7 @@ def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot)
         confidence=0.68,
         flagged=True,
         thumbnail_png=_make_png_bytes((40, 40, 220)),
-        flag_reason="Độ tin cậy thấp (0.68 < 0.85)",
+        flag_reason="Low confidence (0.68 < 0.85)",
     )
     ev3 = SubtitleEvent(
         index=3,
@@ -1293,8 +1293,8 @@ def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot)
 
     table.table.selectRow(1)
     assert table.flag_banner.isVisible() is True
-    assert "Độ tin cậy thấp (0.68 < 0.85)" in table.lbl_flag_reason.text()
-    assert table.table.item(1, 4).toolTip() == "Độ tin cậy thấp (0.68 < 0.85)"
+    assert "Low confidence (0.68 < 0.85)" in table.lbl_flag_reason.text()
+    assert table.table.item(1, 4).toolTip() == "Low confidence (0.68 < 0.85)"
 
     table.btn_jump_start.click()
     table.btn_jump_end.click()
@@ -1329,12 +1329,12 @@ def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot)
 
     table.set_filter_mode("flagged_only")
     assert table.table.rowCount() == 2
-    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (2)"
+    assert table.radio_flagged.text() == "Flagged (2)"
 
     table.table.selectRow(0)
     table.table.item(0, 4).setText("已人工校对")
     assert table.table.rowCount() == 2
-    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (1)"
+    assert table.radio_flagged.text() == "Flagged (1)"
     assert table.events()[1].flagged is False
     assert table.events()[1].flag_reason == ""
     assert table.table.item(0, 0).text() == "2"
@@ -1343,11 +1343,11 @@ def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot)
 
     table.table.selectRow(1)
     assert table.flag_banner.isVisible() is True
-    assert table.lbl_flag_reason.text() == "Cần kiểm tra"
+    assert table.lbl_flag_reason.text() == "Needs review"
     assert bool(table.lbl_cue_meta.property("warning")) is True
     table.btn_mark_ok.click()
     assert table.table.rowCount() == 2
-    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (0)"
+    assert table.radio_flagged.text() == "Flagged (0)"
     assert table.events()[2].flagged is False
     assert table.flag_banner.isVisible() is False
 
@@ -1397,16 +1397,16 @@ def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
     qtbot.addWidget(window)
     window.show()
 
-    assert window.btn_export.text() == "Xuất .ass + .srt"
+    assert window.btn_export.text() == "Export .ass + .srt"
     assert window.btn_open_out_dir.isEnabled() is False
     window.chk_srt.setChecked(False)
-    assert window.btn_export.text() == "Xuất .ass"
+    assert window.btn_export.text() == "Export .ass"
     window.chk_ass.setChecked(False)
     assert window.btn_export.isEnabled() is False
     window.chk_srt.setChecked(True)
-    assert window.btn_export.text() == "Xuất .srt"
+    assert window.btn_export.text() == "Export .srt"
     window.chk_ass.setChecked(True)
-    assert window.btn_export.text() == "Xuất .ass + .srt"
+    assert window.btn_export.text() == "Export .ass + .srt"
 
     bad_mime = QMimeData()
     bad_mime.setUrls([QUrl.fromLocalFile(str(tmp_path / "notes.txt"))])
@@ -1555,7 +1555,7 @@ def test_review_table_multi_delete_merge_split_and_undo_redo(qtbot):
     thumb4 = _make_png_bytes((180, 180, 30))
 
     ev1 = SubtitleEvent(1, 500, 1500, "我们今天一起去吃饭", 0.96, False, thumb1)
-    ev2 = SubtitleEvent(2, 1550, 2400, "我们今天一起去吃", 0.82, True, thumb2, "Độ tin cậy thấp")
+    ev2 = SubtitleEvent(2, 1550, 2400, "我们今天一起去吃", 0.82, True, thumb2, "Low confidence")
     ev3 = SubtitleEvent(3, 3000, 3900, "第一句", 0.85, False, thumb3)
     ev4 = SubtitleEvent(4, 4000, 5000, "第二句", 0.95, False, thumb4)
     table.set_events([ev1, ev2, ev3, ev4])
@@ -1687,8 +1687,8 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
         [
             SubtitleEvent(1, 100, 900, "萧炎向前一步", 0.96, False, thumb),
             SubtitleEvent(2, 1000, 1800, "普通对白", 0.95, False, thumb),
-            SubtitleEvent(3, 2000, 2900, "萧炎大喝一声", 0.72, True, thumb, "Độ tin cậy thấp"),
-            SubtitleEvent(4, 3000, 3900, "又是萧炎", 0.75, True, thumb, "Ký tự lạ"),
+            SubtitleEvent(3, 2000, 2900, "萧炎大喝一声", 0.72, True, thumb, "Low confidence"),
+            SubtitleEvent(4, 3000, 3900, "又是萧炎", 0.75, True, thumb, "Suspicious chars"),
         ]
     )
 
@@ -2261,7 +2261,7 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
     thumb = _make_png_bytes()
     ev0 = SubtitleEvent(1, 500, 1200, "长剑出鞘", 0.96, False, thumb)
     ev1 = SubtitleEvent(2, 1300, 2000, "普通台词", 0.94, False, thumb)
-    ev2 = SubtitleEvent(3, 2100, 2800, "断剑重铸", 0.72, True, thumb, "Độ tin cậy thấp")
+    ev2 = SubtitleEvent(3, 2100, 2800, "断剑重铸", 0.72, True, thumb, "Low confidence")
 
     table.set_events([ev0, ev1, ev2])
     assert table.events()[0] is not ev0
@@ -2306,9 +2306,9 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
         ]
     )
     table.table.selectRow(0)
-    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    assert "Overlap" not in table.lbl_cue_meta.text()
     table.table.selectRow(1)
-    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    assert "Overlap" not in table.lbl_cue_meta.text()
 
     table.set_events(
         [
@@ -2317,9 +2317,9 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
         ]
     )
     table.table.selectRow(0)
-    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    assert "Overlap" not in table.lbl_cue_meta.text()
     table.table.selectRow(1)
-    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    assert "Overlap" not in table.lbl_cue_meta.text()
 
     table.set_events(
         [
@@ -2329,11 +2329,11 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
         ]
     )
     table.table.selectRow(0)
-    assert "Trùng giờ" in table.lbl_cue_meta.text()
+    assert "Overlap" in table.lbl_cue_meta.text()
     table.table.selectRow(1)
-    assert "Trùng giờ" not in table.lbl_cue_meta.text()
+    assert "Overlap" not in table.lbl_cue_meta.text()
     table.table.selectRow(2)
-    assert "Trùng giờ" in table.lbl_cue_meta.text()
+    assert "Overlap" in table.lbl_cue_meta.text()
 
 
 def test_playback_and_step_handle_missing_video_file_gracefully(
@@ -2360,12 +2360,12 @@ def test_playback_and_step_handle_missing_video_file_gracefully(
     assert window._is_playing is False
     assert "video moved away" in window.status_label.text()
 
-    window.status_label.setText("Sẵn sàng")
+    window.status_label.setText("Ready")
     window._step_frame(1)
     assert window._is_playing is False
     assert "video moved away" in window.status_label.text()
 
-    window.status_label.setText("Sẵn sàng")
+    window.status_label.setText("Ready")
     window._step_frame(-1)
     assert window._is_playing is False
     assert "video moved away" in window.status_label.text()
@@ -2503,7 +2503,7 @@ def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_ra
     )
     monkeypatch.setattr(dummy_retiring, "wait", lambda *_args: False)
     window._retiring_threads.append(dummy_retiring)
-    window.status_label.setText("Đang dọn luồng cũ...")
+    window.status_label.setText("Cleaning up background worker...")
     window._update_controls_state()
     assert window.btn_start.isEnabled() is False
     assert window.btn_test_frame.isEnabled() is False
@@ -2513,7 +2513,7 @@ def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_ra
     dummy_retiring.finished.emit()
     assert dummy_retiring in window._retiring_threads
     qtbot.waitUntil(lambda: dummy_retiring not in window._retiring_threads, timeout=2000)
-    assert window.status_label.text() == "Sẵn sàng"
+    assert window.status_label.text() == "Ready"
     assert window.btn_start.isEnabled() is True
     assert window.btn_test_frame.isEnabled() is True
     assert window.roi_canvas.isEnabled() is True
@@ -2749,4 +2749,106 @@ def test_type_a_workbench_three_panes_collapsible_settings_and_active_panel_bord
     assert window._current_frame_index > 0
 
     window.close()
+
+
+def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path: Path):
+    import re
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QComboBox,
+        QLabel,
+        QLineEdit,
+        QTabBar,
+        QWidget,
+    )
+    from muzhen.core.models import ExtractConfig, OcrSegment
+    from muzhen.core.postprocess import postprocess_segments
+    from muzhen.ui.main_window import MainWindow
+
+    vi_diacritic_re = re.compile(
+        r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ"
+        r"ÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]"
+    )
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.windowTitle() == "Muzhen — Frame-Accurate CJK Subtitle Workbench"
+    assert window.btn_browse_video.text() == "Open Video"
+    assert window.btn_toggle_settings.text() == "Settings"
+    assert window.btn_start.text() == "Extract Subtitles"
+    assert window.btn_stop.text() == "Stop"
+    assert window.btn_test_frame.text() == "Test Frame"
+    assert window.btn_export.text() == "Export .ass + .srt"
+    assert window.status_label.text() == "Ready"
+    assert window.lbl_trim_range.text() == "Full episode"
+    assert window.preset_combo.itemText(0) == "(No preset)"
+    assert [
+        window.ocr_model_combo.itemText(i) for i in range(window.ocr_model_combo.count())
+    ] == ["PP-OCRv5 Server (Accurate)", "PP-OCRv5 Mobile (Fast)"]
+
+    panel_titles = [
+        window._panel_titles[pane].text()
+        for pane in (window.settings_panel, window.monitor_panel, window.subtitles_panel)
+    ]
+    assert panel_titles == ["Settings", "Program Monitor", "Subtitles"]
+
+    headers = [
+        window.review_table.table.horizontalHeaderItem(c).text()
+        for c in range(window.review_table.table.columnCount())
+    ]
+    assert headers == ["#", "Start", "End", "Conf", "Subtitle Text"]
+    assert window.review_table.radio_all.text() == "All (0)"
+    assert window.review_table.radio_flagged.text() == "Flagged (0)"
+    assert window.review_table.btn_merge.text() == "Merge"
+    assert window.review_table.btn_split.text() == "Split"
+    assert window.review_table.btn_mark_ok.text() == "Mark OK"
+
+    collected_strings: list[str] = [window.windowTitle(), window.toolTip()]
+    for widget in window.findChildren(QWidget):
+        if widget.toolTip():
+            collected_strings.append(widget.toolTip())
+        if isinstance(widget, (QLabel, QAbstractButton)):
+            collected_strings.append(widget.text())
+        elif isinstance(widget, QLineEdit):
+            collected_strings.append(widget.text())
+            collected_strings.append(widget.placeholderText())
+        elif isinstance(widget, QComboBox):
+            for idx in range(widget.count()):
+                collected_strings.append(widget.itemText(idx))
+        elif isinstance(widget, QTabBar):
+            for idx in range(widget.count()):
+                collected_strings.append(widget.tabText(idx))
+                collected_strings.append(widget.tabToolTip(idx))
+    collected_strings.extend(headers)
+
+    flagged_events = postprocess_segments(
+        [
+            OcrSegment(0, 500, "停下来了", 0.72, b"low"),
+            OcrSegment(1000, 1500, "大家|怎么^样", 0.95, b"noise"),
+        ],
+        ExtractConfig(conf_threshold=0.85),
+    )
+    assert flagged_events[0].flag_reason == "Low confidence (0.72)"
+    assert flagged_events[1].flag_reason == "Suspicious chars: | ^"
+    collected_strings.extend(ev.flag_reason for ev in flagged_events)
+
+    offenders = [text for text in collected_strings if text and vi_diacritic_re.search(text)]
+    assert offenders == []
+
+    assert window.settings_panel.minimumWidth() == 256
+    assert window.settings_panel.maximumWidth() == 400
+
+    expanded_hint = window.minimumSizeHint()
+    assert expanded_hint.width() <= 1280
+    assert expanded_hint.height() <= 672
+
+    window.btn_toggle_settings.click()
+    collapsed_hint = window.minimumSizeHint()
+    assert collapsed_hint.width() <= 1280
+    assert collapsed_hint.height() <= 672
+
+    window.close()
+
 

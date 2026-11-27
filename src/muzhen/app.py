@@ -97,11 +97,17 @@ def main(argv: list[str] | None = None) -> int:
             if app is None:
                 existing = QApplication.instance()
                 app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
-            log_note = f"\n\nChi tiết lỗi đã lưu tại:\n{log_path}" if log_path is not None else ""
+            if log_path is not None:
+                body = (
+                    "Muzhen encountered an unexpected startup error.\n\n"
+                    f"Details were saved to:\n{log_path}\n\n{exc}"
+                )
+            else:
+                body = f"Muzhen encountered an unexpected startup error.\n\n{exc}"
             QMessageBox.critical(
                 None,
-                "Muzhen - Lỗi khởi động",
-                f"Không thể khởi động Muzhen:\n{exc}{log_note}",
+                "Muzhen — Startup Error",
+                body,
             )
         except Exception:
             pass

@@ -243,11 +243,11 @@ def _is_ghost_cue(cue: _MergedCue, config: ExtractConfig) -> bool:
 def _build_flag_info(cue: _MergedCue, config: ExtractConfig) -> tuple[bool, str]:
     reasons: list[str] = []
     if cue.confidence < config.conf_threshold:
-        reasons.append(f"Độ tin cậy thấp ({cue.confidence:.2f})")
+        reasons.append(f"Low confidence ({cue.confidence:.2f})")
     bad_chars = _find_suspicious_chars(cue.text)
     if bad_chars:
         sample = " ".join(bad_chars[:4])
-        reasons.append(f"Ký tự lạ: {sample}")
+        reasons.append(f"Suspicious chars: {sample}")
     return (bool(reasons), "; ".join(reasons))
 
 

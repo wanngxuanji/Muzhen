@@ -43,7 +43,7 @@ _COL_TEXT = 4
 _MIN_DURATION_WARN_MS = 120
 _DEFAULT_FRAME_STEP_MS = 40
 _SHIFT_NUDGE_MS = 100
-_FALLBACK_FLAG_REASON = "Cần kiểm tra"
+_FALLBACK_FLAG_REASON = "Needs review"
 _MAX_UNDO_DEPTH = 50
 _MERGE_DEDUP_SIMILARITY = 0.80
 _NUDGE_COALESCE_WINDOW_SEC = 0.5
@@ -147,11 +147,11 @@ class ReviewTable(QWidget):
         pill_layout.setContentsMargins(2, 2, 2, 2)
         pill_layout.setSpacing(2)
 
-        self.radio_all = QRadioButton("Tất cả (0)")
+        self.radio_all = QRadioButton("All (0)")
         self.radio_all.setChecked(True)
         self.radio_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.radio_all.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.radio_flagged = QRadioButton("Chỉ dòng nghi ngờ (0)")
+        self.radio_flagged = QRadioButton("Flagged (0)")
         self.radio_flagged.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.radio_flagged.setCursor(Qt.CursorShape.PointingHandCursor)
         pill_layout.addWidget(self.radio_all)
@@ -176,7 +176,7 @@ class ReviewTable(QWidget):
         self.btn_find.setFixedSize(26, 24)
         self.btn_find.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_find.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_find.setToolTip("Tìm kiếm & thay thế (Ctrl+F / Ctrl+H)")
+        self.btn_find.setToolTip("Find / Replace (Ctrl+F / Ctrl+H)")
 
         self.btn_undo = QPushButton()
         self.btn_undo.setProperty("variant", "tool")
@@ -185,7 +185,7 @@ class ReviewTable(QWidget):
         self.btn_undo.setFixedSize(26, 24)
         self.btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_undo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_undo.setToolTip("Hoàn tác (Ctrl+Z)")
+        self.btn_undo.setToolTip("Undo (Ctrl+Z)")
         self.btn_undo.setEnabled(False)
 
         self.btn_redo = QPushButton()
@@ -195,31 +195,31 @@ class ReviewTable(QWidget):
         self.btn_redo.setFixedSize(26, 24)
         self.btn_redo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_redo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_redo.setToolTip("Làm lại (Ctrl+Y / Ctrl+Shift+Z)")
+        self.btn_redo.setToolTip("Redo (Ctrl+Y)")
         self.btn_redo.setEnabled(False)
 
         toolbar_sep = QFrame()
         toolbar_sep.setFixedSize(1, 16)
         toolbar_sep.setStyleSheet("background-color: #2E2E2E;")
 
-        self.btn_merge = QPushButton("Gộp")
+        self.btn_merge = QPushButton("Merge")
         self.btn_merge.setProperty("variant", "timing")
         self.btn_merge.setIcon(make_icon("merge", size=12))
         self.btn_merge.setIconSize(QSize(12, 12))
         self.btn_merge.setFixedHeight(24)
         self.btn_merge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_merge.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_merge.setToolTip("Gộp các dòng liền kề đang chọn (Ctrl+M)")
+        self.btn_merge.setToolTip("Merge selected adjacent rows (Ctrl+M)")
         self.btn_merge.setEnabled(False)
 
-        self.btn_split = QPushButton("Tách")
+        self.btn_split = QPushButton("Split")
         self.btn_split.setProperty("variant", "timing")
         self.btn_split.setIcon(make_icon("split", size=12))
         self.btn_split.setIconSize(QSize(12, 12))
         self.btn_split.setFixedHeight(24)
         self.btn_split.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_split.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_split.setToolTip("Tách dòng đang chọn tại playhead hoặc điểm giữa (Ctrl+K)")
+        self.btn_split.setToolTip("Split selected row at playhead or midpoint (Ctrl+K)")
         self.btn_split.setEnabled(False)
 
         self.btn_delete_row = QPushButton()
@@ -229,7 +229,7 @@ class ReviewTable(QWidget):
         self.btn_delete_row.setFixedSize(26, 24)
         self.btn_delete_row.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_delete_row.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_delete_row.setToolTip("Xóa các dòng đang chọn khỏi kết quả (Delete)")
+        self.btn_delete_row.setToolTip("Delete selected row(s) (Delete)")
         self.btn_delete_row.setEnabled(False)
 
         action_bar.addWidget(self.btn_find)
@@ -249,11 +249,11 @@ class ReviewTable(QWidget):
         find_layout.setSpacing(4)
 
         self.find_edit = QLineEdit()
-        self.find_edit.setPlaceholderText("Tìm kiếm...")
+        self.find_edit.setPlaceholderText("Find...")
         self.find_edit.setMinimumWidth(64)
 
         self.replace_edit = QLineEdit()
-        self.replace_edit.setPlaceholderText("Thay thế...")
+        self.replace_edit.setPlaceholderText("Replace...")
         self.replace_edit.setMinimumWidth(64)
 
         self.btn_find_prev = QPushButton()
@@ -263,7 +263,7 @@ class ReviewTable(QWidget):
         self.btn_find_prev.setFixedSize(24, 24)
         self.btn_find_prev.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_find_prev.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_find_prev.setToolTip("Kết quả trước (Shift+Enter)")
+        self.btn_find_prev.setToolTip("Previous match (Shift+Enter)")
 
         self.btn_find_next = QPushButton()
         self.btn_find_next.setProperty("variant", "tool")
@@ -272,21 +272,21 @@ class ReviewTable(QWidget):
         self.btn_find_next.setFixedSize(24, 24)
         self.btn_find_next.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_find_next.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_find_next.setToolTip("Kết quả tiếp (Enter)")
+        self.btn_find_next.setToolTip("Next match (Enter)")
 
-        self.btn_replace_one = QPushButton("Thay")
+        self.btn_replace_one = QPushButton("Replace")
         self.btn_replace_one.setProperty("variant", "timing")
         self.btn_replace_one.setFixedHeight(24)
         self.btn_replace_one.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_replace_one.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_replace_one.setToolTip("Thay thế dòng đang chọn")
+        self.btn_replace_one.setToolTip("Replace in selected row")
 
-        self.btn_replace_all = QPushButton("Thay tất cả")
+        self.btn_replace_all = QPushButton("Replace All")
         self.btn_replace_all.setProperty("variant", "timing")
         self.btn_replace_all.setFixedHeight(24)
         self.btn_replace_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_replace_all.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_replace_all.setToolTip("Thay thế toàn bộ kết quả khớp (1 bước Undo)")
+        self.btn_replace_all.setToolTip("Replace all matches (single Undo step)")
 
         self.lbl_find_status = QLabel("")
         self.lbl_find_status.setObjectName("findStatusLabel")
@@ -298,7 +298,7 @@ class ReviewTable(QWidget):
         self.btn_close_find.setFixedSize(24, 24)
         self.btn_close_find.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_close_find.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close_find.setToolTip("Đóng tìm kiếm (Esc)")
+        self.btn_close_find.setToolTip("Close Find bar (Esc)")
 
         find_layout.addWidget(self.find_edit, 1)
         find_layout.addWidget(self.btn_find_prev)
@@ -315,7 +315,7 @@ class ReviewTable(QWidget):
         splitter.setHandleWidth(3)
         splitter.setChildrenCollapsible(False)
         self.table = _SubtitleTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["#", "Start", "End", "Conf", "Nội dung phụ đề"])
+        self.table.setHorizontalHeaderLabels(["#", "Start", "End", "Conf", "Subtitle Text"])
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -345,7 +345,7 @@ class ReviewTable(QWidget):
         inspector_hdr = QHBoxLayout()
         inspector_hdr.setContentsMargins(0, 0, 0, 0)
         inspector_hdr.setSpacing(6)
-        preview_title = QLabel("Đối chiếu & Timing")
+        preview_title = QLabel("Inspector & Timing")
         preview_title.setProperty("role", "sectionTitle")
         self.lbl_cue_meta = QLabel("")
         self.lbl_cue_meta.setObjectName("cueMetaBadge")
@@ -367,21 +367,21 @@ class ReviewTable(QWidget):
         self.lbl_flag_reason.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self.btn_mark_ok = QPushButton("Duyệt")
+        self.btn_mark_ok = QPushButton("Mark OK")
         self.btn_mark_ok.setProperty("variant", "ok")
         self.btn_mark_ok.setIcon(make_icon("check", color="#10B981", size=12))
         self.btn_mark_ok.setIconSize(QSize(12, 12))
         self.btn_mark_ok.setFixedHeight(22)
         self.btn_mark_ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_mark_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_mark_ok.setToolTip("Đánh dấu dòng đã kiểm tra xong (Ctrl+D)")
+        self.btn_mark_ok.setToolTip("Mark selected row as reviewed (Ctrl+D)")
         self.btn_mark_ok.setEnabled(False)
         flag_layout.addWidget(self.lbl_flag_reason, 1)
         flag_layout.addWidget(self.btn_mark_ok)
         self.flag_banner.setVisible(False)
         preview_layout.addWidget(self.flag_banner)
 
-        self.preview_label = QLabel("Chọn một dòng để xem ảnh cắt ROI")
+        self.preview_label = QLabel("Select a subtitle row to inspect")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(180, 56)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -398,24 +398,24 @@ class ReviewTable(QWidget):
         self.btn_jump_start = QPushButton("Start")
         self.btn_jump_start.setIcon(make_icon("skip_back", size=11))
         self.btn_jump_start.setIconSize(QSize(11, 11))
-        self.btn_jump_start.setToolTip("Nhảy video tới Start của dòng đang chọn (Alt+S)")
+        self.btn_jump_start.setToolTip("Jump video to selected row Start (Alt+S)")
 
         self.btn_jump_end = QPushButton("End")
         self.btn_jump_end.setIcon(make_icon("skip_fwd", size=11))
         self.btn_jump_end.setIconSize(QSize(11, 11))
-        self.btn_jump_end.setToolTip("Nhảy video tới End của dòng đang chọn (Alt+E)")
+        self.btn_jump_end.setToolTip("Jump video to selected row End (Alt+E)")
 
-        self.btn_snap_in = QPushButton("← In")
-        self.btn_snap_in.setToolTip("Đặt Start theo frame video hiện tại (Ctrl+[)")
+        self.btn_snap_in = QPushButton("In")
+        self.btn_snap_in.setToolTip("Snap Start to current video frame (Ctrl+[)")
 
-        self.btn_snap_out = QPushButton("Out →")
-        self.btn_snap_out.setToolTip("Đặt End theo frame video hiện tại (Ctrl+])")
+        self.btn_snap_out = QPushButton("Out")
+        self.btn_snap_out.setToolTip("Snap End to current video frame (Ctrl+])")
 
         self.btn_nudge_back = QPushButton("-1f")
-        self.btn_nudge_back.setToolTip("Dịch thời gian lùi 1 frame — giữ để lặp (Shift: -100ms)")
+        self.btn_nudge_back.setToolTip("Nudge timing back 1 frame — hold to repeat (Shift: -100ms)")
 
         self.btn_nudge_fwd = QPushButton("+1f")
-        self.btn_nudge_fwd.setToolTip("Dịch thời gian tiến 1 frame — giữ để lặp (Shift: +100ms)")
+        self.btn_nudge_fwd.setToolTip("Nudge timing forward 1 frame — hold to repeat (Shift: +100ms)")
 
         for nudge_btn in (self.btn_nudge_back, self.btn_nudge_fwd):
             nudge_btn.setAutoRepeat(True)
@@ -597,7 +597,7 @@ class ReviewTable(QWidget):
         finally:
             self._populating = False
         self.preview_label.clear()
-        self.preview_label.setText("Chưa chọn dòng")
+        self.preview_label.setText("Select a subtitle row to inspect")
         self._update_filter_counts()
         self._update_inspector_for_row(-1)
         self._update_action_buttons_state()
@@ -1290,7 +1290,7 @@ class ReviewTable(QWidget):
                 pending.append((row_idx, master_idx, new_text, n_subs))
 
         if not pending:
-            self._refresh_find_status(custom_text="0 thay thế")
+            self._refresh_find_status(custom_text="0 replaced")
             return 0
 
         self._push_undo_snapshot()
@@ -1314,7 +1314,7 @@ class ReviewTable(QWidget):
         self._update_filter_counts()
         self._update_inspector_for_row(self._selected_visible_row())
         self._update_action_buttons_state()
-        self._refresh_find_status(custom_text=f"Đã thay {total_replaced}")
+        self._refresh_find_status(custom_text=f"Replaced {total_replaced}")
         self.events_changed.emit()
         self.events_modified.emit()
         return total_replaced
@@ -1322,8 +1322,8 @@ class ReviewTable(QWidget):
     def _update_filter_counts(self) -> None:
         total = len(self._events)
         flagged = sum(1 for ev in self._events if ev.flagged)
-        self.radio_all.setText(f"Tất cả ({total})")
-        self.radio_flagged.setText(f"Chỉ dòng nghi ngờ ({flagged})")
+        self.radio_all.setText(f"All ({total})")
+        self.radio_flagged.setText(f"Flagged ({flagged})")
 
     def _on_filter_radio_toggled(self, checked_all: bool) -> None:
         new_mode = "all" if checked_all else "flagged_only"
@@ -1425,7 +1425,7 @@ class ReviewTable(QWidget):
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("Không có dòng phù hợp")
+            self.preview_label.setText("No matching subtitle rows")
             self._update_inspector_for_row(-1)
         self._update_action_buttons_state()
 
@@ -1470,11 +1470,11 @@ class ReviewTable(QWidget):
             for other_idx, other in enumerate(self._events)
         )
 
-        meta_parts = [f"{dur_ms / 1000.0:.2f}s", f"{char_count} ký tự"]
+        meta_parts = [f"{dur_ms / 1000.0:.2f}s", f"{char_count} chars"]
         if is_short:
-            meta_parts.append("Quá ngắn")
+            meta_parts.append("Too short")
         if is_overlap:
-            meta_parts.append("Trùng giờ")
+            meta_parts.append("Overlap")
         self.lbl_cue_meta.setText(" · ".join(meta_parts))
         self.lbl_cue_meta.setVisible(True)
         self._set_meta_warning(is_short or is_overlap)
@@ -1647,7 +1647,7 @@ class ReviewTable(QWidget):
         if row < 0 or row >= self.table.rowCount():
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("Chưa chọn dòng")
+            self.preview_label.setText("Select a subtitle row to inspect")
             return
 
         stt_item = self.table.item(row, _COL_STT)
@@ -1665,7 +1665,7 @@ class ReviewTable(QWidget):
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("Không có ảnh thumbnail")
+            self.preview_label.setText("No thumbnail available")
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._populating:

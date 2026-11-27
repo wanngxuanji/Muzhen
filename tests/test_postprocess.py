@@ -218,9 +218,9 @@ def test_postprocess_similarity_ignores_punctuation_and_extended_whitelist_with_
     assert events[0].flagged is False
     assert events[0].flag_reason == ""
     assert events[1].flagged is True
-    assert "0.72" in events[1].flag_reason
+    assert events[1].flag_reason == "Low confidence (0.72)"
     assert events[2].flagged is True
-    assert "|" in events[2].flag_reason
+    assert events[2].flag_reason == "Suspicious chars: | ^"
 
 
 def test_postprocess_does_not_merge_0ms_one_char_substitution_and_clamps_duration():
@@ -300,7 +300,7 @@ def test_postprocess_preserves_fuller_winner_confidence_without_masking_flag():
     assert events[0].thumbnail_png == b"full"
     assert events[0].confidence == pytest.approx(0.81)
     assert events[0].flagged is True
-    assert "0.81" in events[0].flag_reason
+    assert events[0].flag_reason == "Low confidence (0.81)"
 
 
 def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duration_cues():

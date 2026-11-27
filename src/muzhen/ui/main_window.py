@@ -313,14 +313,14 @@ class MainWindow(QMainWindow):
         self._last_frame_test_result: FrameTestResult | None = None
         self._retiring_threads: list[QThread] = []
         self._retiring_workers: dict[QThread, QObject | None] = {}
-        self._saved_settings_width: int = 268
+        self._saved_settings_width: int = 284
         self._workbench_panels: tuple[QFrame, ...] = ()
         self._panel_titles: dict[QFrame, QLabel] = {}
         self._active_panel: QFrame | None = None
         self._focus_tracking_active: bool = False
 
         self.setAcceptDrops(True)
-        self.setWindowTitle("Muzhen - Tách Sub Raw Tiếng Trung")
+        self.setWindowTitle("Muzhen — Frame-Accurate CJK Subtitle Workbench")
         target_w, target_h = 1160, 680
         screen = self.screen()
         if screen is not None:
@@ -383,11 +383,13 @@ class MainWindow(QMainWindow):
         self.video_path_edit.setReadOnly(True)
         self.video_path_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.video_path_edit.setFixedHeight(26)
-        self.video_path_edit.setPlaceholderText("Chưa chọn file video (.mp4, .mkv, .ts...)")
+        self.video_path_edit.setPlaceholderText(
+            "Drop a video file or click Open Video (.mp4, .mkv, .ts...)"
+        )
         self.video_meta_badge = QLabel("")
         self.video_meta_badge.setObjectName("metaBadge")
         self.video_meta_badge.setVisible(False)
-        self.btn_browse_video = QPushButton("Chọn video")
+        self.btn_browse_video = QPushButton("Open Video")
         self.btn_browse_video.setIcon(make_icon("folder", size=14))
         self.btn_browse_video.setIconSize(QSize(14, 14))
         self.btn_browse_video.setFixedHeight(26)
@@ -418,7 +420,7 @@ class MainWindow(QMainWindow):
         self.btn_save_preset.setFixedSize(26, 26)
         self.btn_save_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_save_preset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save_preset.setToolTip("Lưu Preset ROI hiện tại")
+        self.btn_save_preset.setToolTip("Save current ROI preset")
 
         self.btn_delete_preset = QPushButton()
         self.btn_delete_preset.setProperty("variant", "danger")
@@ -427,13 +429,13 @@ class MainWindow(QMainWindow):
         self.btn_delete_preset.setFixedSize(26, 26)
         self.btn_delete_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_delete_preset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_delete_preset.setToolTip("Xóa Preset đang chọn")
+        self.btn_delete_preset.setToolTip("Delete selected preset")
 
         v_sep_settings = QFrame()
         v_sep_settings.setFixedWidth(1)
         v_sep_settings.setStyleSheet("background-color: #2E2E2E; margin: 3px 2px;")
 
-        self.btn_toggle_settings = QPushButton("Cài đặt")
+        self.btn_toggle_settings = QPushButton("Settings")
         self.btn_toggle_settings.setProperty("variant", "toggle")
         self.btn_toggle_settings.setIcon(make_icon("sidebar", size=14))
         self.btn_toggle_settings.setIconSize(QSize(14, 14))
@@ -442,7 +444,7 @@ class MainWindow(QMainWindow):
         self.btn_toggle_settings.setFixedHeight(26)
         self.btn_toggle_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_toggle_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_settings.setToolTip("Ẩn / hiện bảng Cài đặt")
+        self.btn_toggle_settings.setToolTip("Show / hide Settings panel")
 
         top_bar_layout.addWidget(preset_lbl)
         top_bar_layout.addWidget(self.preset_combo)
@@ -466,13 +468,13 @@ class MainWindow(QMainWindow):
         self.settings_panel = QFrame()
         self.settings_panel.setProperty("panel", True)
         self.settings_panel.setProperty("activePanel", False)
-        self.settings_panel.setMinimumWidth(240)
-        self.settings_panel.setMaximumWidth(380)
+        self.settings_panel.setMinimumWidth(256)
+        self.settings_panel.setMaximumWidth(400)
         settings_root = QVBoxLayout(self.settings_panel)
         settings_root.setContentsMargins(0, 0, 0, 0)
         settings_root.setSpacing(0)
 
-        settings_header, _settings_hdr_layout, settings_title = _make_panel_header("Cài đặt")
+        settings_header, _settings_hdr_layout, settings_title = _make_panel_header("Settings")
         settings_root.addWidget(settings_header)
 
         settings_content = QWidget()
@@ -493,10 +495,10 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(0, 0, 2, 0)
         body_layout.setSpacing(6)
 
-        body_layout.addWidget(_make_section_label("Nhận diện OCR"))
+        body_layout.addWidget(_make_section_label("OCR Engine"))
         ocr_grid = QGridLayout()
         ocr_grid.setContentsMargins(0, 0, 0, 0)
-        ocr_grid.setHorizontalSpacing(8)
+        ocr_grid.setHorizontalSpacing(6)
         ocr_grid.setVerticalSpacing(5)
 
         lbl_backend = QLabel("Backend")
@@ -511,45 +513,49 @@ class MainWindow(QMainWindow):
             self.provider_combo.addItem("DirectML (GPU)", "directml")
             self.provider_combo.setCurrentIndex(1)
 
-        lbl_model = QLabel("Model OCR")
+        lbl_model = QLabel("Model")
         lbl_model.setProperty("role", "fieldLabel")
         self.ocr_model_combo = QComboBox()
         self.ocr_model_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.ocr_model_combo.setMinimumContentsLength(10)
-        self.ocr_model_combo.addItem("PP-OCRv5 Chuẩn xác (Server)", "accurate")
-        self.ocr_model_combo.addItem("PP-OCRv5 Nhanh (Mobile)", "fast")
+        self.ocr_model_combo.addItem("PP-OCRv5 Server (Accurate)", "accurate")
+        self.ocr_model_combo.addItem("PP-OCRv5 Mobile (Fast)", "fast")
         self.ocr_model_combo.setToolTip(
-            "Server (mặc định): chuyên tiếng Trung, chính xác tối đa + bầu chọn đa frame. "
-            "Mobile: nhanh hơn, nhẹ hơn."
+            "Server (default): highest CJK accuracy with multi-frame voting. "
+            "Mobile: faster and lighter."
         )
 
-        lbl_conf = QLabel("Ngưỡng nghi ngờ")
+        ocr_grid.addWidget(lbl_backend, 0, 0)
+        ocr_grid.addWidget(self.provider_combo, 0, 1)
+        ocr_grid.addWidget(lbl_model, 1, 0)
+        ocr_grid.addWidget(self.ocr_model_combo, 1, 1)
+        ocr_grid.setColumnStretch(1, 1)
+        body_layout.addLayout(ocr_grid)
+
+        conf_row = QHBoxLayout()
+        conf_row.setContentsMargins(0, 0, 0, 0)
+        conf_row.setSpacing(8)
+        lbl_conf = QLabel("Flag threshold")
         lbl_conf.setProperty("role", "fieldLabel")
         self.spin_conf = QDoubleSpinBox()
         self.spin_conf.setRange(0.0, 1.0)
         self.spin_conf.setSingleStep(0.05)
         self.spin_conf.setDecimals(2)
         self.spin_conf.setValue(0.85)
-
-        ocr_grid.addWidget(lbl_backend, 0, 0)
-        ocr_grid.addWidget(self.provider_combo, 0, 1)
-        ocr_grid.addWidget(lbl_model, 1, 0)
-        ocr_grid.addWidget(self.ocr_model_combo, 1, 1)
-        ocr_grid.addWidget(lbl_conf, 2, 0)
-        ocr_grid.addWidget(self.spin_conf, 2, 1)
-        ocr_grid.setColumnStretch(1, 1)
-        body_layout.addLayout(ocr_grid)
+        conf_row.addWidget(lbl_conf)
+        conf_row.addWidget(self.spin_conf, 1)
+        body_layout.addLayout(conf_row)
 
         body_layout.addWidget(_make_divider())
 
-        body_layout.addWidget(_make_section_label("Xuất phụ đề"))
+        body_layout.addWidget(_make_section_label("Export"))
         fmt_grid = QGridLayout()
         fmt_grid.setContentsMargins(0, 0, 0, 0)
         fmt_grid.setHorizontalSpacing(8)
         fmt_grid.setVerticalSpacing(4)
-        lbl_fmt = QLabel("Định dạng")
+        lbl_fmt = QLabel("Format")
         lbl_fmt.setProperty("role", "fieldLabel")
         self.chk_ass = QCheckBox(".ass (Aegisub)")
         self.chk_ass.setChecked(True)
@@ -563,19 +569,21 @@ class MainWindow(QMainWindow):
         fmt_grid.setColumnStretch(1, 1)
         body_layout.addLayout(fmt_grid)
 
-        dir_head = QHBoxLayout()
-        dir_head.setSpacing(8)
-        lbl_dir = QLabel("Thư mục")
+        lbl_dir = QLabel("Output folder")
         lbl_dir.setProperty("role", "fieldLabel")
-        self.radio_dir_same = QRadioButton("Cùng video")
+        body_layout.addWidget(lbl_dir)
+
+        dir_head = QHBoxLayout()
+        dir_head.setContentsMargins(0, 0, 0, 0)
+        dir_head.setSpacing(10)
+        self.radio_dir_same = QRadioButton("Same as video")
         self.radio_dir_same.setChecked(True)
         self.radio_dir_same.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.radio_dir_custom = QRadioButton("Khác")
+        self.radio_dir_custom = QRadioButton("Custom")
         self.radio_dir_custom.setCursor(Qt.CursorShape.PointingHandCursor)
         self._dir_radio_group = QButtonGroup(self)
         self._dir_radio_group.addButton(self.radio_dir_same)
         self._dir_radio_group.addButton(self.radio_dir_custom)
-        dir_head.addWidget(lbl_dir)
         dir_head.addWidget(self.radio_dir_same)
         dir_head.addWidget(self.radio_dir_custom)
         dir_head.addStretch(1)
@@ -584,7 +592,7 @@ class MainWindow(QMainWindow):
         custom_dir_row = QHBoxLayout()
         custom_dir_row.setSpacing(4)
         self.custom_dir_edit = QLineEdit()
-        self.custom_dir_edit.setPlaceholderText("Đường dẫn thư mục xuất...")
+        self.custom_dir_edit.setPlaceholderText("Custom output directory...")
         self.btn_browse_out_dir = QPushButton()
         self.btn_browse_out_dir.setProperty("variant", "tool")
         self.btn_browse_out_dir.setIcon(make_icon("folder", size=14))
@@ -592,19 +600,19 @@ class MainWindow(QMainWindow):
         self.btn_browse_out_dir.setFixedSize(26, 26)
         self.btn_browse_out_dir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_browse_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_browse_out_dir.setToolTip("Chọn thư mục xuất")
+        self.btn_browse_out_dir.setToolTip("Select output folder")
         custom_dir_row.addWidget(self.custom_dir_edit, 1)
         custom_dir_row.addWidget(self.btn_browse_out_dir)
         body_layout.addLayout(custom_dir_row)
 
         ass_head = QHBoxLayout()
         ass_head.setSpacing(8)
-        lbl_ass = QLabel("Style ASS")
+        lbl_ass = QLabel("ASS Style")
         lbl_ass.setProperty("role", "fieldLabel")
-        self.radio_ass_default = QRadioButton("Mặc định")
+        self.radio_ass_default = QRadioButton("Default")
         self.radio_ass_default.setChecked(True)
         self.radio_ass_default.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.radio_ass_template = QRadioButton("File mẫu")
+        self.radio_ass_template = QRadioButton("Template")
         self.radio_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ass_radio_group = QButtonGroup(self)
         self._ass_radio_group.addButton(self.radio_ass_default)
@@ -618,7 +626,7 @@ class MainWindow(QMainWindow):
         ass_tpl_row = QHBoxLayout()
         ass_tpl_row.setSpacing(4)
         self.ass_template_edit = QLineEdit()
-        self.ass_template_edit.setPlaceholderText("Đường dẫn file .ass mẫu...")
+        self.ass_template_edit.setPlaceholderText("Path to .ass template...")
         self.btn_browse_ass_template = QPushButton()
         self.btn_browse_ass_template.setProperty("variant", "tool")
         self.btn_browse_ass_template.setIcon(make_icon("folder", size=14))
@@ -626,7 +634,7 @@ class MainWindow(QMainWindow):
         self.btn_browse_ass_template.setFixedSize(26, 26)
         self.btn_browse_ass_template.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_browse_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_browse_ass_template.setToolTip("Chọn file .ass mẫu")
+        self.btn_browse_ass_template.setToolTip("Select .ass template file")
         ass_tpl_row.addWidget(self.ass_template_edit, 1)
         ass_tpl_row.addWidget(self.btn_browse_ass_template)
         body_layout.addLayout(ass_tpl_row)
@@ -655,7 +663,7 @@ class MainWindow(QMainWindow):
 
         run_row = QHBoxLayout()
         run_row.setSpacing(6)
-        self.btn_start = QPushButton("Bắt đầu tách sub")
+        self.btn_start = QPushButton("Extract Subtitles")
         self.btn_start.setProperty("variant", "primary")
         self.btn_start.setIcon(make_icon("play", color="#FFFFFF", size=13))
         self.btn_start.setIconSize(QSize(13, 13))
@@ -666,7 +674,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_stop = QPushButton("Dừng")
+        self.btn_stop = QPushButton("Stop")
         self.btn_stop.setProperty("variant", "danger")
         self.btn_stop.setIcon(make_icon("stop", color="#F08080", size=12))
         self.btn_stop.setIconSize(QSize(12, 12))
@@ -684,7 +692,7 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label = QLabel("Sẵn sàng")
+        self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
@@ -701,7 +709,7 @@ class MainWindow(QMainWindow):
         monitor_root.setSpacing(0)
 
         monitor_header, monitor_hdr_layout, monitor_title = _make_panel_header(
-            "Màn hình xem trước"
+            "Program Monitor"
         )
         self.roi_label = QLabel()
         self.roi_label.setObjectName("roiPill")
@@ -720,13 +728,13 @@ class MainWindow(QMainWindow):
         scrub_row.setSpacing(4)
         self.btn_seek_start = QPushButton()
         self.btn_seek_start.setIcon(make_icon("skip_back", size=13))
-        self.btn_seek_start.setToolTip("Về đầu video (Home)")
+        self.btn_seek_start.setToolTip("Go to start (Home)")
         self.btn_play_pause = QPushButton()
         self.btn_play_pause.setIcon(make_icon("play", size=13))
-        self.btn_play_pause.setToolTip("Phát / Tạm dừng xem trước (Space)")
+        self.btn_play_pause.setToolTip("Play / Pause preview (Space)")
         self.btn_step_back = QPushButton()
         self.btn_step_back.setIcon(make_icon("step_back", size=13))
-        self.btn_step_back.setToolTip("Lùi 1 frame — giữ để tua (← / , / <)")
+        self.btn_step_back.setToolTip("Step back 1 frame — hold to scrub (← / , / <)")
         self.frame_slider = TrimRangeSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
@@ -734,10 +742,10 @@ class MainWindow(QMainWindow):
         self.frame_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_step_fwd = QPushButton()
         self.btn_step_fwd.setIcon(make_icon("step_fwd", size=13))
-        self.btn_step_fwd.setToolTip("Tiến 1 frame — giữ để tua (→ / . / >)")
+        self.btn_step_fwd.setToolTip("Step forward 1 frame — hold to scrub (→ / . / >)")
         self.btn_seek_end = QPushButton()
         self.btn_seek_end.setIcon(make_icon("skip_fwd", size=13))
-        self.btn_seek_end.setToolTip("Tới cuối video (End)")
+        self.btn_seek_end.setToolTip("Go to end (End)")
         for btn in (
             self.btn_seek_start,
             self.btn_play_pause,
@@ -774,9 +782,9 @@ class MainWindow(QMainWindow):
         self.btn_set_in.setIconSize(QSize(12, 12))
         self.btn_set_in.setFixedHeight(24)
         self.btn_set_in.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_set_in.setToolTip("Đặt điểm bắt đầu In tại frame hiện tại (I)")
+        self.btn_set_in.setToolTip("Set In point at current frame (I)")
 
-        self.lbl_trim_range = QLabel("Toàn tập")
+        self.lbl_trim_range = QLabel("Full episode")
         self.lbl_trim_range.setObjectName("trimRangeBadge")
         self.lbl_trim_range.setProperty("active", False)
         self.lbl_trim_range.setFixedHeight(24)
@@ -788,15 +796,15 @@ class MainWindow(QMainWindow):
         self.btn_set_out.setIconSize(QSize(12, 12))
         self.btn_set_out.setFixedHeight(24)
         self.btn_set_out.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_set_out.setToolTip("Đặt điểm kết thúc Out tại frame hiện tại (O)")
+        self.btn_set_out.setToolTip("Set Out point at current frame (O)")
 
-        self.btn_clear_trim = QPushButton("Xóa")
+        self.btn_clear_trim = QPushButton("Clear")
         self.btn_clear_trim.setProperty("variant", "trim")
         self.btn_clear_trim.setIcon(make_icon("x_mark", color="#A0A0A0", size=11))
         self.btn_clear_trim.setIconSize(QSize(11, 11))
         self.btn_clear_trim.setFixedHeight(24)
         self.btn_clear_trim.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_trim.setToolTip("Xóa giới hạn In/Out để quét toàn tập")
+        self.btn_clear_trim.setToolTip("Clear In/Out trim range to scan full episode")
 
         for trim_btn in (self.btn_set_in, self.btn_set_out, self.btn_clear_trim):
             trim_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -808,14 +816,14 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
 
-        self.btn_test_frame = QPushButton("Test 1 frame")
+        self.btn_test_frame = QPushButton("Test Frame")
         self.btn_test_frame.setProperty("variant", "trim")
         self.btn_test_frame.setIcon(make_icon("scan", color="#10B981", size=12))
         self.btn_test_frame.setIconSize(QSize(12, 12))
         self.btn_test_frame.setFixedHeight(24)
         self.btn_test_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_test_frame.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_test_frame.setToolTip("Chạy thử bộ lọc chữ & OCR trên khung hình hiện tại")
+        self.btn_test_frame.setToolTip("Run text filter & OCR preview on the current frame")
 
         trim_row.addWidget(self.btn_set_in)
         trim_row.addWidget(self.lbl_trim_range)
@@ -833,8 +841,8 @@ class MainWindow(QMainWindow):
         subtitles_root.setContentsMargins(0, 0, 0, 0)
         subtitles_root.setSpacing(0)
 
-        subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header("Phụ đề")
-        self.btn_export = QPushButton("Xuất .ass + .srt")
+        subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header("Subtitles")
+        self.btn_export = QPushButton("Export .ass + .srt")
         self.btn_export.setProperty("variant", "primary")
         self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=12))
         self.btn_export.setIconSize(QSize(12, 12))
@@ -850,7 +858,7 @@ class MainWindow(QMainWindow):
         self.btn_open_out_dir.setFixedSize(24, 22)
         self.btn_open_out_dir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_open_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_open_out_dir.setToolTip("Mở thư mục chứa file phụ đề đã xuất")
+        self.btn_open_out_dir.setToolTip("Open output folder")
         self.btn_open_out_dir.setEnabled(False)
 
         subtitles_hdr_layout.addWidget(self.btn_export)
@@ -872,7 +880,7 @@ class MainWindow(QMainWindow):
         self.workbench_splitter.setStretchFactor(0, 0)
         self.workbench_splitter.setStretchFactor(1, 12)
         self.workbench_splitter.setStretchFactor(2, 11)
-        self.workbench_splitter.setSizes([268, 460, 432])
+        self.workbench_splitter.setSizes([284, 448, 428])
 
         gutter_layout.addWidget(self.workbench_splitter, 1)
         main_layout.addWidget(workbench_gutter, 1)
@@ -1010,7 +1018,7 @@ class MainWindow(QMainWindow):
         if not checked:
             sizes = self.workbench_splitter.sizes()
             if sizes and sizes[0] > 0:
-                self._saved_settings_width = max(240, min(380, sizes[0]))
+                self._saved_settings_width = max(256, min(400, sizes[0]))
             self.settings_panel.setVisible(False)
             if self._active_panel is self.settings_panel:
                 self._set_active_panel(self.monitor_panel)
@@ -1020,7 +1028,7 @@ class MainWindow(QMainWindow):
         sizes = self.workbench_splitter.sizes()
         total = sum(sizes)
         if total > 0:
-            left = max(240, min(380, self._saved_settings_width))
+            left = max(256, min(400, self._saved_settings_width))
             rem = max(0, total - left)
             mid = int(rem * 12 / 23)
             right = max(0, rem - mid)
@@ -1047,12 +1055,12 @@ class MainWindow(QMainWindow):
             x1, y1, x2, y2 = roi.to_pixels(self._video_meta.width, self._video_meta.height)
             self.roi_label.setText(f"ROI {x2 - x1}×{y2 - y1} px")
             self.roi_label.setToolTip(
-                f"Vùng ROI: {x2 - x1}×{y2 - y1} px ({roi.x * 100:.1f}%, {roi.y * 100:.1f}%)"
+                f"ROI region: {x2 - x1}×{y2 - y1} px ({roi.x * 100:.1f}%, {roi.y * 100:.1f}%)"
             )
             return
         self.roi_label.setText(f"ROI {roi.w * 100:.0f}×{roi.h * 100:.0f}%")
         self.roi_label.setToolTip(
-            f"Vùng ROI: {roi.x * 100:.1f}%, {roi.y * 100:.1f}% · "
+            f"ROI region: {roi.x * 100:.1f}%, {roi.y * 100:.1f}% · "
             f"{roi.w * 100:.1f}×{roi.h * 100:.1f}%"
         )
 
@@ -1063,7 +1071,7 @@ class MainWindow(QMainWindow):
         self.frame_slider.set_trim_range(self._trim_start_ms, self._trim_end_ms)
         has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
         if not has_trim:
-            self.lbl_trim_range.setText("Toàn tập")
+            self.lbl_trim_range.setText("Full episode")
         else:
             in_disp = self._trim_start_ms if self._trim_start_ms is not None else 0
             out_disp = self._trim_end_ms if self._trim_end_ms is not None else self._duration_ms
@@ -1089,7 +1097,7 @@ class MainWindow(QMainWindow):
         self._trim_start_ms = val
         if self._trim_end_ms is not None and self._trim_start_ms >= self._trim_end_ms:
             self._trim_end_ms = None
-            self.status_label.setText("Đã đặt In (tự xóa Out vì In ≥ Out)")
+            self.status_label.setText("In point set (Out cleared because In ≥ Out)")
         self._update_trim_display()
         self._update_controls_state()
 
@@ -1103,12 +1111,12 @@ class MainWindow(QMainWindow):
             else max(0, min(int(rel_ms), self._duration_ms))
         )
         if val <= 0:
-            self.status_label.setText("Điểm Out phải lớn hơn 0:00:00.00")
+            self.status_label.setText("Out point must be greater than 0:00:00.00")
             return
         self._trim_end_ms = val
         if self._trim_start_ms is not None and self._trim_start_ms >= self._trim_end_ms:
             self._trim_start_ms = None
-            self.status_label.setText("Đã đặt Out (tự xóa In vì In ≥ Out)")
+            self.status_label.setText("Out point set (In cleared because In ≥ Out)")
         self._update_trim_display()
         self._update_controls_state()
 
@@ -1167,13 +1175,13 @@ class MainWindow(QMainWindow):
         if self._video_meta is None or self._is_running():
             return
         if not self.review_table.apply_playhead_to_selected_start(self._current_rel_ms()):
-            self.status_label.setText("Không thể đặt Start ≥ End của dòng đang chọn")
+            self.status_label.setText("Cannot set Start ≥ End of the selected row")
 
     def _on_review_snap_end(self) -> None:
         if self._video_meta is None or self._is_running():
             return
         if not self.review_table.apply_playhead_to_selected_end(self._current_rel_ms()):
-            self.status_label.setText("Không thể đặt End ≤ Start của dòng đang chọn")
+            self.status_label.setText("Cannot set End ≤ Start of the selected row")
 
     def _on_review_split_requested(self) -> None:
         if self._is_running():
@@ -1367,13 +1375,13 @@ class MainWindow(QMainWindow):
         want_ass = self.chk_ass.isChecked()
         want_srt = self.chk_srt.isChecked()
         if want_ass and want_srt:
-            self.btn_export.setText("Xuất .ass + .srt")
+            self.btn_export.setText("Export .ass + .srt")
         elif want_ass:
-            self.btn_export.setText("Xuất .ass")
+            self.btn_export.setText("Export .ass")
         elif want_srt:
-            self.btn_export.setText("Xuất .srt")
+            self.btn_export.setText("Export .srt")
         else:
-            self.btn_export.setText("Chưa chọn định dạng")
+            self.btn_export.setText("No format selected")
 
         running = self._is_running()
         has_video = self._video_path is not None and self._video_meta is not None
@@ -1429,7 +1437,7 @@ class MainWindow(QMainWindow):
         self.preset_combo.blockSignals(True)
         try:
             self.preset_combo.clear()
-            self.preset_combo.addItem("(Chưa chọn preset)")
+            self.preset_combo.addItem("(No preset)")
             for name in names:
                 self.preset_combo.addItem(name)
             if select_name and select_name in names:
@@ -1469,8 +1477,8 @@ class MainWindow(QMainWindow):
             )
             entered, ok = QInputDialog.getText(
                 self,
-                "Lưu Preset ROI",
-                "Tên preset:",
+                "Save ROI Preset",
+                "Preset name:",
                 text=default_name,
             )
             if not ok:
@@ -1495,8 +1503,8 @@ class MainWindow(QMainWindow):
         try:
             self._preset_store.save(preset)
         except OSError as exc:
-            self.status_label.setText(f"Lỗi lưu preset: {exc}")
-            QMessageBox.warning(self, "Lỗi lưu preset", str(exc))
+            self.status_label.setText(f"Failed to save preset: {exc}")
+            QMessageBox.warning(self, "Save Preset Error", str(exc))
             return False
         self._refresh_presets(select_name=clean_name)
         return True
@@ -1509,8 +1517,8 @@ class MainWindow(QMainWindow):
         try:
             deleted = self._preset_store.delete(name)
         except OSError as exc:
-            self.status_label.setText(f"Lỗi xóa preset: {exc}")
-            QMessageBox.warning(self, "Lỗi xóa preset", str(exc))
+            self.status_label.setText(f"Failed to delete preset: {exc}")
+            QMessageBox.warning(self, "Delete Preset Error", str(exc))
             return False
         self._refresh_presets()
         return deleted
@@ -1566,10 +1574,10 @@ class MainWindow(QMainWindow):
             self.video_meta_badge.setVisible(False)
             self.frame_slider.setRange(0, 0)
             self._update_time_label()
-            self.status_label.setText("Lỗi mở video")
+            self.status_label.setText("Failed to open video")
             self._update_roi_label(self.roi_canvas.roi())
             self._update_controls_state()
-            QMessageBox.warning(self, "Không thể mở video", str(exc))
+            QMessageBox.warning(self, "Cannot Open Video", str(exc))
             return
 
         self._video_path = path
@@ -1599,7 +1607,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.setValue(0)
         self.status_label.setText(
-            "Đang dọn luồng cũ..." if self._has_retiring_threads() else "Sẵn sàng"
+            "Cleaning up background worker..." if self._has_retiring_threads() else "Ready"
         )
         self._update_roi_label(self.roi_canvas.roi())
         self.seek_to_ms(self._start_pts_ms)
@@ -1609,7 +1617,7 @@ class MainWindow(QMainWindow):
         start_dir = str(self._video_path.parent) if self._video_path is not None else ""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Chọn file video",
+            "Open Video",
             start_dir,
             "Video Files (*.mp4 *.mkv *.avi *.mov *.ts *.webm);;All Files (*)",
         )
@@ -1620,7 +1628,7 @@ class MainWindow(QMainWindow):
         start_dir = self.custom_dir_edit.text().strip() or (
             str(self._video_path.parent) if self._video_path is not None else ""
         )
-        chosen = QFileDialog.getExistingDirectory(self, "Chọn thư mục xuất", start_dir)
+        chosen = QFileDialog.getExistingDirectory(self, "Select Output Folder", start_dir)
         if chosen:
             self.radio_dir_custom.setChecked(True)
             self.custom_dir_edit.setText(chosen)
@@ -1629,7 +1637,7 @@ class MainWindow(QMainWindow):
         start_dir = str(self._video_path.parent) if self._video_path is not None else ""
         chosen, _ = QFileDialog.getOpenFileName(
             self,
-            "Chọn file .ass mẫu",
+            "Select .ass Template",
             start_dir,
             "ASS Subtitles (*.ass);;All Files (*)",
         )
@@ -1676,10 +1684,10 @@ class MainWindow(QMainWindow):
     def _update_play_button_icon(self) -> None:
         if self._is_playing:
             self.btn_play_pause.setIcon(make_icon("pause", color="#3EA6FF", size=13))
-            self.btn_play_pause.setToolTip("Tạm dừng xem trước (Space)")
+            self.btn_play_pause.setToolTip("Pause preview (Space)")
         else:
             self.btn_play_pause.setIcon(make_icon("play", size=13))
-            self.btn_play_pause.setToolTip("Phát xem trước (Space)")
+            self.btn_play_pause.setToolTip("Play preview (Space)")
 
     def start_playback(self) -> None:
         """Start sequential preview playback on the video canvas."""
@@ -1708,7 +1716,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.stop_playback()
             self._play_iter = None
-            self.status_label.setText(f"Lỗi phát video: {exc}")
+            self.status_label.setText(f"Playback error: {exc}")
             return
 
         if wrapped:
@@ -1748,7 +1756,7 @@ class MainWindow(QMainWindow):
             self._play_iter = None
             self._last_advance_error = True
             self.stop_playback()
-            self.status_label.setText(f"Lỗi đọc frame: {exc}")
+            self.status_label.setText(f"Frame read error: {exc}")
             return False
         try:
             frame_idx, pts_ms, full_bgr = next(self._play_iter)
@@ -1760,7 +1768,7 @@ class MainWindow(QMainWindow):
             self._play_iter = None
             self._last_advance_error = True
             self.stop_playback()
-            self.status_label.setText(f"Lỗi đọc frame: {exc}")
+            self.status_label.setText(f"Frame read error: {exc}")
             return False
         self._at_eof = False
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
@@ -1790,7 +1798,7 @@ class MainWindow(QMainWindow):
                 return
             frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
         except Exception as exc:
-            self.status_label.setText(f"Lỗi seek frame: {exc}")
+            self.status_label.setText(f"Frame seek error: {exc}")
             return
 
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
@@ -1834,7 +1842,7 @@ class MainWindow(QMainWindow):
                     self._display_preview_frame(frame_idx, pts_ms, full_bgr)
                     return
             except Exception as exc:
-                self.status_label.setText(f"Lỗi lùi frame: {exc}")
+                self.status_label.setText(f"Step-back error: {exc}")
                 return
         step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
         self.seek_to_ms(self._current_frame_ms + delta * step_ms)
@@ -1887,12 +1895,12 @@ class MainWindow(QMainWindow):
                 self._current_frame_bgr = full_bgr
             frame_copy = full_bgr.copy()
         except Exception as exc:
-            self.test_result_label.setText(f"Lỗi test frame: {exc}")
-            self.status_label.setText(f"Lỗi test frame: {exc}")
+            self.test_result_label.setText(f"Frame test error: {exc}")
+            self.status_label.setText(f"Frame test error: {exc}")
             return False
 
-        self.test_result_label.setText("Đang test frame...")
-        self.status_label.setText("Đang test 1 frame...")
+        self.test_result_label.setText("Testing frame...")
+        self.status_label.setText("Testing frame...")
 
         thread = QThread(self)
         worker = FrameTestWorker(
@@ -1930,14 +1938,14 @@ class MainWindow(QMainWindow):
             self.roi_canvas.set_frame(frame_bgr, mask=result.mask)
         if result.text:
             self.test_result_label.setText(
-                f'Frame test: "{result.text}" (conf: {result.confidence:.2f})'
+                f'OCR: "{result.text}" ({result.confidence:.2f})'
             )
             self.status_label.setText(
-                f'Test frame xong: "{result.text}" ({result.confidence:.2f})'
+                f'Frame test: "{result.text}" ({result.confidence:.2f})'
             )
         else:
-            self.test_result_label.setText("Frame test: (không phát hiện chữ)")
-            self.status_label.setText("Test frame xong: không phát hiện chữ")
+            self.test_result_label.setText("OCR: (no text detected)")
+            self.status_label.setText("Frame test: no text detected")
         self._update_controls_state()
 
     @Slot(str)
@@ -1945,8 +1953,8 @@ class MainWindow(QMainWindow):
         if self.sender() is not self._frame_test_worker:
             return
         self._cleanup_frame_test_worker()
-        self.test_result_label.setText(f"Lỗi test frame: {message}")
-        self.status_label.setText(f"Lỗi test frame: {message}")
+        self.test_result_label.setText(f"Frame test error: {message}")
+        self.status_label.setText(f"Frame test error: {message}")
         self._update_controls_state()
 
     def start_extraction(self) -> None:
@@ -1961,7 +1969,7 @@ class MainWindow(QMainWindow):
         self._close_preview_reader()
 
         self.progress_bar.setValue(0)
-        self.status_label.setText("Đang khởi chạy...")
+        self.status_label.setText("Extracting...")
 
         cancel_event = threading.Event()
         thread = QThread(self)
@@ -1994,7 +2002,7 @@ class MainWindow(QMainWindow):
         if self._cancel_event is not None:
             self._cancel_event.set()
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("Đang dừng...")
+            self.status_label.setText("Stopping...")
 
     @Slot(str, int, int)
     def _on_worker_progress(self, stage: str, current: int, total: int) -> None:
@@ -2004,15 +2012,15 @@ class MainWindow(QMainWindow):
             pct = int(round(70.0 * current / max(1, total)))
             self.progress_bar.setValue(max(0, min(70, pct)))
             self.status_label.setText(
-                f"Đang quét frame: {format_ass_time(current)} / {format_ass_time(total)}"
+                f"Scanning: {format_ass_time(current)} / {format_ass_time(total)}"
             )
         elif stage == "ocr":
             pct = 70 + int(round(29.0 * current / max(1, total)))
             self.progress_bar.setValue(max(70, min(99, pct)))
-            self.status_label.setText(f"Đang OCR: {current}/{total}")
+            self.status_label.setText(f"OCR: {current}/{total}")
         elif stage == "done":
             self.progress_bar.setValue(100)
-            self.status_label.setText(f"Hoàn tất: {total} dòng")
+            self.status_label.setText(f"Done: {total} cues")
 
     @Slot(object)
     def _on_worker_finished(self, result: ExtractResult) -> None:
@@ -2024,8 +2032,9 @@ class MainWindow(QMainWindow):
         self.review_table.set_frame_pts_ms(result.frame_pts_ms)
         self.review_table.set_events(result.events)
         self.progress_bar.setValue(100)
+        flagged_count = sum(1 for ev in result.events if ev.flagged)
         self.status_label.setText(
-            f"Hoàn tất: {len(result.events)} dòng ({result.elapsed_sec:.1f}s)"
+            f"Done: {len(result.events)} cues ({flagged_count} flagged)"
         )
         self._update_controls_state()
 
@@ -2036,7 +2045,7 @@ class MainWindow(QMainWindow):
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
-        self.status_label.setText("Đã hủy")
+        self.status_label.setText("Cancelled")
         self._update_controls_state()
 
     @Slot(str)
@@ -2046,9 +2055,9 @@ class MainWindow(QMainWindow):
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
-        self.status_label.setText("Lỗi tách sub")
+        self.status_label.setText("Extraction failed")
         self._update_controls_state()
-        QMessageBox.critical(self, "Lỗi tách phụ đề", message)
+        QMessageBox.critical(self, "Extraction Error", message)
 
     def _stop_and_wait_worker(self) -> None:
         if self._cancel_event is not None:
@@ -2087,8 +2096,8 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
         thread.deleteLater()
         if not self._retiring_threads and not self._is_running():
-            if self.status_label.text() == "Đang dọn luồng cũ...":
-                self.status_label.setText("Sẵn sàng")
+            if self.status_label.text() == "Cleaning up background worker...":
+                self.status_label.setText("Ready")
         self._update_controls_state()
 
     def _finalize_retiring_thread(self, thread: QThread) -> None:
@@ -2131,7 +2140,7 @@ class MainWindow(QMainWindow):
                 if thread.isFinished() and not thread.isRunning():
                     self._retire_thread(thread)
                 else:
-                    self.status_label.setText("Đang dọn luồng cũ...")
+                    self.status_label.setText("Cleaning up background worker...")
                     self._update_controls_state()
         elif worker is not None:
             worker.deleteLater()
@@ -2160,7 +2169,7 @@ class MainWindow(QMainWindow):
                 if thread.isFinished() and not thread.isRunning():
                     self._retire_thread(thread)
                 else:
-                    self.status_label.setText("Đang dọn luồng cũ...")
+                    self.status_label.setText("Cleaning up background worker...")
                     self._update_controls_state()
         elif worker is not None:
             worker.deleteLater()
@@ -2173,9 +2182,9 @@ class MainWindow(QMainWindow):
 
         reply = QMessageBox.question(
             self,
-            "Chưa xuất chỉnh sửa phụ đề",
-            "Bạn có chỉnh sửa trong bảng rà soát chưa được xuất.\n"
-            "Bạn có chắc muốn bỏ các chỉnh sửa này không?",
+            "Unexported Subtitle Edits",
+            "You have unexported edits in the subtitle table.\n"
+            "Discard these edits and continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2188,8 +2197,8 @@ class MainWindow(QMainWindow):
         names = "\n".join(f"- {p.name}" for p in existing_paths)
         reply = QMessageBox.question(
             self,
-            "Xác nhận ghi đè file phụ đề",
-            f"Các file sau đã tồn tại:\n{names}\n\nBạn có muốn ghi đè không?",
+            "Confirm Overwrite",
+            f"The following files already exist:\n{names}\n\nOverwrite them?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2206,8 +2215,8 @@ class MainWindow(QMainWindow):
         if not want_ass and not want_srt:
             QMessageBox.information(
                 self,
-                "Chưa chọn định dạng",
-                "Vui lòng chọn ít nhất một định dạng xuất (.ass hoặc .srt).",
+                "No Format Selected",
+                "Please select at least one export format (.ass or .srt).",
             )
             return False
 
@@ -2215,8 +2224,8 @@ class MainWindow(QMainWindow):
         if not prepare_export_cues(events):
             QMessageBox.information(
                 self,
-                "Không có phụ đề để xuất",
-                "Danh sách phụ đề hiện đang trống hoặc không có dòng hợp lệ.",
+                "No Subtitles to Export",
+                "The subtitle list is empty or contains no valid cues.",
             )
             return False
 
@@ -2225,7 +2234,9 @@ class MainWindow(QMainWindow):
         else:
             custom = self.custom_dir_edit.text().strip()
             if not custom:
-                QMessageBox.warning(self, "Thiếu thư mục xuất", "Vui lòng chọn thư mục xuất.")
+                QMessageBox.warning(
+                    self, "Missing Output Folder", "Please choose an output folder."
+                )
                 return False
             out_dir = Path(custom)
 
@@ -2235,8 +2246,8 @@ class MainWindow(QMainWindow):
             if not tpl_text or not Path(tpl_text).is_file():
                 QMessageBox.warning(
                     self,
-                    "File mẫu .ass không hợp lệ",
-                    "Không tìm thấy file .ass mẫu đã chọn.",
+                    "Invalid .ass Template",
+                    "The selected .ass template file could not be found.",
                 )
                 return False
             template_path = Path(tpl_text)
@@ -2278,8 +2289,8 @@ class MainWindow(QMainWindow):
             if want_srt:
                 export_srt(events, srt_path)
         except Exception as exc:
-            self.status_label.setText(f"Lỗi xuất file: {exc}")
-            QMessageBox.warning(self, "Lỗi xuất phụ đề", str(exc))
+            self.status_label.setText(f"Export error: {exc}")
+            QMessageBox.warning(self, "Export Error", str(exc))
             return False
 
         self.review_table.mark_clean()
@@ -2287,7 +2298,7 @@ class MainWindow(QMainWindow):
         self._last_export_dir = out_dir
         self._update_controls_state()
         self.status_label.setText(
-            "Đã xuất: " + ", ".join(p.name for p in targets)
+            "Exported: " + ", ".join(p.name for p in targets)
         )
         return True
 

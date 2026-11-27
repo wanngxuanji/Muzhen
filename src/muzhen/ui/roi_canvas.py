@@ -323,7 +323,7 @@ class RoiCanvas(QWidget):
                 painter.drawText(
                     self.rect(),
                     Qt.AlignmentFlag.AlignCenter,
-                    "Kéo thả video vào đây để xem trước và đặt vùng ROI",
+                    "Drop a video file here or click Open Video",
                 )
 
             roi_rect = self._roi_to_rect(self._roi, disp)
