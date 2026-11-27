@@ -63,7 +63,13 @@ from transapp.core.ocr_engine import OcrEngine
 from transapp.core.pipeline import ExtractionPipeline
 from transapp.core.presets import PresetStore, RoiPreset
 from transapp.core.video_reader import VideoMetadata, VideoReader
-from transapp.exporters import export_ass, export_srt, format_ass_time, prepare_export_cues
+from transapp.exporters import (
+    export_ass,
+    export_srt,
+    format_ass_time,
+    list_ass_template_styles,
+    prepare_export_cues,
+)
 from transapp.ui.icons import make_icon
 from transapp.ui.review_table import ReviewTable
 from transapp.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
@@ -234,6 +240,7 @@ class MainWindow(QMainWindow):
         self._trim_end_ms: int | None = None
         self._has_unexported_edits: bool = False
         self._last_export_dir: Path | None = None
+        self._last_ass_template_path: str = ""
         self._is_playing: bool = False
         self._play_iter: Iterator[tuple[int, int, np.ndarray]] | None = None
         self._play_timer = QTimer(self)
@@ -606,6 +613,18 @@ class MainWindow(QMainWindow):
         ass_tpl_row.addWidget(self.btn_browse_ass_template)
         body_layout.addLayout(ass_tpl_row)
 
+        self.ass_style_row_widget = QWidget()
+        ass_style_row = QHBoxLayout(self.ass_style_row_widget)
+        ass_style_row.setContentsMargins(0, 0, 0, 0)
+        ass_style_row.setSpacing(6)
+        lbl_ass_style = QLabel("Style:")
+        lbl_ass_style.setProperty("role", "fieldLabel")
+        self.ass_style_combo = QComboBox()
+        ass_style_row.addWidget(lbl_ass_style)
+        ass_style_row.addWidget(self.ass_style_combo, 1)
+        self.ass_style_row_widget.setVisible(False)
+        body_layout.addWidget(self.ass_style_row_widget)
+
         body_layout.addStretch(1)
         scroll.setWidget(inspector_body)
         inspector_outer.addWidget(scroll, 1)
@@ -704,6 +723,8 @@ class MainWindow(QMainWindow):
         self.chk_srt.toggled.connect(lambda _: self._update_controls_state())
         self.radio_dir_same.toggled.connect(lambda _: self._update_controls_state())
         self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
+        self.radio_ass_template.toggled.connect(lambda _: self._refresh_ass_template_styles())
+        self.ass_template_edit.textChanged.connect(lambda _: self._refresh_ass_template_styles())
         self.btn_browse_out_dir.clicked.connect(self._browse_output_dir)
         self.btn_browse_ass_template.clicked.connect(self._browse_ass_template)
 
@@ -716,6 +737,7 @@ class MainWindow(QMainWindow):
         self.review_table.jump_requested.connect(self._on_review_jump_requested)
         self.review_table.snap_start_requested.connect(self._on_review_snap_start)
         self.review_table.snap_end_requested.connect(self._on_review_snap_end)
+        self.review_table.split_requested.connect(self._on_review_split_requested)
         self.review_table.events_modified.connect(self._on_review_events_modified)
 
     def _is_running(self) -> bool:
@@ -849,6 +871,51 @@ class MainWindow(QMainWindow):
         if not self.review_table.apply_playhead_to_selected_end(self._current_rel_ms()):
             self.status_label.setText("Không thể đặt End ≤ Start của dòng đang chọn")
 
+    def _on_review_split_requested(self) -> None:
+        if self._is_running():
+            return
+        playhead = self._current_rel_ms() if self._video_meta is not None else None
+        self.review_table.split_selected_row(playhead)
+
+    def _refresh_ass_template_styles(self) -> None:
+        tpl_text = self.ass_template_edit.text().strip()
+        same_template = tpl_text == self._last_ass_template_path
+        prev_style = self.ass_style_combo.currentText() if same_template else ""
+
+        styles: list[str] = []
+        if self.radio_ass_template.isChecked() and tpl_text:
+            tpl_path = Path(tpl_text)
+            if tpl_path.is_file():
+                try:
+                    styles = list_ass_template_styles(tpl_path)
+                except Exception:
+                    styles = []
+
+        self._last_ass_template_path = tpl_text
+        self.ass_style_combo.blockSignals(True)
+        try:
+            self.ass_style_combo.clear()
+            if len(styles) > 1:
+                for name in styles:
+                    self.ass_style_combo.addItem(name)
+                if prev_style and prev_style in styles:
+                    self.ass_style_combo.setCurrentText(prev_style)
+                elif "Default" in styles:
+                    self.ass_style_combo.setCurrentText("Default")
+                else:
+                    self.ass_style_combo.setCurrentIndex(0)
+                self.ass_style_row_widget.setVisible(True)
+            else:
+                self.ass_style_row_widget.setVisible(False)
+        finally:
+            self.ass_style_combo.blockSignals(False)
+
+        self.ass_style_combo.setEnabled(
+            self.radio_ass_template.isChecked()
+            and self.ass_style_combo.count() > 1
+            and not self._is_running()
+        )
+
     def _on_review_events_modified(self) -> None:
         self._has_unexported_edits = True
 
@@ -865,6 +932,9 @@ class MainWindow(QMainWindow):
             no_mod = mods == Qt.KeyboardModifier.NoModifier
             shift_only = mods == Qt.KeyboardModifier.ShiftModifier
             ctrl_only = mods == Qt.KeyboardModifier.ControlModifier
+            ctrl_shift = mods == (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+            )
             alt_only = mods == Qt.KeyboardModifier.AltModifier
 
             if key == Qt.Key.Key_S and alt_only:
@@ -885,6 +955,30 @@ class MainWindow(QMainWindow):
                 return
             if key == Qt.Key.Key_D and ctrl_only:
                 self.review_table.mark_selected_ok()
+                event.accept()
+                return
+            if key == Qt.Key.Key_M and ctrl_only:
+                self.review_table.merge_selected_rows()
+                event.accept()
+                return
+            if key == Qt.Key.Key_K and ctrl_only:
+                self._on_review_split_requested()
+                event.accept()
+                return
+            if key == Qt.Key.Key_Z and ctrl_only:
+                self.review_table.undo()
+                event.accept()
+                return
+            if (key == Qt.Key.Key_Y and ctrl_only) or (key == Qt.Key.Key_Z and ctrl_shift):
+                self.review_table.redo()
+                event.accept()
+                return
+            if key == Qt.Key.Key_F and ctrl_only:
+                self.review_table.open_find_bar(focus_replace=False)
+                event.accept()
+                return
+            if key == Qt.Key.Key_H and ctrl_only:
+                self.review_table.open_find_bar(focus_replace=True)
                 event.accept()
                 return
 
@@ -991,6 +1085,9 @@ class MainWindow(QMainWindow):
         custom_tpl = self.radio_ass_template.isChecked()
         self.ass_template_edit.setEnabled(custom_tpl and not running)
         self.btn_browse_ass_template.setEnabled(not running)
+        self.ass_style_combo.setEnabled(
+            custom_tpl and self.ass_style_combo.count() > 1 and not running
+        )
 
         self.btn_test_frame.setEnabled(has_video and not running)
         self.provider_combo.setEnabled(not running)
@@ -1663,12 +1760,22 @@ class MainWindow(QMainWindow):
 
         try:
             if want_ass:
+                style_name = (
+                    self.ass_style_combo.currentText()
+                    if (
+                        template_path is not None
+                        and self.ass_style_combo.count() > 1
+                        and not self.ass_style_row_widget.isHidden()
+                    )
+                    else None
+                )
                 export_ass(
                     events,
                     ass_path,
                     video_width=self._extract_result.width,
                     video_height=self._extract_result.height,
                     template_path=template_path,
+                    style_name=style_name,
                     frame_pts_ms=self._extract_result.frame_pts_ms,
                 )
             if want_srt:

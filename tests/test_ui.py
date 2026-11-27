@@ -1607,3 +1607,359 @@ def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
     window.close()
 
 
+def test_review_table_multi_delete_merge_split_and_undo_redo(qtbot):
+    from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtWidgets import QAbstractItemView
+    from transapp.ui.review_table import ReviewTable
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(980, 440)
+    table.show()
+
+    # ExtendedSelection, no AnyKeyPressed edit trigger, and auto-repeat on nudge buttons
+    assert table.table.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
+    triggers = table.table.editTriggers()
+    assert bool(triggers & QAbstractItemView.EditTrigger.DoubleClicked)
+    assert bool(triggers & QAbstractItemView.EditTrigger.EditKeyPressed)
+    assert not bool(triggers & QAbstractItemView.EditTrigger.AnyKeyPressed)
+    assert table.btn_nudge_back.autoRepeat() is True
+    assert table.btn_nudge_fwd.autoRepeat() is True
+    assert table.can_undo() is False
+    assert table.can_redo() is False
+    assert table.btn_undo.isEnabled() is False
+    assert table.btn_redo.isEnabled() is False
+
+    thumb1 = _make_png_bytes((30, 180, 30))
+    thumb2 = _make_png_bytes((30, 30, 180))
+    thumb3 = _make_png_bytes((180, 30, 30))
+    thumb4 = _make_png_bytes((180, 180, 30))
+
+    ev1 = SubtitleEvent(1, 500, 1500, "我们今天一起去吃饭", 0.96, False, thumb1)
+    ev2 = SubtitleEvent(2, 1550, 2400, "我们今天一起去吃", 0.82, True, thumb2, "Độ tin cậy thấp")
+    ev3 = SubtitleEvent(3, 3000, 3900, "第一句", 0.85, False, thumb3)
+    ev4 = SubtitleEvent(4, 4000, 5000, "第二句", 0.95, False, thumb4)
+    table.set_events([ev1, ev2, ev3, ev4])
+
+    def _select_rows(rows: list[int]) -> None:
+        sel = table.table.selectionModel()
+        sel.clearSelection()
+        flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        for r in rows:
+            idx = table.table.model().index(r, 0)
+            sel.select(idx, flags)
+        if rows:
+            table.table.setCurrentCell(rows[-1], 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+
+    # 1. Non-contiguous multi-row delete -> re-index -> single-step Ctrl+Z / Ctrl+Y round-trip
+    _select_rows([0, 2])
+    assert table.btn_merge.isEnabled() is False
+    assert table.merge_selected_rows() is False  # non-contiguous rejected without mutating
+    assert len(table.events()) == 4
+
+    assert table.delete_selected_rows() is True
+    assert [(e.index, e.text) for e in table.events()] == [
+        (1, "我们今天一起去吃"),
+        (2, "第二句"),
+    ]
+    assert table.can_undo() is True
+    assert table.btn_undo.isEnabled() is True
+
+    # Ctrl+Z restores all 4 events with exact thumbnail_png bytes identity
+    table.table.setFocus()
+    qtbot.keyClick(table.table, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    restored = table.events()
+    assert [(e.index, e.text) for e in restored] == [
+        (1, "我们今天一起去吃饭"),
+        (2, "我们今天一起去吃"),
+        (3, "第一句"),
+        (4, "第二句"),
+    ]
+    assert restored[0].thumbnail_png is thumb1
+    assert restored[1].thumbnail_png is thumb2
+    assert restored[2].thumbnail_png is thumb3
+    assert restored[3].thumbnail_png is thumb4
+    assert table.can_redo() is True
+
+    # Ctrl+Y re-applies delete, then Ctrl+Z restores again
+    qtbot.keyClick(table.table, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+    assert len(table.events()) == 2
+    qtbot.keyClick(table.table, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert len(table.events()) == 4
+
+    # 2. Contiguous near-duplicate merge (text_similarity >= 0.80 -> dedup keeping longer/higher-conf)
+    _select_rows([0, 1])
+    assert table.btn_merge.isEnabled() is True
+    qtbot.keyClick(table.table, Qt.Key.Key_M, Qt.KeyboardModifier.ControlModifier)
+    after_dup_merge = table.events()
+    assert len(after_dup_merge) == 3
+    assert after_dup_merge[0].start_ms == 500
+    assert after_dup_merge[0].end_ms == 2400
+    assert after_dup_merge[0].text == "我们今天一起去吃饭"
+    assert after_dup_merge[0].confidence == pytest.approx(0.96)
+    assert after_dup_merge[0].thumbnail_png is thumb1
+    assert [e.index for e in after_dup_merge] == [1, 2, 3]
+
+    # Undo merge restores exact original 4 rows
+    assert table.undo() is True
+    assert len(table.events()) == 4
+    assert table.events()[1].thumbnail_png is thumb2
+
+    # 3. Contiguous distinct merge (text_similarity < 0.80 -> join with \n, highest-conf thumbnail)
+    _select_rows([2, 3])
+    assert table.merge_selected_rows() is True
+    after_distinct_merge = table.events()
+    assert len(after_distinct_merge) == 3
+    merged_cue = after_distinct_merge[2]
+    assert merged_cue.start_ms == 3000
+    assert merged_cue.end_ms == 5000
+    assert merged_cue.text == "第一句\n第二句"
+    assert merged_cue.confidence == pytest.approx(0.95)
+    assert merged_cue.thumbnail_png is thumb4
+    assert merged_cue.flagged is False
+
+    # 4. Split multi-line cue at playhead (inside start..end) -> splits lines & shares thumbnail_png
+    _select_rows([2])
+    assert table.btn_split.isEnabled() is True
+    assert table.split_selected_row(playhead_rel_ms=3650) is True
+    after_split = table.events()
+    assert len(after_split) == 4
+    assert (after_split[2].start_ms, after_split[2].end_ms, after_split[2].text) == (3000, 3650, "第一句")
+    assert (after_split[3].start_ms, after_split[3].end_ms, after_split[3].text) == (3650, 5000, "第二句")
+    assert after_split[2].thumbnail_png is thumb4
+    assert after_split[3].thumbnail_png is thumb4
+
+    # 5. Split single-line cue with playhead outside cue -> splits at midpoint & duplicates text
+    _select_rows([0])
+    assert table.split_selected_row(playhead_rel_ms=100) is True
+    after_mid = table.events()
+    assert len(after_mid) == 5
+    assert (after_mid[0].start_ms, after_mid[0].end_ms, after_mid[0].text) == (500, 1000, "我们今天一起去吃饭")
+    assert (after_mid[1].start_ms, after_mid[1].end_ms, after_mid[1].text) == (1000, 1500, "我们今天一起去吃饭")
+    assert after_mid[0].thumbnail_png is thumb1
+    assert after_mid[1].thumbnail_png is thumb1
+
+    # Ctrl+Z / Ctrl+Shift+Z round-trip preserves thumbnail_png identity
+    qtbot.keyClick(table.table, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert len(table.events()) == 4
+    qtbot.keyClick(
+        table.table,
+        Qt.Key.Key_Z,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert len(table.events()) == 5
+    assert table.events()[0].thumbnail_png is thumb1
+    assert table.events()[1].thumbnail_png is thumb1
+
+    # 6. Cue with duration < 2ms cannot be split
+    table.set_events([SubtitleEvent(1, 1000, 1001, "极短", 0.90, False, thumb1)])
+    assert table.btn_split.isEnabled() is False
+    assert table.split_selected_row() is False
+
+
+def test_review_table_find_replace_all_undoable_and_template_style_selector(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QAbstractItemView
+    import transapp.ui.main_window as mw_mod
+    from transapp.ui.main_window import MainWindow
+    from transapp.ui.review_table import ReviewTable
+
+    # --- Part A: Collapsible Find & Replace Bar + Single-Step Undo ---
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(980, 440)
+    table.show()
+
+    assert not bool(table.table.editTriggers() & QAbstractItemView.EditTrigger.AnyKeyPressed)
+    assert table.find_bar.isVisible() is False
+
+    thumb = _make_png_bytes((90, 160, 220))
+    table.set_events(
+        [
+            SubtitleEvent(1, 100, 900, "萧炎向前一步", 0.96, False, thumb),
+            SubtitleEvent(2, 1000, 1800, "普通对白", 0.95, False, thumb),
+            SubtitleEvent(3, 2000, 2900, "萧炎大喝一声", 0.72, True, thumb, "Độ tin cậy thấp"),
+            SubtitleEvent(4, 3000, 3900, "又是萧炎", 0.75, True, thumb, "Ký tự lạ"),
+        ]
+    )
+
+    # Ctrl+F opens collapsible bar
+    table.table.setFocus()
+    qtbot.keyClick(table.table, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert table.find_bar.isVisible() is True
+
+    table.find_edit.setText("萧炎")
+    assert table.find_next() is True  # row 0 -> next match row 2
+    assert table.selected_event() is not None and table.selected_event().index == 3
+    assert table.find_next() is True  # row 2 -> row 3
+    assert table.selected_event().index == 4
+    assert table.find_prev() is True  # row 3 -> row 2
+    assert table.selected_event().index == 3
+
+    # Ctrl+H focuses replace_edit; replace_current updates selected row and clears flagged
+    qtbot.keyClick(table.table, Qt.Key.Key_H, Qt.KeyboardModifier.ControlModifier)
+    assert table.find_bar.isVisible() is True
+    table.replace_edit.setText("药老")
+    assert table.replace_current() is True
+    assert table.events()[2].text == "药老大喝一声"
+    assert table.events()[2].flagged is False
+
+    # Undo restores replace_current cleanly
+    assert table.undo() is True
+    assert table.events()[2].text == "萧炎大喝一声"
+    assert table.events()[2].flagged is True
+
+    # replace_all replaces all 3 occurrences in ONE undoable step and clears flagged on modified rows
+    modified_calls: list[bool] = []
+    table.events_modified.connect(lambda: modified_calls.append(True))
+    count = table.replace_all()
+    assert count == 3
+    assert [e.text for e in table.events()] == [
+        "药老向前一步",
+        "普通对白",
+        "药老大喝一声",
+        "又是药老",
+    ]
+    assert table.events()[2].flagged is False
+    assert table.events()[3].flagged is False
+    assert len(modified_calls) == 1
+
+    # Single Undo reverts ALL 3 rows and restores their flagged states
+    assert table.undo() is True
+    assert [e.text for e in table.events()] == [
+        "萧炎向前一步",
+        "普通对白",
+        "萧炎大喝一声",
+        "又是萧炎",
+    ]
+    assert table.events()[2].flagged is True
+    assert table.events()[3].flagged is True
+
+    # Escape closes Find/Replace bar
+    qtbot.keyClick(table.find_edit, Qt.Key.Key_Escape)
+    assert table.find_bar.isVisible() is False
+
+    # --- Part B: MainWindow ASS Template Style Selector & Playhead Split Wiring ---
+    video_path = tmp_path / "style_ep.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        width=640,
+        height=360,
+        fps=25,
+        duration_sec=1.6,
+        cues=((200, 1400, "第一行\n第二行"),),
+    )
+
+    single_style_tpl = tmp_path / "single.ass"
+    single_style_tpl.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        "Style: OnlyStyle,Microsoft YaHei,54\n\n[Events]\n",
+        encoding="utf-8",
+    )
+
+    multi_style_tpl = tmp_path / "multi_default.ass"
+    multi_style_tpl.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        "Style: OP_Kara,Microsoft YaHei,48\n"
+        "Style: Default,Microsoft YaHei,54\n"
+        "Style: SignTop,Microsoft YaHei,44\n\n[Events]\n",
+        encoding="utf-8",
+    )
+
+    multi_no_default_tpl = tmp_path / "multi_nodefault.ass"
+    multi_no_default_tpl.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        "Style: MainSub,Microsoft YaHei,54\n"
+        "Style: NoteSub,Microsoft YaHei,42\n\n[Events]\n",
+        encoding="utf-8",
+    )
+
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一行\n第二行", 0.95]],
+            [0.01],
+        )
+    )
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    # Hidden by default (Default ASS radio)
+    assert window.ass_style_row_widget.isVisible() is False
+
+    # Hidden when custom template has <= 1 style
+    window.radio_ass_template.setChecked(True)
+    window.ass_template_edit.setText(str(single_style_tpl))
+    assert window.ass_style_row_widget.isVisible() is False
+
+    # Visible when custom template has > 1 styles; pre-selects "Default" if present
+    window.ass_template_edit.setText(str(multi_style_tpl))
+    assert window.ass_style_row_widget.isVisible() is True
+    assert [
+        window.ass_style_combo.itemText(i) for i in range(window.ass_style_combo.count())
+    ] == ["OP_Kara", "Default", "SignTop"]
+    assert window.ass_style_combo.currentText() == "Default"
+
+    # Pre-selects styles[0] when "Default" is absent
+    window.ass_template_edit.setText(str(multi_no_default_tpl))
+    assert window.ass_style_row_widget.isVisible() is True
+    assert window.ass_style_combo.currentText() == "MainSub"
+
+    # Switch back to multi_default and choose "SignTop"
+    window.ass_template_edit.setText(str(multi_style_tpl))
+    window.ass_style_combo.setCurrentText("SignTop")
+
+    # Switching back to Default ASS hides style row, switching to template restores visibility
+    window.radio_ass_default.setChecked(True)
+    assert window.ass_style_row_widget.isVisible() is False
+    window.radio_ass_template.setChecked(True)
+    assert window.ass_style_row_widget.isVisible() is True
+    window.ass_style_combo.setCurrentText("SignTop")
+
+    # Load video, extract, test Ctrl+K split at playhead, and verify export_ass receives style_name
+    window.load_video(video_path)
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+
+    ev0 = window.review_table.events()[0]
+    target_split = (ev0.start_ms + ev0.end_ms) // 2 + 80
+    if not (ev0.start_ms < target_split < ev0.end_ms):
+        target_split = (ev0.start_ms + ev0.end_ms) // 2
+    window.seek_to_ms(window._start_pts_ms + target_split)
+    actual_rel = window._current_rel_ms()
+    assert ev0.start_ms < actual_rel < ev0.end_ms
+
+    window.review_table.table.selectRow(0)
+    window.review_table.table.setFocus()
+    qtbot.keyClick(window.review_table.table, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
+    split_events = window.review_table.events()
+    assert len(split_events) == 2
+    assert split_events[0].end_ms == actual_rel
+    assert split_events[1].start_ms == actual_rel
+
+    captured_kwargs: list[dict[str, object]] = []
+    real_export_ass = mw_mod.export_ass
+
+    def spy_export_ass(*args, **kwargs):
+        captured_kwargs.append(dict(kwargs))
+        return real_export_ass(*args, **kwargs)
+
+    monkeypatch.setattr(mw_mod, "export_ass", spy_export_ass)
+    assert window.export_subtitles() is True
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0].get("style_name") == "SignTop"
+
+    ass_content = (tmp_path / "style_ep.ass").read_text(encoding="utf-8")
+    assert ",SignTop," in ass_content
+    window.close()
+
+
+

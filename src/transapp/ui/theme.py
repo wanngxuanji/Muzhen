@@ -186,6 +186,27 @@ QLabel#flagReasonLabel {
     font-weight: 500;
 }
 
+QFrame#findReplaceBar {
+    background-color: #11141A;
+    border: 1px solid #252A34;
+    border-radius: 6px;
+}
+
+QFrame#findReplaceBar QLineEdit {
+    background-color: #15181F;
+    padding: 2px 7px;
+    min-height: 16px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+QLabel#findStatusLabel {
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10px;
+    color: #8A94A6;
+    padding: 0 4px;
+}
+
 QLabel#testResultLabel {
     color: #CBD5E1;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
