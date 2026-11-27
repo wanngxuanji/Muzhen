@@ -239,6 +239,7 @@ def test_main_window_overwrite_guard_and_video_switch_clears_memory(qtbot, tmp_p
         preset_store=store,
         pipeline=pipeline,
         overwrite_confirm_fn=fake_confirm,
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
@@ -300,7 +301,7 @@ def test_main_window_presets_test_frame_and_worker_cancel(qtbot, tmp_path: Path)
         )
     )
 
-    window = MainWindow(preset_store=store, pipeline=pipeline)
+    window = MainWindow(preset_store=store, pipeline=pipeline, language="en")
     qtbot.addWidget(window)
     window.show()
     window.load_video(video_path)
@@ -391,14 +392,6 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
 
     video_path = tmp_path / "ep_tpl.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=1.2, cues=((200, 1000, "模板测试"),))
-
-    tpl_path = tmp_path / "style_template.ass"
-    tpl_path.write_text(
-        "\ufeff[Script Info]\r\nTitle: CustomStyle\r\nPlayResX: 1920\r\nPlayResY: 1080\r\n\r\n"
-        "[V4+ Styles]\r\nFormat: Name, Fontname, Fontsize\r\n"
-        "Style: AnimeFont,Microsoft YaHei,54\r\n\r\n[Events]\r\n",
-        encoding="utf-8",
-    )
     out_dir = tmp_path / "exported_subs"
 
     ocr_entered = threading.Event()
@@ -411,7 +404,7 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
 
     pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=controllable_ocr))
     store = PresetStore(config_dir=tmp_path / "preset_cfg")
-    window = MainWindow(preset_store=store, pipeline=pipeline)
+    window = MainWindow(preset_store=store, pipeline=pipeline, language="en")
     qtbot.addWidget(window)
     window.show()
     window.load_video(video_path)
@@ -424,8 +417,6 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
     assert window._current_frame_ms > 0
 
     window.roi_canvas.set_roi(RoiRect(0.15, 0.70, 0.70, 0.20))
-    window.radio_ass_template.setChecked(True)
-    window.ass_template_edit.setText(str(tpl_path))
     assert window.save_preset("MyAnime") is True
     assert "MyAnime" in store.list_names()
     assert window.delete_current_preset() is True
@@ -436,16 +427,14 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
     assert window._preview_reader is None
     qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=8000)
 
-    window.radio_dir_custom.setChecked(True)
+    window.btn_out_custom.setChecked(True)
     window.custom_dir_edit.setText(str(out_dir))
-    window.radio_ass_template.setChecked(True)
-    window.ass_template_edit.setText(str(tpl_path))
     assert window.export_subtitles() is True
 
     ass_out = (out_dir / "ep_tpl.ass").read_text(encoding="utf-8")
     srt_out = (out_dir / "ep_tpl.srt").read_text(encoding="utf-8")
-    assert "Style: AnimeFont,Microsoft YaHei,54" in ass_out
-    assert ",AnimeFont,,0,0,0,,模板测试" in ass_out
+    assert "Dialogue:" in ass_out
+    assert "模板测试" in ass_out
     assert "模板测试" in srt_out
 
     release_ocr.clear()
@@ -491,7 +480,11 @@ def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_
         return ([[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一集", 0.90]], [0.01])
 
     pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=quick_cancel_ocr))
-    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=pipeline,
+        language="en",
+    )
     qtbot.addWidget(window)
     window.show()
     window.load_video(ep1)
@@ -670,7 +663,11 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
             )
         )
     )
-    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=pipeline,
+        language="en",
+    )
     qtbot.addWidget(window)
     window.show()
     window.load_video(video_path)
@@ -867,15 +864,17 @@ def test_main_window_browse_buttons_screen_clamp_and_corrupt_presets(
 
     monkeypatch.setattr(QScreen, "availableGeometry", lambda _self: QRect(0, 0, 1280, 672))
 
-    window = MainWindow(preset_store=PresetStore(config_dir=cfg_dir))
+    window = MainWindow(preset_store=PresetStore(config_dir=cfg_dir), language="en")
     qtbot.addWidget(window)
     assert window.width() <= 1160
     assert window.height() <= 672
 
-    assert window.radio_dir_same.isChecked()
+    assert window.btn_out_same.isChecked()
+    assert window.custom_dir_row_widget.isVisible() is False
+    window.btn_out_custom.setChecked(True)
     assert window.btn_browse_out_dir.isEnabled() is True
-    assert window.radio_ass_default.isChecked()
-    assert window.btn_browse_ass_template.isEnabled() is True
+    assert not hasattr(window, "radio_ass_default")
+    assert not hasattr(window, "btn_browse_ass_template")
     window.close()
 
 
@@ -929,24 +928,27 @@ def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monk
     from muzhen.ui.main_window import MainWindow
 
     monkeypatch.setattr(OcrEngine, "available_providers", staticmethod(lambda: ["cpu", "directml"]))
-    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), language="en")
     qtbot.addWidget(window)
 
-    assert window.provider_combo.count() == 2
-    assert window.provider_combo.currentData() == "directml"
+    assert window.btn_render_gpu.isEnabled() is True
+    assert window.btn_render_gpu.isChecked() is True
+    assert window.selected_provider() == "directml"
     assert window.build_config().provider == "directml"
 
-    cpu_idx = window.provider_combo.findData("cpu")
-    assert cpu_idx >= 0
-    window.provider_combo.setCurrentIndex(cpu_idx)
+    window.btn_render_cpu.click()
+    assert window.btn_render_cpu.isChecked() is True
+    assert window.selected_provider() == "cpu"
     assert window.build_config().provider == "cpu"
 
     assert window.ocr_model_combo.count() == 2
+    assert window.ocr_model_combo.currentText() == "Precision"
     assert window.ocr_model_combo.currentData() == "accurate"
     assert window.build_config().ocr_model == "accurate"
     fast_idx = window.ocr_model_combo.findData("fast")
     assert fast_idx >= 0
     window.ocr_model_combo.setCurrentIndex(fast_idx)
+    assert window.ocr_model_combo.currentText() == "Turbo"
     assert window.build_config().ocr_model == "fast"
     window.close()
 
@@ -1007,7 +1009,11 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
         )
     )
     pipeline = ExtractionPipeline(ocr_engine=fake_ocr)
-    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=pipeline,
+        language="en",
+    )
     qtbot.addWidget(window)
     window.show()
 
@@ -1071,7 +1077,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 1200) <= 60
 
     prev_in, prev_out = cfg.trim_start_ms, cfg.trim_end_ms
-    window.radio_dir_custom.setChecked(True)
+    window.btn_out_custom.setChecked(True)
     window.custom_dir_edit.setFocus()
     window.seek_to_ms(600)
     qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_I)
@@ -1079,12 +1085,12 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert window.build_config().trim_start_ms == prev_in
     assert window.build_config().trim_end_ms == prev_out
     assert "i" in window.custom_dir_edit.text().lower()
-    window.radio_dir_same.setChecked(True)
+    window.btn_out_same.setChecked(True)
     window.custom_dir_edit.clear()
 
-    window.provider_combo.setFocus()
-    qtbot.keyClick(window.provider_combo, Qt.Key.Key_I)
-    qtbot.keyClick(window.provider_combo, Qt.Key.Key_O)
+    window.ocr_model_combo.setFocus()
+    qtbot.keyClick(window.ocr_model_combo, Qt.Key.Key_I)
+    qtbot.keyClick(window.ocr_model_combo, Qt.Key.Key_O)
     assert window.build_config().trim_start_ms == prev_in
     assert window.build_config().trim_end_ms == prev_out
 
@@ -1222,7 +1228,7 @@ def test_main_window_playback_autorepeat_and_keyboard_scrubbing(qtbot, tmp_path:
     assert window._is_playing is False
 
     window._seek_to_start()
-    window.radio_dir_custom.setChecked(True)
+    window.btn_out_custom.setChecked(True)
     window.custom_dir_edit.setFocus()
     qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_Space)
     qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_Period)
@@ -1393,6 +1399,7 @@ def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
         preset_store=store,
         pipeline=pipeline,
         unsaved_confirm_fn=fake_unsaved_confirm,
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
@@ -1752,33 +1759,6 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
         cues=((200, 1400, "第一行\n第二行"),),
     )
 
-    single_style_tpl = tmp_path / "single.ass"
-    single_style_tpl.write_text(
-        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
-        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
-        "Style: OnlyStyle,Microsoft YaHei,54\n\n[Events]\n",
-        encoding="utf-8",
-    )
-
-    multi_style_tpl = tmp_path / "multi_default.ass"
-    multi_style_tpl.write_text(
-        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
-        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
-        "Style: OP_Kara,Microsoft YaHei,48\n"
-        "Style: Default,Microsoft YaHei,54\n"
-        "Style: SignTop,Microsoft YaHei,44\n\n[Events]\n",
-        encoding="utf-8",
-    )
-
-    multi_no_default_tpl = tmp_path / "multi_nodefault.ass"
-    multi_no_default_tpl.write_text(
-        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
-        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
-        "Style: MainSub,Microsoft YaHei,54\n"
-        "Style: NoteSub,Microsoft YaHei,42\n\n[Events]\n",
-        encoding="utf-8",
-    )
-
     fake_ocr = OcrEngine(
         ocr_callable=lambda _img: (
             [[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一行\n第二行", 0.95]],
@@ -1788,35 +1768,12 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
     window = MainWindow(
         preset_store=PresetStore(config_dir=tmp_path / "cfg"),
         pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
 
-    assert window.ass_style_row_widget.isVisible() is False
-
-    window.radio_ass_template.setChecked(True)
-    window.ass_template_edit.setText(str(single_style_tpl))
-    assert window.ass_style_row_widget.isVisible() is False
-
-    window.ass_template_edit.setText(str(multi_style_tpl))
-    assert window.ass_style_row_widget.isVisible() is True
-    assert [
-        window.ass_style_combo.itemText(i) for i in range(window.ass_style_combo.count())
-    ] == ["OP_Kara", "Default", "SignTop"]
-    assert window.ass_style_combo.currentText() == "Default"
-
-    window.ass_template_edit.setText(str(multi_no_default_tpl))
-    assert window.ass_style_row_widget.isVisible() is True
-    assert window.ass_style_combo.currentText() == "MainSub"
-
-    window.ass_template_edit.setText(str(multi_style_tpl))
-    window.ass_style_combo.setCurrentText("SignTop")
-
-    window.radio_ass_default.setChecked(True)
-    assert window.ass_style_row_widget.isVisible() is False
-    window.radio_ass_template.setChecked(True)
-    assert window.ass_style_row_widget.isVisible() is True
-    window.ass_style_combo.setCurrentText("SignTop")
+    assert not hasattr(window, "ass_style_row_widget")
 
     window.load_video(video_path)
     window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
@@ -1849,10 +1806,9 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
     monkeypatch.setattr(mw_mod, "export_ass", spy_export_ass)
     assert window.export_subtitles() is True
     assert len(captured_kwargs) == 1
-    assert captured_kwargs[0].get("style_name") == "SignTop"
 
     ass_content = (tmp_path / "style_ep.ass").read_text(encoding="utf-8")
-    assert ",SignTop," in ass_content
+    assert "Dialogue:" in ass_content
     window.close()
 
 
@@ -2441,23 +2397,13 @@ def test_step_back_uses_read_prev_frame_before_ms_and_eof_step_fwd_does_not_doub
     window.close()
 
 
-def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_radio_toggle(
+def test_roi_canvas_disabled_during_extraction_and_retiring_thread_recovery(
     qtbot, tmp_path: Path, monkeypatch
 ):
     from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "lock_style_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.0)
-
-    multi_tpl = tmp_path / "multi_toggle.ass"
-    multi_tpl.write_text(
-        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
-        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
-        "Style: OP_Kara,Microsoft YaHei,48\n"
-        "Style: Default,Microsoft YaHei,54\n"
-        "Style: SignTop,Microsoft YaHei,44\n\n[Events]\n",
-        encoding="utf-8",
-    )
 
     ocr_entered = threading.Event()
     release_ocr = threading.Event()
@@ -2470,6 +2416,7 @@ def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_ra
     window = MainWindow(
         preset_store=PresetStore(config_dir=tmp_path / "cfg"),
         pipeline=ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=slow_ocr)),
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
@@ -2517,19 +2464,6 @@ def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_ra
     assert window.btn_start.isEnabled() is True
     assert window.btn_test_frame.isEnabled() is True
     assert window.roi_canvas.isEnabled() is True
-
-    window.radio_ass_template.setChecked(True)
-    window.ass_template_edit.setText(str(multi_tpl))
-    assert window.ass_style_combo.currentText() == "Default"
-    window.ass_style_combo.setCurrentText("SignTop")
-    assert window.ass_style_combo.currentText() == "SignTop"
-
-    window.radio_ass_default.setChecked(True)
-    assert window.ass_style_row_widget.isVisible() is False
-
-    window.radio_ass_template.setChecked(True)
-    assert window.ass_style_row_widget.isVisible() is True
-    assert window.ass_style_combo.currentText() == "SignTop"
     window.close()
 
 
@@ -2561,7 +2495,7 @@ def test_test_current_frame_runs_asynchronously_and_preset_oserror_warns(
 
     store = PresetStore(config_dir=tmp_path / "cfg")
     pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=blocking_ocr))
-    window = MainWindow(preset_store=store, pipeline=pipeline)
+    window = MainWindow(preset_store=store, pipeline=pipeline, language="en")
     qtbot.addWidget(window)
     window.show()
     window.load_video(ep)
@@ -2761,6 +2695,7 @@ def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path
         QTabBar,
         QWidget,
     )
+    from muzhen import __version__
     from muzhen.core.models import ExtractConfig, OcrSegment
     from muzhen.core.postprocess import postprocess_segments
     from muzhen.ui.main_window import MainWindow
@@ -2770,23 +2705,23 @@ def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path
         r"ÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]"
     )
 
-    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), language="en")
     qtbot.addWidget(window)
     window.show()
 
-    assert window.windowTitle() == "Muzhen — Frame-Accurate CJK Subtitle Workbench"
-    assert window.btn_browse_video.text() == "Open Video"
+    assert window.windowTitle() == f"Muzhen - V{__version__}"
+    assert window.btn_browse_video.toolTip() == "Open video file"
     assert window.btn_toggle_settings.text() == "Settings"
-    assert window.btn_start.text() == "Extract Subtitles"
+    assert window.btn_start.text() == "Extract"
     assert window.btn_stop.text() == "Stop"
     assert window.btn_test_frame.text() == "Test Frame"
     assert window.btn_export.text() == "Export .ass + .srt"
     assert window.status_label.text() == "Ready"
     assert window.lbl_trim_range.text() == "Full episode"
-    assert window.preset_combo.itemText(0) == "(No preset)"
+    assert window.preset_combo.itemText(0) == "(None)"
     assert [
         window.ocr_model_combo.itemText(i) for i in range(window.ocr_model_combo.count())
-    ] == ["PP-OCRv5 Server (Accurate)", "PP-OCRv5 Mobile (Fast)"]
+    ] == ["Precision", "Turbo"]
 
     panel_titles = [
         window._panel_titles[pane].text()
@@ -2814,7 +2749,7 @@ def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path
         elif isinstance(widget, QLineEdit):
             collected_strings.append(widget.text())
             collected_strings.append(widget.placeholderText())
-        elif isinstance(widget, QComboBox):
+        elif isinstance(widget, QComboBox) and widget is not window.language_combo:
             for idx in range(widget.count()):
                 collected_strings.append(widget.itemText(idx))
         elif isinstance(widget, QTabBar):
@@ -2837,8 +2772,8 @@ def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path
     offenders = [text for text in collected_strings if text and vi_diacritic_re.search(text)]
     assert offenders == []
 
-    assert window.settings_panel.minimumWidth() == 256
-    assert window.settings_panel.maximumWidth() == 400
+    assert window.settings_panel.minimumWidth() == 244
+    assert window.settings_panel.maximumWidth() == 380
 
     expanded_hint = window.minimumSizeHint()
     assert expanded_hint.width() <= 1280
@@ -2897,6 +2832,7 @@ def test_auto_update_shows_badge_opens_changelog_dialog_and_persists_skip(
         update_prefs_store=prefs_store,
         update_check_fn=fake_check,
         open_url_fn=fake_open_url,
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
@@ -3008,6 +2944,7 @@ def test_auto_update_offline_failure_is_silent_and_manual_up_to_date_informs_use
         auto_check_updates=False,
         update_prefs_store=UpdatePrefsStore(tmp_path / "update_prefs.json"),
         update_check_fn=controllable_check,
+        language="en",
     )
     qtbot.addWidget(window)
     window.show()
@@ -3040,6 +2977,314 @@ def test_auto_update_offline_failure_is_silent_and_manual_up_to_date_informs_use
     assert window.btn_check_update.isEnabled() is True
 
     window.close()
+
+
+def test_no_top_bar_window_title_version_and_clickable_empty_monitor(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QFileDialog, QFrame
+    from muzhen import __version__
+    from muzhen.ui.main_window import MainWindow
+
+    ep = tmp_path / "clickable_monitor_ep01.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.8)
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.findChild(QFrame, "topBar") is None
+    assert not hasattr(window, "video_path_edit")
+    assert window.windowTitle() == f"Muzhen - V{__version__}"
+    assert window.monitor_panel.isAncestorOf(window.btn_toggle_settings)
+    assert window.monitor_panel.isAncestorOf(window.btn_browse_video)
+    assert window.monitor_panel.isAncestorOf(window.video_name_label)
+    assert window.monitor_panel.isAncestorOf(window.video_meta_badge)
+    assert window.video_name_label.isVisible() is False
+    assert window.video_meta_badge.isVisible() is False
+    assert window.roi_canvas.cursor().shape() == Qt.CursorShape.PointingHandCursor
+    assert window.roi_canvas.empty_prompt_text() == "Click to open a video or drop a file here"
+
+    dialog_calls: list[str] = []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda _parent, title, _dir, _flt: (dialog_calls.append(title), (str(ep), ""))[1],
+    )
+
+    open_hits: list[bool] = []
+    window.roi_canvas.open_requested.connect(lambda: open_hits.append(True))
+
+    qtbot.mouseClick(
+        window.roi_canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(window.roi_canvas.width() // 2, window.roi_canvas.height() // 2),
+    )
+    assert len(open_hits) == 1
+    assert dialog_calls == ["Open Video"]
+    assert window._video_path == ep
+    assert window.video_name_label.isVisible() is True
+    assert "clickable_monitor" in window.video_name_label.text() or ep.name in window.video_name_label.toolTip()
+    assert window.video_meta_badge.isVisible() is True
+
+    qtbot.mouseClick(
+        window.roi_canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(window.roi_canvas.width() // 2, window.roi_canvas.height() // 2),
+    )
+    assert len(open_hits) == 1
+    assert len(dialog_calls) == 1
+    window.close()
+
+
+def test_compact_settings_render_method_precision_turbo_4_formats_and_conditional_custom_output(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from muzhen.ui.main_window import MainWindow
+
+    monkeypatch.setattr(OcrEngine, "available_providers", staticmethod(lambda: ["cpu"]))
+    cpu_window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg_cpu"),
+        language="en",
+    )
+    qtbot.addWidget(cpu_window)
+    cpu_window.show()
+
+    assert cpu_window.btn_render_cpu.isChecked() is True
+    assert cpu_window.btn_render_gpu.isChecked() is False
+    assert cpu_window.btn_render_gpu.isEnabled() is False
+    assert "DirectML" in cpu_window.btn_render_gpu.toolTip()
+    assert cpu_window.selected_provider() == "cpu"
+    assert cpu_window.build_config().provider == "cpu"
+    cpu_window.close()
+
+    monkeypatch.setattr(OcrEngine, "available_providers", staticmethod(lambda: ["cpu", "directml"]))
+    ep = tmp_path / "four_formats.mp4"
+    _make_synthetic_subtitle_mp4(ep, duration_sec=1.2, cues=((200, 1000, "四格式测试"),))
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "四格式测试", 0.95]],
+            [0.01],
+        )
+    )
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg_gpu"),
+        pipeline=ExtractionPipeline(ocr_engine=fake_ocr),
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.settings_panel.minimumWidth() == 244
+    assert window.settings_panel.maximumWidth() == 380
+    assert window.btn_render_gpu.isEnabled() is True
+    assert window.btn_render_gpu.isChecked() is True
+    assert window.selected_provider() == "directml"
+    window.btn_render_cpu.click()
+    assert window.selected_provider() == "cpu"
+    window.btn_render_gpu.click()
+    assert window.selected_provider() == "directml"
+
+    model_labels = [
+        window.ocr_model_combo.itemText(i) for i in range(window.ocr_model_combo.count())
+    ]
+    assert model_labels == ["Precision", "Turbo"]
+    assert all("(" not in lbl and ")" not in lbl for lbl in model_labels)
+
+    for chip, expected_ext in (
+        (window.chk_ass, ".ass"),
+        (window.chk_srt, ".srt"),
+        (window.chk_vtt, ".vtt"),
+        (window.chk_txt, ".txt"),
+    ):
+        assert chip.text() == expected_ext
+        assert "(" not in chip.text() and ")" not in chip.text()
+
+    assert window.chk_ass.isChecked() is True
+    assert window.chk_srt.isChecked() is True
+    assert window.chk_vtt.isChecked() is False
+    assert window.chk_txt.isChecked() is False
+
+    assert not hasattr(window, "radio_ass_default")
+    assert not hasattr(window, "radio_ass_template")
+    assert not hasattr(window, "ass_template_edit")
+    assert not hasattr(window, "ass_style_combo")
+
+    assert window.btn_out_same.isChecked() is True
+    assert window.custom_dir_row_widget.isVisible() is False
+    window.btn_out_custom.click()
+    assert window.custom_dir_row_widget.isVisible() is True
+    window.btn_out_same.click()
+    assert window.custom_dir_row_widget.isVisible() is False
+
+    window.chk_vtt.setChecked(True)
+    window.chk_txt.setChecked(True)
+    assert window.btn_export.text() == "Export (4)"
+
+    out_dir = tmp_path / "all_four_out"
+    window.btn_out_custom.click()
+    window.custom_dir_edit.setText(str(out_dir))
+
+    window.load_video(ep)
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+
+    assert window.export_subtitles() is True
+    assert "Dialogue:" in (out_dir / "four_formats.ass").read_text(encoding="utf-8")
+    assert "-->" in (out_dir / "four_formats.srt").read_text(encoding="utf-8")
+    vtt_text = (out_dir / "four_formats.vtt").read_text(encoding="utf-8")
+    assert vtt_text.startswith("WEBVTT")
+    assert "四格式测试" in vtt_text
+    txt_text = (out_dir / "four_formats.txt").read_text(encoding="utf-8")
+    assert "四格式测试" in txt_text
+    window.close()
+
+
+def test_live_language_switching_en_vi_zh_persistence_and_layout_floor(
+    qtbot, tmp_path: Path
+):
+    from muzhen.core.updater import UpdatePrefsStore
+    from muzhen.ui.i18n import tr
+    from muzhen.ui.main_window import MainWindow
+
+    prefs_path = tmp_path / "prefs" / "update_prefs.json"
+    prefs_store = UpdatePrefsStore(prefs_path)
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        update_prefs_store=prefs_store,
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    thumb = _make_png_bytes()
+    window.review_table.set_events(
+        [
+            SubtitleEvent(1, 500, 1200, "第一句", 0.96, False, thumb),
+            SubtitleEvent(2, 1000, 1080, "第二句", 0.72, True, thumb, ""),
+        ]
+    )
+    window.review_table.table.selectRow(1)
+
+    for lang_code in ("vi", "zh", "en"):
+        idx = window.language_combo.findData(lang_code)
+        assert idx >= 0
+        window.language_combo.setCurrentIndex(idx)
+
+        assert window.active_language() == lang_code
+        assert prefs_store.get_language() == lang_code
+        assert window._panel_titles[window.settings_panel].text() == tr(lang_code, "panel_settings")
+        assert window._panel_titles[window.monitor_panel].text() == tr(lang_code, "panel_monitor")
+        assert window._panel_titles[window.subtitles_panel].text() == tr(lang_code, "panel_subtitles")
+        assert window.btn_start.text() == tr(lang_code, "btn_extract")
+        assert window.btn_stop.text() == tr(lang_code, "btn_stop")
+        assert window.btn_toggle_settings.text() == tr(lang_code, "btn_settings")
+        assert window.btn_test_frame.text() == tr(lang_code, "btn_test_frame")
+        assert window.ocr_model_combo.itemText(0) == tr(lang_code, "model_precision")
+        assert window.ocr_model_combo.itemText(1) == tr(lang_code, "model_turbo")
+        assert window.roi_canvas.empty_prompt_text() == tr(lang_code, "monitor_empty_prompt")
+        assert window.review_table.radio_all.text() == tr(lang_code, "filter_all", count=2)
+        assert window.review_table.radio_flagged.text() == tr(lang_code, "filter_flagged", count=1)
+        assert window.review_table.table.horizontalHeaderItem(4).text() == tr(lang_code, "col_text")
+        assert window.review_table.lbl_inspector_title.text() == tr(lang_code, "inspector_title")
+        assert tr(lang_code, "badge_too_short") in window.review_table.lbl_cue_meta.text()
+        assert tr(lang_code, "badge_overlap") in window.review_table.lbl_cue_meta.text()
+        assert window.review_table.lbl_flag_reason.text() == tr(lang_code, "flag_needs_review")
+
+        window.btn_toggle_settings.setChecked(True)
+        expanded_hint = window.minimumSizeHint()
+        assert expanded_hint.width() <= 1280
+        assert expanded_hint.height() <= 672
+
+        window.btn_toggle_settings.setChecked(False)
+        collapsed_hint = window.minimumSizeHint()
+        assert collapsed_hint.width() <= 1280
+        assert collapsed_hint.height() <= 672
+
+        window.btn_toggle_settings.setChecked(True)
+
+    vi_idx = window.language_combo.findData("vi")
+    window.language_combo.setCurrentIndex(vi_idx)
+    window.close()
+
+    reloaded = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        update_prefs_store=UpdatePrefsStore(prefs_path),
+    )
+    qtbot.addWidget(reloaded)
+    reloaded.show()
+    assert reloaded.active_language() == "vi"
+    assert reloaded.language_combo.currentData() == "vi"
+    assert reloaded.btn_start.text() == tr("vi", "btn_extract")
+    assert reloaded.status_label.text() == tr("vi", "status_ready")
+    reloaded.close()
+
+
+def test_settings_footer_author_star_opens_github_and_update_controls_in_settings(
+    qtbot, tmp_path: Path
+):
+    from muzhen import __version__
+    from muzhen.core.updater import UpdateInfo, UpdatePrefsStore
+    from muzhen.ui.i18n import tr
+    from muzhen.ui.icons import ICON_NAMES, make_icon
+    from muzhen.ui.main_window import MainWindow, UpdateDialog
+    from muzhen.ui.theme import STUDIO_DARK_QSS
+
+    assert "star" in ICON_NAMES
+    assert not make_icon("star", size=12).isNull()
+    assert 'QPushButton[variant="segment"]' in STUDIO_DARK_QSS
+    assert 'QPushButton[variant="formatChip"]' in STUDIO_DARK_QSS
+    assert 'QPushButton[variant="ghost"]' in STUDIO_DARK_QSS
+    assert "QFrame#topBar" not in STUDIO_DARK_QSS
+    assert "/*" not in STUDIO_DARK_QSS
+
+    opened_urls: list[str] = []
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        auto_check_updates=False,
+        update_prefs_store=UpdatePrefsStore(tmp_path / "update_prefs.json"),
+        open_url_fn=lambda url: (opened_urls.append(url), True)[1],
+        language="en",
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.settings_panel.isAncestorOf(window.btn_check_update)
+    assert window.settings_panel.isAncestorOf(window.btn_update_available)
+    assert window.settings_panel.isAncestorOf(window.btn_author_star)
+    assert window.btn_check_update.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.btn_author_star.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert "wanngxuanji" in window.btn_author_star.text()
+
+    window.btn_author_star.click()
+    assert opened_urls == ["https://github.com/wanngxuanji/Muzhen"]
+
+    info = UpdateInfo(
+        current_version=__version__,
+        latest_version="2.2.0",
+        tag_name="v2.2.0",
+        release_url="https://github.com/wanngxuanji/Muzhen/releases/tag/v2.2.0",
+        download_url="https://github.com/wanngxuanji/Muzhen/releases/download/v2.2.0/Muzhen.zip",
+        changelog="",
+        published_at="2026-12-05T12:00:00Z",
+    )
+    for lang_code in ("en", "vi", "zh"):
+        dlg = UpdateDialog(info, lang=lang_code, parent=window)
+        qtbot.addWidget(dlg)
+        assert dlg.windowTitle() == tr(lang_code, "update_dialog_title")
+        assert dlg.btn_update_now.text() == tr(lang_code, "btn_update_now")
+        assert dlg.btn_skip_version.text() == tr(lang_code, "btn_skip_version")
+        assert dlg.btn_later.text() == tr(lang_code, "btn_later")
+        assert dlg.changelog_edit.toPlainText() == tr(lang_code, "update_dialog_fallback_notes")
+        dlg.close()
+
+    window.close()
+
 
 
 

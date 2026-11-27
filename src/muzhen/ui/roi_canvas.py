@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from muzhen.core.models import RoiRect
+from muzhen.ui.i18n import tr
 
 VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mkv", ".avi", ".mov", ".ts", ".webm")
 
@@ -63,10 +64,13 @@ class RoiCanvas(QWidget):
 
     roi_changed = Signal(object)
     video_dropped = Signal(str)
+    open_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._roi: RoiRect = _DEFAULT_ROI
+        self._lang: str = "en"
+        self._frame_bgr: np.ndarray | None = None
         self._frame_pixmap: QPixmap | None = None
         self._mask_pixmap: QPixmap | None = None
         self._mask_is_full_frame: bool = False
@@ -77,8 +81,25 @@ class RoiCanvas(QWidget):
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumSize(320, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_language(self, lang: str) -> None:
+        """Update the localized empty-monitor prompt text and repaint."""
+        self._lang = lang
+        self.update()
+
+    def empty_prompt_text(self) -> str:
+        """Return the localized empty-monitor prompt text."""
+        return tr(self._lang, "monitor_empty_prompt")
+
+    def _has_frame(self) -> bool:
+        return (
+            self._frame_bgr is not None
+            and self._frame_pixmap is not None
+            and not self._frame_pixmap.isNull()
+        )
 
     def roi(self) -> RoiRect:
         """Return the current normalized ROI rectangle."""
@@ -101,12 +122,16 @@ class RoiCanvas(QWidget):
     ) -> None:
         """Update the displayed BGR video frame and optional binary mask overlay."""
         if bgr_frame is None or bgr_frame.size == 0 or bgr_frame.ndim < 2:
+            self._frame_bgr = None
             self._frame_pixmap = None
             self._mask_pixmap = None
             self._mask_is_full_frame = False
+            self._drag_mode = None
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.update()
             return
 
+        self._frame_bgr = bgr_frame
         if bgr_frame.ndim == 2:
             rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_GRAY2RGB)
         else:
@@ -115,6 +140,7 @@ class RoiCanvas(QWidget):
         fh, fw = rgb.shape[:2]
         qimg = QImage(rgb.data, fw, fh, fw * 3, QImage.Format.Format_RGB888).copy()
         self._frame_pixmap = QPixmap.fromImage(qimg)
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
         self._mask_pixmap = None
         self._mask_is_full_frame = False
@@ -214,6 +240,12 @@ class RoiCanvas(QWidget):
             super().mousePressEvent(event)
             return
 
+        if not self._has_frame():
+            if self.isEnabled():
+                self.open_requested.emit()
+            event.accept()
+            return
+
         disp = self._display_rect()
         pos = event.position()
         self._drag_mode = self._hit_test(pos, disp)
@@ -223,6 +255,11 @@ class RoiCanvas(QWidget):
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if not self._has_frame():
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            super().mouseMoveEvent(event)
+            return
+
         disp = self._display_rect()
         pos = event.position()
 
@@ -315,43 +352,47 @@ class RoiCanvas(QWidget):
             painter.fillRect(self.rect(), QColor("#0B0B0B"))
 
             disp = self._display_rect()
-            has_frame = self._frame_pixmap is not None and not self._frame_pixmap.isNull()
+            has_frame = self._has_frame()
             if has_frame:
                 painter.drawPixmap(disp, self._frame_pixmap, QRectF(self._frame_pixmap.rect()))
-            else:
-                painter.setPen(QColor("#6E6E6E"))
-                painter.drawText(
-                    self.rect(),
-                    Qt.AlignmentFlag.AlignCenter,
-                    "Drop a video file here or click Open Video",
-                )
+                roi_rect = self._roi_to_rect(self._roi, disp)
 
-            roi_rect = self._roi_to_rect(self._roi, disp)
-
-            if has_frame:
                 scrim = QPainterPath()
                 scrim.addRect(disp)
                 hole = QPainterPath()
                 hole.addRect(roi_rect)
                 painter.fillPath(scrim.subtracted(hole), QColor(0, 0, 0, 84))
 
-            if self._mask_pixmap is not None and not self._mask_pixmap.isNull():
-                target_rect = disp if self._mask_is_full_frame else roi_rect
-                painter.drawPixmap(
-                    target_rect, self._mask_pixmap, QRectF(self._mask_pixmap.rect())
-                )
+                if self._mask_pixmap is not None and not self._mask_pixmap.isNull():
+                    target_rect = disp if self._mask_is_full_frame else roi_rect
+                    painter.drawPixmap(
+                        target_rect, self._mask_pixmap, QRectF(self._mask_pixmap.rect())
+                    )
 
-            painter.fillRect(roi_rect, QColor(16, 185, 129, 22))
-            pen = QPen(QColor("#10B981"), 1.6)
-            painter.setPen(pen)
-            painter.drawRect(roi_rect)
+                painter.fillRect(roi_rect, QColor(16, 185, 129, 22))
+                pen = QPen(QColor("#10B981"), 1.6)
+                painter.setPen(pen)
+                painter.drawRect(roi_rect)
 
-            half = _HANDLE_DRAW_PX * 0.5
-            painter.setBrush(QColor("#10B981"))
-            painter.setPen(QPen(QColor("#0B0B0B"), 1.0))
-            for pt in self._handle_points(roi_rect).values():
-                painter.drawRect(
-                    QRectF(pt.x() - half, pt.y() - half, _HANDLE_DRAW_PX, _HANDLE_DRAW_PX)
+                half = _HANDLE_DRAW_PX * 0.5
+                painter.setBrush(QColor("#10B981"))
+                painter.setPen(QPen(QColor("#0B0B0B"), 1.0))
+                for pt in self._handle_points(roi_rect).values():
+                    painter.drawRect(
+                        QRectF(pt.x() - half, pt.y() - half, _HANDLE_DRAW_PX, _HANDLE_DRAW_PX)
+                    )
+            else:
+                drop_rect = QRectF(self.rect()).adjusted(20.0, 20.0, -20.0, -20.0)
+                if drop_rect.width() > 40.0 and drop_rect.height() > 40.0:
+                    dash_pen = QPen(QColor("#2E2E2E"), 1.2, Qt.PenStyle.DashLine)
+                    painter.setPen(dash_pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRoundedRect(drop_rect, 6.0, 6.0)
+                painter.setPen(QColor("#8A8A8A"))
+                painter.drawText(
+                    self.rect(),
+                    Qt.AlignmentFlag.AlignCenter,
+                    self.empty_prompt_text(),
                 )
 
             painter.setBrush(Qt.BrushStyle.NoBrush)

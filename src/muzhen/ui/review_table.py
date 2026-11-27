@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from muzhen.core.models import SubtitleEvent
 from muzhen.core.postprocess import text_similarity
 from muzhen.exporters.srt_exporter import format_srt_time
+from muzhen.ui.i18n import tr
 from muzhen.ui.icons import make_icon
 
 _COL_STT = 0
@@ -43,7 +44,6 @@ _COL_TEXT = 4
 _MIN_DURATION_WARN_MS = 120
 _DEFAULT_FRAME_STEP_MS = 40
 _SHIFT_NUDGE_MS = 100
-_FALLBACK_FLAG_REASON = "Needs review"
 _MAX_UNDO_DEPTH = 50
 _MERGE_DEDUP_SIMILARITY = 0.80
 _NUDGE_COALESCE_WINDOW_SEC = 0.5
@@ -111,6 +111,7 @@ class ReviewTable(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._lang: str = "en"
         self._events: list[SubtitleEvent] = []
         self._filter_mode: str = "all"
         self._populating: bool = False
@@ -345,13 +346,13 @@ class ReviewTable(QWidget):
         inspector_hdr = QHBoxLayout()
         inspector_hdr.setContentsMargins(0, 0, 0, 0)
         inspector_hdr.setSpacing(6)
-        preview_title = QLabel("Inspector & Timing")
-        preview_title.setProperty("role", "sectionTitle")
+        self.lbl_inspector_title = QLabel("Inspector & Timing")
+        self.lbl_inspector_title.setProperty("role", "sectionTitle")
         self.lbl_cue_meta = QLabel("")
         self.lbl_cue_meta.setObjectName("cueMetaBadge")
         self.lbl_cue_meta.setProperty("warning", False)
         self.lbl_cue_meta.setVisible(False)
-        inspector_hdr.addWidget(preview_title)
+        inspector_hdr.addWidget(self.lbl_inspector_title)
         inspector_hdr.addStretch(1)
         inspector_hdr.addWidget(self.lbl_cue_meta)
         preview_layout.addLayout(inspector_hdr)
@@ -475,6 +476,72 @@ class ReviewTable(QWidget):
         self.table.installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.set_language(self._lang)
+
+    def set_language(self, lang: str) -> None:
+        """Retranslate all visible labels, headers, placeholders, and tooltips live."""
+        self._lang = lang
+        self._update_filter_counts()
+        self.table.setHorizontalHeaderLabels(
+            [
+                tr(lang, "col_index"),
+                tr(lang, "col_start"),
+                tr(lang, "col_end"),
+                tr(lang, "col_conf"),
+                tr(lang, "col_text"),
+            ]
+        )
+        self.btn_find.setToolTip(tr(lang, "tip_find"))
+        self.btn_undo.setToolTip(tr(lang, "tip_undo"))
+        self.btn_redo.setToolTip(tr(lang, "tip_redo"))
+        self.btn_merge.setText(tr(lang, "btn_merge"))
+        self.btn_merge.setToolTip(tr(lang, "tip_merge"))
+        self.btn_split.setText(tr(lang, "btn_split"))
+        self.btn_split.setToolTip(tr(lang, "tip_split"))
+        self.btn_delete_row.setToolTip(tr(lang, "tip_delete"))
+
+        self.find_edit.setPlaceholderText(tr(lang, "find_placeholder"))
+        self.replace_edit.setPlaceholderText(tr(lang, "replace_placeholder"))
+        self.btn_find_prev.setToolTip(tr(lang, "tip_find_prev"))
+        self.btn_find_next.setToolTip(tr(lang, "tip_find_next"))
+        self.btn_replace_one.setText(tr(lang, "btn_replace"))
+        self.btn_replace_one.setToolTip(tr(lang, "tip_replace_one"))
+        self.btn_replace_all.setText(tr(lang, "btn_replace_all"))
+        self.btn_replace_all.setToolTip(tr(lang, "tip_replace_all"))
+        self.btn_close_find.setToolTip(tr(lang, "tip_close_find"))
+
+        self.lbl_inspector_title.setText(tr(lang, "inspector_title"))
+        self.btn_mark_ok.setText(tr(lang, "btn_mark_ok"))
+        self.btn_mark_ok.setToolTip(tr(lang, "tip_mark_ok"))
+        self.btn_jump_start.setText(tr(lang, "btn_jump_start"))
+        self.btn_jump_start.setToolTip(tr(lang, "tip_jump_start"))
+        self.btn_jump_end.setText(tr(lang, "btn_jump_end"))
+        self.btn_jump_end.setToolTip(tr(lang, "tip_jump_end"))
+        self.btn_snap_in.setText(tr(lang, "btn_snap_in"))
+        self.btn_snap_in.setToolTip(tr(lang, "tip_snap_in"))
+        self.btn_snap_out.setText(tr(lang, "btn_snap_out"))
+        self.btn_snap_out.setToolTip(tr(lang, "tip_snap_out"))
+        self.btn_nudge_back.setToolTip(tr(lang, "tip_nudge_back"))
+        self.btn_nudge_fwd.setToolTip(tr(lang, "tip_nudge_fwd"))
+
+        self._populating = True
+        try:
+            for row_idx, master_idx in self._visible_row_master_pairs():
+                self._apply_row_style(row_idx, self._events[master_idx])
+        finally:
+            self._populating = False
+
+        cur_row = self._selected_visible_row()
+        if cur_row >= 0:
+            self._update_inspector_for_row(cur_row)
+            if self._raw_pixmap is None or self._raw_pixmap.isNull():
+                self.preview_label.setText(tr(lang, "inspector_no_thumb"))
+        else:
+            if self._events and self.table.rowCount() == 0:
+                self.preview_label.setText(tr(lang, "inspector_no_match"))
+            else:
+                self.preview_label.setText(tr(lang, "inspector_empty"))
+            self._update_inspector_for_row(-1)
 
     def add_header_widget(self, widget: QWidget) -> None:
         """Append an action widget to the right side of the review toolbar."""
@@ -597,7 +664,7 @@ class ReviewTable(QWidget):
         finally:
             self._populating = False
         self.preview_label.clear()
-        self.preview_label.setText("Select a subtitle row to inspect")
+        self.preview_label.setText(tr(self._lang, "inspector_empty"))
         self._update_filter_counts()
         self._update_inspector_for_row(-1)
         self._update_action_buttons_state()
@@ -1290,7 +1357,7 @@ class ReviewTable(QWidget):
                 pending.append((row_idx, master_idx, new_text, n_subs))
 
         if not pending:
-            self._refresh_find_status(custom_text="0 replaced")
+            self._refresh_find_status(custom_text=tr(self._lang, "find_replaced_zero"))
             return 0
 
         self._push_undo_snapshot()
@@ -1314,7 +1381,9 @@ class ReviewTable(QWidget):
         self._update_filter_counts()
         self._update_inspector_for_row(self._selected_visible_row())
         self._update_action_buttons_state()
-        self._refresh_find_status(custom_text=f"Replaced {total_replaced}")
+        self._refresh_find_status(
+            custom_text=tr(self._lang, "find_replaced_count", count=total_replaced)
+        )
         self.events_changed.emit()
         self.events_modified.emit()
         return total_replaced
@@ -1322,8 +1391,8 @@ class ReviewTable(QWidget):
     def _update_filter_counts(self) -> None:
         total = len(self._events)
         flagged = sum(1 for ev in self._events if ev.flagged)
-        self.radio_all.setText(f"All ({total})")
-        self.radio_flagged.setText(f"Flagged ({flagged})")
+        self.radio_all.setText(tr(self._lang, "filter_all", count=total))
+        self.radio_flagged.setText(tr(self._lang, "filter_flagged", count=flagged))
 
     def _on_filter_radio_toggled(self, checked_all: bool) -> None:
         new_mode = "all" if checked_all else "flagged_only"
@@ -1338,7 +1407,11 @@ class ReviewTable(QWidget):
         if stt_item is not None:
             stt_item.setText(f"{ev.index} !" if ev.flagged else str(ev.index))
 
-        tooltip = (ev.flag_reason.strip() or _FALLBACK_FLAG_REASON) if ev.flagged else ""
+        tooltip = (
+            (ev.flag_reason.strip() or tr(self._lang, "flag_needs_review"))
+            if ev.flagged
+            else ""
+        )
         for col_idx in range(5):
             cell = self.table.item(row_idx, col_idx)
             if cell is None:
@@ -1425,7 +1498,8 @@ class ReviewTable(QWidget):
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("No matching subtitle rows")
+            empty_key = "inspector_no_match" if self._events else "inspector_empty"
+            self.preview_label.setText(tr(self._lang, empty_key))
             self._update_inspector_for_row(-1)
         self._update_action_buttons_state()
 
@@ -1470,17 +1544,19 @@ class ReviewTable(QWidget):
             for other_idx, other in enumerate(self._events)
         )
 
-        meta_parts = [f"{dur_ms / 1000.0:.2f}s", f"{char_count} chars"]
+        meta_parts = [
+            tr(self._lang, "inspector_meta", seconds=dur_ms / 1000.0, chars=char_count)
+        ]
         if is_short:
-            meta_parts.append("Too short")
+            meta_parts.append(tr(self._lang, "badge_too_short"))
         if is_overlap:
-            meta_parts.append("Overlap")
+            meta_parts.append(tr(self._lang, "badge_overlap"))
         self.lbl_cue_meta.setText(" · ".join(meta_parts))
         self.lbl_cue_meta.setVisible(True)
         self._set_meta_warning(is_short or is_overlap)
 
         if ev.flagged:
-            reason = ev.flag_reason.strip() or _FALLBACK_FLAG_REASON
+            reason = ev.flag_reason.strip() or tr(self._lang, "flag_needs_review")
             self.lbl_flag_reason.setText(reason)
             self.lbl_flag_reason.setToolTip(reason)
             self.flag_banner.setVisible(True)
@@ -1647,7 +1723,8 @@ class ReviewTable(QWidget):
         if row < 0 or row >= self.table.rowCount():
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("Select a subtitle row to inspect")
+            empty_key = "inspector_no_match" if self._events else "inspector_empty"
+            self.preview_label.setText(tr(self._lang, empty_key))
             return
 
         stt_item = self.table.item(row, _COL_STT)
@@ -1665,7 +1742,7 @@ class ReviewTable(QWidget):
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
-            self.preview_label.setText("No thumbnail available")
+            self.preview_label.setText(tr(self._lang, "inspector_no_thumb"))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._populating:

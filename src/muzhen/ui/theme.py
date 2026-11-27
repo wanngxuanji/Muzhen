@@ -58,27 +58,11 @@ QToolTip {
     padding: 4px 8px;
 }
 
-QFrame#topBar {
-    background-color: #181818;
-    border: none;
-    border-bottom: 1px solid #2E2E2E;
-    border-radius: 0px;
-}
-
-QLabel#brandTitle {
-    font-size: 13px;
-    font-weight: 600;
-    color: #E6E6E6;
-}
-
-QLabel#versionBadge {
-    background-color: #262626;
-    color: #A0A0A0;
-    border: 1px solid #363636;
-    border-radius: 3px;
-    padding: 1px 5px;
-    font-size: 10px;
-    font-weight: 500;
+QLabel#videoNameLabel {
+    color: #C4C4C4;
+    font-size: 11px;
+    padding: 0 2px;
+    background: transparent;
 }
 
 QLabel#metaBadge {
@@ -177,7 +161,7 @@ QLabel#trimRangeBadge {
     background-color: #141414;
     border: 1px solid #2E2E2E;
     border-radius: 3px;
-    padding: 2px 7px;
+    padding: 2px 5px;
 }
 
 QLabel#trimRangeBadge[active="true"] {
@@ -429,7 +413,7 @@ QPushButton[variant="trim"] {
     color: #E6E6E6;
     border: 1px solid #333333;
     border-radius: 3px;
-    padding: 2px 8px;
+    padding: 2px 5px;
     font-size: 11px;
     font-weight: 500;
     min-height: 18px;
@@ -481,7 +465,7 @@ QPushButton[variant="toggle"] {
     color: #D4D4D4;
     border: 1px solid #333333;
     border-radius: 3px;
-    padding: 3px 8px;
+    padding: 2px 6px;
     font-size: 11px;
     font-weight: 500;
     min-height: 18px;
@@ -507,6 +491,113 @@ QPushButton[variant="toggle"][checked="true"]:hover,
 QPushButton[variant="toggle"]:checked:hover {
     background-color: #32465E;
     border-color: #439BF0;
+}
+
+QFrame#segmentedControl {
+    background-color: #141414;
+    border: 1px solid #2E2E2E;
+    border-radius: 3px;
+}
+
+QPushButton[variant="segment"] {
+    background-color: transparent;
+    color: #A0A0A0;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton[variant="segment"]:hover:!checked {
+    background-color: #262626;
+    color: #E6E6E6;
+}
+
+QPushButton[variant="segment"]:checked {
+    background-color: #2D8CEB;
+    color: #FFFFFF;
+    border: 1px solid #2D8CEB;
+    font-weight: 600;
+}
+
+QPushButton[variant="segment"]:checked:hover {
+    background-color: #439BF0;
+    border-color: #439BF0;
+}
+
+QPushButton[variant="segment"]:disabled {
+    background-color: transparent;
+    color: #555555;
+    border-color: transparent;
+}
+
+QPushButton[variant="segment"]:checked:disabled {
+    background-color: #233547;
+    color: #6E7E8F;
+    border-color: #2A3E52;
+}
+
+QPushButton[variant="formatChip"] {
+    background-color: #141414;
+    color: #A0A0A0;
+    border: 1px solid #333333;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton[variant="formatChip"]:hover:!checked {
+    background-color: #262626;
+    color: #E6E6E6;
+    border-color: #424242;
+}
+
+QPushButton[variant="formatChip"]:checked {
+    background-color: #2A3A4D;
+    color: #E6E6E6;
+    border: 1px solid #2D8CEB;
+    font-weight: 600;
+}
+
+QPushButton[variant="formatChip"]:checked:hover {
+    background-color: #32465E;
+    border-color: #439BF0;
+}
+
+QPushButton[variant="formatChip"]:disabled {
+    background-color: #181818;
+    color: #5A5A5A;
+    border-color: #262626;
+}
+
+QPushButton[variant="ghost"] {
+    background-color: transparent;
+    color: #A0A0A0;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton[variant="ghost"]:hover {
+    background-color: #262626;
+    color: #E6E6E6;
+    border-color: #333333;
+}
+
+QPushButton[variant="ghost"]:pressed {
+    background-color: #1F1F1F;
+}
+
+QPushButton[variant="ghost"]:disabled {
+    color: #5A5A5A;
 }
 
 QPushButton[variant="ok"] {

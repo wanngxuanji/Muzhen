@@ -111,6 +111,10 @@ _SVG_PATHS: dict[str, str] = {
         '<path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>'
         '<path d="M16 16h5v5"/>'
     ),
+    "star": (
+        '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 '
+        '12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>'
+    ),
 }
 
 ICON_NAMES: tuple[str, ...] = tuple(_SVG_PATHS.keys())

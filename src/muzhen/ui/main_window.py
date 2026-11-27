@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 import os
 from pathlib import Path
 import threading
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
@@ -20,7 +21,6 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
-    QPixmap,
     QRegion,
 )
 from PySide6.QtWidgets import (
@@ -28,13 +28,11 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -44,7 +42,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -57,7 +54,6 @@ from PySide6.QtWidgets import (
 )
 
 from muzhen import __version__
-from muzhen.core import paths as runtime_paths
 from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
@@ -68,18 +64,22 @@ from muzhen.core.models import (
 from muzhen.core.ocr_engine import OcrEngine
 from muzhen.core.pipeline import ExtractionPipeline
 from muzhen.core.presets import PresetStore, RoiPreset
-from muzhen.core.updater import UpdateInfo, UpdatePrefsStore, check_for_updates
+from muzhen.core.updater import GITHUB_REPO, UpdateInfo, UpdatePrefsStore, check_for_updates
 from muzhen.core.video_reader import VideoMetadata, VideoReader
 from muzhen.exporters import (
     export_ass,
     export_srt,
+    export_txt,
+    export_vtt,
     format_ass_time,
-    list_ass_template_styles,
     prepare_export_cues,
 )
+from muzhen.ui.i18n import LANGUAGE_CHOICES, resolve_language, tr
 from muzhen.ui.icons import make_icon
 from muzhen.ui.review_table import ReviewTable
 from muzhen.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
+
+GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 
 
 def _make_divider() -> QFrame:
@@ -272,12 +272,18 @@ class FrameTestWorker(QObject):
 class UpdateDialog(QDialog):
     """Premiere-styled dialog presenting an available GitHub release and changelog."""
 
-    def __init__(self, info: UpdateInfo, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        info: UpdateInfo,
+        lang: str = "en",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.info = info
+        self.lang = lang
         self.action: str = "later"
 
-        self.setWindowTitle("Update Available — Muzhen")
+        self.setWindowTitle(tr(lang, "update_dialog_title"))
         self.setModal(True)
         self.setMinimumWidth(460)
         self.resize(500, 380)
@@ -286,7 +292,7 @@ class UpdateDialog(QDialog):
         root.setContentsMargins(16, 16, 16, 14)
         root.setSpacing(10)
 
-        header = QLabel("A new version of Muzhen is available")
+        header = QLabel(tr(lang, "update_dialog_header"))
         header.setObjectName("updateHeaderTitle")
         root.addWidget(header)
 
@@ -300,20 +306,20 @@ class UpdateDialog(QDialog):
         self.published_label: QLabel | None = None
         if info.published_at:
             published_date = info.published_at[:10] if len(info.published_at) >= 10 else info.published_at
-            self.published_label = QLabel(f"Released {published_date}")
+            self.published_label = QLabel(tr(lang, "update_dialog_published", date=published_date))
             self.published_label.setObjectName("updatePublishedLabel")
             meta_row.addWidget(self.published_label)
         meta_row.addStretch(1)
         root.addLayout(meta_row)
 
-        root.addWidget(_make_section_label("Release Notes"))
+        root.addWidget(_make_section_label(tr(lang, "update_dialog_release_notes")))
 
         self.changelog_edit = QPlainTextEdit()
         self.changelog_edit.setObjectName("updateChangelog")
         self.changelog_edit.setReadOnly(True)
         self.changelog_edit.setMinimumHeight(180)
         self.changelog_edit.setPlainText(
-            info.changelog or "See full release notes on GitHub."
+            info.changelog or tr(lang, "update_dialog_fallback_notes")
         )
         root.addWidget(self.changelog_edit, 1)
 
@@ -321,17 +327,17 @@ class UpdateDialog(QDialog):
         btn_row.setContentsMargins(0, 4, 0, 0)
         btn_row.setSpacing(8)
 
-        self.btn_skip_version = QPushButton("Skip This Version")
+        self.btn_skip_version = QPushButton(tr(lang, "btn_skip_version"))
         self.btn_skip_version.setProperty("variant", "tool")
         self.btn_skip_version.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_skip_version.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_later = QPushButton("Later")
+        self.btn_later = QPushButton(tr(lang, "btn_later"))
         self.btn_later.setProperty("variant", "tool")
         self.btn_later.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_later.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_update_now = QPushButton("Update Now")
+        self.btn_update_now = QPushButton(tr(lang, "btn_update_now"))
         self.btn_update_now.setProperty("variant", "primary")
         self.btn_update_now.setDefault(True)
         self.btn_update_now.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -401,6 +407,7 @@ class MainWindow(QMainWindow):
         update_prefs_store: UpdatePrefsStore | None = None,
         update_check_fn: Callable[[str], UpdateInfo | None] | None = None,
         open_url_fn: Callable[[str], bool] | None = None,
+        language: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._preset_store = preset_store if preset_store is not None else PresetStore()
@@ -419,6 +426,16 @@ class MainWindow(QMainWindow):
             else (lambda url: QDesktopServices.openUrl(QUrl(url)))
         )
 
+        raw_lang_pref = language if language is not None else self._update_prefs.get_language()
+        normalized_pref = raw_lang_pref.strip().lower() if isinstance(raw_lang_pref, str) else "auto"
+        if normalized_pref not in ("auto", "en", "vi", "zh"):
+            normalized_pref = "auto"
+        self._language_pref: str = normalized_pref
+        self._lang: str = resolve_language(self._language_pref)
+        self._status_key: str | None = "status_ready"
+        self._status_kwargs: dict[str, Any] = {}
+        self._gpu_available: bool = "directml" in OcrEngine.available_providers()
+
         self._video_path: Path | None = None
         self._video_meta: VideoMetadata | None = None
         self._preview_reader: VideoReader | None = None
@@ -432,8 +449,6 @@ class MainWindow(QMainWindow):
         self._trim_end_ms: int | None = None
         self._has_unexported_edits: bool = False
         self._last_export_dir: Path | None = None
-        self._last_ass_template_path: str = ""
-        self._last_ass_style_by_template: dict[str, str] = {}
         self._is_playing: bool = False
         self._at_eof: bool = False
         self._last_advance_error: bool = False
@@ -458,14 +473,14 @@ class MainWindow(QMainWindow):
         )
         self._retiring_threads: list[QThread] = []
         self._retiring_workers: dict[QThread, QObject | None] = {}
-        self._saved_settings_width: int = 284
+        self._saved_settings_width: int = 268
         self._workbench_panels: tuple[QFrame, ...] = ()
         self._panel_titles: dict[QFrame, QLabel] = {}
         self._active_panel: QFrame | None = None
         self._focus_tracking_active: bool = False
 
         self.setAcceptDrops(True)
-        self.setWindowTitle("Muzhen — Frame-Accurate CJK Subtitle Workbench")
+        self.setWindowTitle(f"Muzhen - V{__version__}")
         target_w, target_h = 1160, 680
         screen = self.screen()
         if screen is not None:
@@ -478,8 +493,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._install_focus_tracking()
+        self._sync_language_combo()
         self._refresh_presets()
-        self._update_roi_label(self.roi_canvas.roi())
+        self._retranslate_ui()
         self._update_controls_state()
 
         in_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
@@ -498,130 +514,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        top_bar = QFrame()
-        top_bar.setObjectName("topBar")
-        top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(10, 5, 10, 5)
-        top_bar_layout.setSpacing(6)
-
-        brand_icon = QLabel()
-        brand_icon.setFixedSize(20, 20)
-        brand_icon_path = runtime_paths.get_ui_assets_dir() / "muzhen_icon.png"
-        brand_pixmap = QPixmap(str(brand_icon_path)) if brand_icon_path.is_file() else QPixmap()
-        if not brand_pixmap.isNull():
-            brand_icon.setPixmap(
-                brand_pixmap.scaled(
-                    20,
-                    20,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        else:
-            brand_icon.setPixmap(make_icon("film", color="#2D8CEB", size=16).pixmap(16, 16))
-        brand_title = QLabel("Muzhen")
-        brand_title.setObjectName("brandTitle")
-        version_badge = QLabel("v2.0")
-        version_badge.setObjectName("versionBadge")
-        top_bar_layout.addWidget(brand_icon)
-        top_bar_layout.addWidget(brand_title)
-        top_bar_layout.addWidget(version_badge)
-        top_bar_layout.addSpacing(6)
-
-        self.video_path_edit = QLineEdit()
-        self.video_path_edit.setReadOnly(True)
-        self.video_path_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.video_path_edit.setFixedHeight(26)
-        self.video_path_edit.setPlaceholderText(
-            "Drop a video file or click Open Video (.mp4, .mkv, .ts...)"
-        )
-        self.video_meta_badge = QLabel("")
-        self.video_meta_badge.setObjectName("metaBadge")
-        self.video_meta_badge.setVisible(False)
-        self.btn_browse_video = QPushButton("Open Video")
-        self.btn_browse_video.setIcon(make_icon("folder", size=14))
-        self.btn_browse_video.setIconSize(QSize(14, 14))
-        self.btn_browse_video.setFixedHeight(26)
-        self.btn_browse_video.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_browse_video.setCursor(Qt.CursorShape.PointingHandCursor)
-        top_bar_layout.addWidget(self.video_path_edit, 1)
-        top_bar_layout.addWidget(self.video_meta_badge)
-        top_bar_layout.addWidget(self.btn_browse_video)
-
-        v_sep = QFrame()
-        v_sep.setFixedWidth(1)
-        v_sep.setStyleSheet("background-color: #2E2E2E; margin: 3px 2px;")
-        top_bar_layout.addWidget(v_sep)
-
-        preset_lbl = QLabel("Preset")
-        preset_lbl.setProperty("role", "fieldLabel")
-        self.preset_combo = QComboBox()
-        self.preset_combo.setMinimumWidth(115)
-        self.preset_combo.setFixedHeight(26)
-        self.preset_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
-        self.preset_combo.setMinimumContentsLength(10)
-        self.btn_save_preset = QPushButton()
-        self.btn_save_preset.setProperty("variant", "tool")
-        self.btn_save_preset.setIcon(make_icon("save", size=14))
-        self.btn_save_preset.setIconSize(QSize(14, 14))
-        self.btn_save_preset.setFixedSize(26, 26)
-        self.btn_save_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_save_preset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save_preset.setToolTip("Save current ROI preset")
-
-        self.btn_delete_preset = QPushButton()
-        self.btn_delete_preset.setProperty("variant", "danger")
-        self.btn_delete_preset.setIcon(make_icon("trash", color="#F08080", size=14))
-        self.btn_delete_preset.setIconSize(QSize(14, 14))
-        self.btn_delete_preset.setFixedSize(26, 26)
-        self.btn_delete_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_delete_preset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_delete_preset.setToolTip("Delete selected preset")
-
-        v_sep_settings = QFrame()
-        v_sep_settings.setFixedWidth(1)
-        v_sep_settings.setStyleSheet("background-color: #2E2E2E; margin: 3px 2px;")
-
-        self.btn_toggle_settings = QPushButton("Settings")
-        self.btn_toggle_settings.setProperty("variant", "toggle")
-        self.btn_toggle_settings.setIcon(make_icon("sidebar", size=14))
-        self.btn_toggle_settings.setIconSize(QSize(14, 14))
-        self.btn_toggle_settings.setCheckable(True)
-        self.btn_toggle_settings.setChecked(True)
-        self.btn_toggle_settings.setFixedHeight(26)
-        self.btn_toggle_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_toggle_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_settings.setToolTip("Show / hide Settings panel")
-
-        self.btn_update_available = QPushButton("")
-        self.btn_update_available.setProperty("variant", "update")
-        self.btn_update_available.setFixedHeight(26)
-        self.btn_update_available.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_update_available.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_update_available.setToolTip("View available update and changelog")
-        self.btn_update_available.setVisible(False)
-
-        self.btn_check_update = QPushButton()
-        self.btn_check_update.setProperty("variant", "tool")
-        self.btn_check_update.setIcon(make_icon("refresh", size=14))
-        self.btn_check_update.setIconSize(QSize(14, 14))
-        self.btn_check_update.setFixedSize(28, 26)
-        self.btn_check_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_check_update.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_check_update.setToolTip("Check for updates")
-
-        top_bar_layout.addWidget(preset_lbl)
-        top_bar_layout.addWidget(self.preset_combo)
-        top_bar_layout.addWidget(self.btn_save_preset)
-        top_bar_layout.addWidget(self.btn_delete_preset)
-        top_bar_layout.addWidget(v_sep_settings)
-        top_bar_layout.addWidget(self.btn_toggle_settings)
-        top_bar_layout.addWidget(self.btn_update_available)
-        top_bar_layout.addWidget(self.btn_check_update)
-        main_layout.addWidget(top_bar)
-
         workbench_gutter = QWidget()
         workbench_gutter.setObjectName("workbenchGutter")
         workbench_gutter.setStyleSheet("QWidget#workbenchGutter { background-color: #111111; }")
@@ -636,18 +528,20 @@ class MainWindow(QMainWindow):
         self.settings_panel = QFrame()
         self.settings_panel.setProperty("panel", True)
         self.settings_panel.setProperty("activePanel", False)
-        self.settings_panel.setMinimumWidth(256)
-        self.settings_panel.setMaximumWidth(400)
+        self.settings_panel.setMinimumWidth(244)
+        self.settings_panel.setMaximumWidth(380)
         settings_root = QVBoxLayout(self.settings_panel)
         settings_root.setContentsMargins(0, 0, 0, 0)
         settings_root.setSpacing(0)
 
-        settings_header, _settings_hdr_layout, settings_title = _make_panel_header("Settings")
+        settings_header, _settings_hdr_layout, settings_title = _make_panel_header(
+            tr(self._lang, "panel_settings")
+        )
         settings_root.addWidget(settings_header)
 
         settings_content = QWidget()
         inspector_outer = QVBoxLayout(settings_content)
-        inspector_outer.setContentsMargins(10, 8, 10, 8)
+        inspector_outer.setContentsMargins(8, 6, 8, 6)
         inspector_outer.setSpacing(6)
 
         scroll = QScrollArea()
@@ -663,165 +557,181 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(0, 0, 2, 0)
         body_layout.setSpacing(6)
 
-        body_layout.addWidget(_make_section_label("OCR Engine"))
-        ocr_grid = QGridLayout()
-        ocr_grid.setContentsMargins(0, 0, 0, 0)
-        ocr_grid.setHorizontalSpacing(6)
-        ocr_grid.setVerticalSpacing(5)
+        self.lbl_render_method = _make_section_label(tr(self._lang, "render_method"))
+        body_layout.addWidget(self.lbl_render_method)
 
-        lbl_backend = QLabel("Backend")
-        lbl_backend.setProperty("role", "fieldLabel")
-        self.provider_combo = QComboBox()
-        self.provider_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
-        self.provider_combo.setMinimumContentsLength(10)
-        self.provider_combo.addItem("CPU (ONNX Runtime)", "cpu")
-        if "directml" in OcrEngine.available_providers():
-            self.provider_combo.addItem("DirectML (GPU)", "directml")
-            self.provider_combo.setCurrentIndex(1)
+        render_seg = QFrame()
+        render_seg.setObjectName("segmentedControl")
+        render_seg_layout = QHBoxLayout(render_seg)
+        render_seg_layout.setContentsMargins(2, 2, 2, 2)
+        render_seg_layout.setSpacing(2)
+        self.btn_render_gpu = QPushButton(tr(self._lang, "render_gpu"))
+        self.btn_render_cpu = QPushButton(tr(self._lang, "render_cpu"))
+        self._render_button_group = QButtonGroup(self)
+        self._render_button_group.setExclusive(True)
+        for seg_btn in (self.btn_render_gpu, self.btn_render_cpu):
+            seg_btn.setProperty("variant", "segment")
+            seg_btn.setCheckable(True)
+            seg_btn.setFixedHeight(22)
+            seg_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            seg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._render_button_group.addButton(seg_btn)
+            render_seg_layout.addWidget(seg_btn, 1)
+        if self._gpu_available:
+            self.btn_render_gpu.setChecked(True)
+        else:
+            self.btn_render_cpu.setChecked(True)
+            self.btn_render_gpu.setEnabled(False)
+        body_layout.addWidget(render_seg)
 
-        lbl_model = QLabel("Model")
-        lbl_model.setProperty("role", "fieldLabel")
+        model_row = QHBoxLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(6)
+        self.lbl_model = QLabel(tr(self._lang, "model_label"))
+        self.lbl_model.setProperty("role", "fieldLabel")
         self.ocr_model_combo = QComboBox()
         self.ocr_model_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self.ocr_model_combo.setMinimumContentsLength(10)
-        self.ocr_model_combo.addItem("PP-OCRv5 Server (Accurate)", "accurate")
-        self.ocr_model_combo.addItem("PP-OCRv5 Mobile (Fast)", "fast")
-        self.ocr_model_combo.setToolTip(
-            "Server (default): highest CJK accuracy with multi-frame voting. "
-            "Mobile: faster and lighter."
-        )
-
-        ocr_grid.addWidget(lbl_backend, 0, 0)
-        ocr_grid.addWidget(self.provider_combo, 0, 1)
-        ocr_grid.addWidget(lbl_model, 1, 0)
-        ocr_grid.addWidget(self.ocr_model_combo, 1, 1)
-        ocr_grid.setColumnStretch(1, 1)
-        body_layout.addLayout(ocr_grid)
+        self.ocr_model_combo.setMinimumContentsLength(6)
+        self.ocr_model_combo.addItem(tr(self._lang, "model_precision"), "accurate")
+        self.ocr_model_combo.addItem(tr(self._lang, "model_turbo"), "fast")
+        model_row.addWidget(self.lbl_model)
+        model_row.addWidget(self.ocr_model_combo, 1)
+        body_layout.addLayout(model_row)
 
         conf_row = QHBoxLayout()
         conf_row.setContentsMargins(0, 0, 0, 0)
-        conf_row.setSpacing(8)
-        lbl_conf = QLabel("Flag threshold")
-        lbl_conf.setProperty("role", "fieldLabel")
+        conf_row.setSpacing(6)
+        self.lbl_conf = QLabel(tr(self._lang, "flag_threshold"))
+        self.lbl_conf.setProperty("role", "fieldLabel")
         self.spin_conf = QDoubleSpinBox()
         self.spin_conf.setRange(0.0, 1.0)
         self.spin_conf.setSingleStep(0.05)
         self.spin_conf.setDecimals(2)
         self.spin_conf.setValue(0.85)
-        conf_row.addWidget(lbl_conf)
+        conf_row.addWidget(self.lbl_conf)
         conf_row.addWidget(self.spin_conf, 1)
         body_layout.addLayout(conf_row)
 
         body_layout.addWidget(_make_divider())
 
-        body_layout.addWidget(_make_section_label("Export"))
-        fmt_grid = QGridLayout()
-        fmt_grid.setContentsMargins(0, 0, 0, 0)
-        fmt_grid.setHorizontalSpacing(8)
-        fmt_grid.setVerticalSpacing(4)
-        lbl_fmt = QLabel("Format")
-        lbl_fmt.setProperty("role", "fieldLabel")
-        self.chk_ass = QCheckBox(".ass (Aegisub)")
-        self.chk_ass.setChecked(True)
-        self.chk_ass.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.chk_srt = QCheckBox(".srt (Premiere)")
-        self.chk_srt.setChecked(True)
-        self.chk_srt.setCursor(Qt.CursorShape.PointingHandCursor)
-        fmt_grid.addWidget(lbl_fmt, 0, 0)
-        fmt_grid.addWidget(self.chk_ass, 0, 1)
-        fmt_grid.addWidget(self.chk_srt, 1, 1)
-        fmt_grid.setColumnStretch(1, 1)
-        body_layout.addLayout(fmt_grid)
+        self.lbl_roi_preset = _make_section_label(tr(self._lang, "roi_preset"))
+        body_layout.addWidget(self.lbl_roi_preset)
 
-        lbl_dir = QLabel("Output folder")
-        lbl_dir.setProperty("role", "fieldLabel")
-        body_layout.addWidget(lbl_dir)
-
-        dir_head = QHBoxLayout()
-        dir_head.setContentsMargins(0, 0, 0, 0)
-        dir_head.setSpacing(10)
-        self.radio_dir_same = QRadioButton("Same as video")
-        self.radio_dir_same.setChecked(True)
-        self.radio_dir_same.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.radio_dir_custom = QRadioButton("Custom")
-        self.radio_dir_custom.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._dir_radio_group = QButtonGroup(self)
-        self._dir_radio_group.addButton(self.radio_dir_same)
-        self._dir_radio_group.addButton(self.radio_dir_custom)
-        dir_head.addWidget(self.radio_dir_same)
-        dir_head.addWidget(self.radio_dir_custom)
-        dir_head.addStretch(1)
-        body_layout.addLayout(dir_head)
-
-        custom_dir_row = QHBoxLayout()
-        custom_dir_row.setSpacing(4)
-        self.custom_dir_edit = QLineEdit()
-        self.custom_dir_edit.setPlaceholderText("Custom output directory...")
-        self.btn_browse_out_dir = QPushButton()
-        self.btn_browse_out_dir.setProperty("variant", "tool")
-        self.btn_browse_out_dir.setIcon(make_icon("folder", size=14))
-        self.btn_browse_out_dir.setIconSize(QSize(14, 14))
-        self.btn_browse_out_dir.setFixedSize(26, 26)
-        self.btn_browse_out_dir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_browse_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_browse_out_dir.setToolTip("Select output folder")
-        custom_dir_row.addWidget(self.custom_dir_edit, 1)
-        custom_dir_row.addWidget(self.btn_browse_out_dir)
-        body_layout.addLayout(custom_dir_row)
-
-        ass_head = QHBoxLayout()
-        ass_head.setSpacing(8)
-        lbl_ass = QLabel("ASS Style")
-        lbl_ass.setProperty("role", "fieldLabel")
-        self.radio_ass_default = QRadioButton("Default")
-        self.radio_ass_default.setChecked(True)
-        self.radio_ass_default.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.radio_ass_template = QRadioButton("Template")
-        self.radio_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._ass_radio_group = QButtonGroup(self)
-        self._ass_radio_group.addButton(self.radio_ass_default)
-        self._ass_radio_group.addButton(self.radio_ass_template)
-        ass_head.addWidget(lbl_ass)
-        ass_head.addWidget(self.radio_ass_default)
-        ass_head.addWidget(self.radio_ass_template)
-        ass_head.addStretch(1)
-        body_layout.addLayout(ass_head)
-
-        ass_tpl_row = QHBoxLayout()
-        ass_tpl_row.setSpacing(4)
-        self.ass_template_edit = QLineEdit()
-        self.ass_template_edit.setPlaceholderText("Path to .ass template...")
-        self.btn_browse_ass_template = QPushButton()
-        self.btn_browse_ass_template.setProperty("variant", "tool")
-        self.btn_browse_ass_template.setIcon(make_icon("folder", size=14))
-        self.btn_browse_ass_template.setIconSize(QSize(14, 14))
-        self.btn_browse_ass_template.setFixedSize(26, 26)
-        self.btn_browse_ass_template.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_browse_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_browse_ass_template.setToolTip("Select .ass template file")
-        ass_tpl_row.addWidget(self.ass_template_edit, 1)
-        ass_tpl_row.addWidget(self.btn_browse_ass_template)
-        body_layout.addLayout(ass_tpl_row)
-
-        self.ass_style_row_widget = QWidget()
-        ass_style_row = QHBoxLayout(self.ass_style_row_widget)
-        ass_style_row.setContentsMargins(0, 0, 0, 0)
-        ass_style_row.setSpacing(6)
-        lbl_ass_style = QLabel("Style:")
-        lbl_ass_style.setProperty("role", "fieldLabel")
-        self.ass_style_combo = QComboBox()
-        self.ass_style_combo.setSizeAdjustPolicy(
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.setSpacing(4)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setFixedHeight(24)
+        self.preset_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self.ass_style_combo.setMinimumContentsLength(8)
-        ass_style_row.addWidget(lbl_ass_style)
-        ass_style_row.addWidget(self.ass_style_combo, 1)
-        self.ass_style_row_widget.setVisible(False)
-        body_layout.addWidget(self.ass_style_row_widget)
+        self.preset_combo.setMinimumContentsLength(6)
+
+        self.btn_save_preset = QPushButton()
+        self.btn_save_preset.setProperty("variant", "tool")
+        self.btn_save_preset.setIcon(make_icon("save", size=13))
+        self.btn_save_preset.setIconSize(QSize(13, 13))
+        self.btn_save_preset.setFixedSize(24, 24)
+        self.btn_save_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_save_preset.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_delete_preset = QPushButton()
+        self.btn_delete_preset.setProperty("variant", "danger")
+        self.btn_delete_preset.setIcon(make_icon("trash", color="#F08080", size=13))
+        self.btn_delete_preset.setIconSize(QSize(13, 13))
+        self.btn_delete_preset.setFixedSize(24, 24)
+        self.btn_delete_preset.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_delete_preset.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(self.btn_save_preset)
+        preset_row.addWidget(self.btn_delete_preset)
+        body_layout.addLayout(preset_row)
+
+        body_layout.addWidget(_make_divider())
+
+        self.lbl_export_format = _make_section_label(tr(self._lang, "export_format"))
+        body_layout.addWidget(self.lbl_export_format)
+
+        fmt_row = QHBoxLayout()
+        fmt_row.setContentsMargins(0, 0, 0, 0)
+        fmt_row.setSpacing(4)
+        self.chk_ass = QPushButton(".ass")
+        self.chk_srt = QPushButton(".srt")
+        self.chk_vtt = QPushButton(".vtt")
+        self.chk_txt = QPushButton(".txt")
+        self._format_chips = (self.chk_ass, self.chk_srt, self.chk_vtt, self.chk_txt)
+        for chip in self._format_chips:
+            chip.setProperty("variant", "formatChip")
+            chip.setCheckable(True)
+            chip.setFixedHeight(24)
+            chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            fmt_row.addWidget(chip, 1)
+        self.chk_ass.setChecked(True)
+        self.chk_srt.setChecked(True)
+        body_layout.addLayout(fmt_row)
+
+        self.lbl_output_folder = _make_section_label(tr(self._lang, "output_folder"))
+        body_layout.addWidget(self.lbl_output_folder)
+
+        out_seg = QFrame()
+        out_seg.setObjectName("segmentedControl")
+        out_seg_layout = QHBoxLayout(out_seg)
+        out_seg_layout.setContentsMargins(2, 2, 2, 2)
+        out_seg_layout.setSpacing(2)
+        self.btn_out_same = QPushButton(tr(self._lang, "output_same"))
+        self.btn_out_custom = QPushButton(tr(self._lang, "output_custom"))
+        self._out_dir_group = QButtonGroup(self)
+        self._out_dir_group.setExclusive(True)
+        for out_btn in (self.btn_out_same, self.btn_out_custom):
+            out_btn.setProperty("variant", "segment")
+            out_btn.setCheckable(True)
+            out_btn.setFixedHeight(22)
+            out_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._out_dir_group.addButton(out_btn)
+            out_seg_layout.addWidget(out_btn, 1)
+        self.btn_out_same.setChecked(True)
+        body_layout.addWidget(out_seg)
+
+        self.custom_dir_row_widget = QWidget()
+        custom_dir_row = QHBoxLayout(self.custom_dir_row_widget)
+        custom_dir_row.setContentsMargins(0, 0, 0, 0)
+        custom_dir_row.setSpacing(4)
+        self.custom_dir_edit = QLineEdit()
+        self.custom_dir_edit.setFixedHeight(24)
+        self.btn_browse_out_dir = QPushButton()
+        self.btn_browse_out_dir.setProperty("variant", "tool")
+        self.btn_browse_out_dir.setIcon(make_icon("folder", size=13))
+        self.btn_browse_out_dir.setIconSize(QSize(13, 13))
+        self.btn_browse_out_dir.setFixedSize(24, 24)
+        self.btn_browse_out_dir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_browse_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_dir_row.addWidget(self.custom_dir_edit, 1)
+        custom_dir_row.addWidget(self.btn_browse_out_dir)
+        self.custom_dir_row_widget.setVisible(False)
+        body_layout.addWidget(self.custom_dir_row_widget)
+
+        body_layout.addWidget(_make_divider())
+
+        lang_row = QHBoxLayout()
+        lang_row.setContentsMargins(0, 0, 0, 0)
+        lang_row.setSpacing(6)
+        self.lbl_language = QLabel(tr(self._lang, "language_label"))
+        self.lbl_language.setProperty("role", "fieldLabel")
+        self.language_combo = QComboBox()
+        self.language_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.language_combo.setMinimumContentsLength(6)
+        for code, label in LANGUAGE_CHOICES:
+            self.language_combo.addItem(label, code)
+        lang_row.addWidget(self.lbl_language)
+        lang_row.addWidget(self.language_combo, 1)
+        body_layout.addLayout(lang_row)
 
         body_layout.addStretch(1)
         scroll.setWidget(inspector_body)
@@ -831,7 +741,7 @@ class MainWindow(QMainWindow):
 
         run_row = QHBoxLayout()
         run_row.setSpacing(6)
-        self.btn_start = QPushButton("Extract Subtitles")
+        self.btn_start = QPushButton(tr(self._lang, "btn_extract"))
         self.btn_start.setProperty("variant", "primary")
         self.btn_start.setIcon(make_icon("play", color="#FFFFFF", size=13))
         self.btn_start.setIconSize(QSize(13, 13))
@@ -842,7 +752,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_stop = QPushButton("Stop")
+        self.btn_stop = QPushButton(tr(self._lang, "btn_stop"))
         self.btn_stop.setProperty("variant", "danger")
         self.btn_stop.setIcon(make_icon("stop", color="#F08080", size=12))
         self.btn_stop.setIconSize(QSize(12, 12))
@@ -860,13 +770,56 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(tr(self._lang, "status_ready"))
         self.status_label.setObjectName("statusLabel")
         self.status_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         inspector_outer.addWidget(self.progress_bar)
         inspector_outer.addWidget(self.status_label)
+
+        inspector_outer.addWidget(_make_divider())
+
+        self.btn_update_available = QPushButton("")
+        self.btn_update_available.setProperty("variant", "update")
+        self.btn_update_available.setFixedHeight(24)
+        self.btn_update_available.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.btn_update_available.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_update_available.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update_available.setVisible(False)
+        inspector_outer.addWidget(self.btn_update_available)
+
+        footer_row = QHBoxLayout()
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.setSpacing(4)
+
+        self.btn_check_update = QPushButton(tr(self._lang, "btn_check_updates"))
+        self.btn_check_update.setProperty("variant", "tool")
+        self.btn_check_update.setIcon(make_icon("refresh", size=12))
+        self.btn_check_update.setIconSize(QSize(12, 12))
+        self.btn_check_update.setFixedHeight(24)
+        self.btn_check_update.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.btn_check_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_check_update.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_author_star = QPushButton("wanngxuanji")
+        self.btn_author_star.setProperty("variant", "ghost")
+        self.btn_author_star.setIcon(make_icon("star", color="#E5B54D", size=12))
+        self.btn_author_star.setIconSize(QSize(12, 12))
+        self.btn_author_star.setFixedHeight(24)
+        self.btn_author_star.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.btn_author_star.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_author_star.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        footer_row.addWidget(self.btn_check_update, 4)
+        footer_row.addWidget(self.btn_author_star, 5)
+        inspector_outer.addLayout(footer_row)
         settings_root.addWidget(settings_content, 1)
 
         self.monitor_panel = QFrame()
@@ -877,10 +830,31 @@ class MainWindow(QMainWindow):
         monitor_root.setSpacing(0)
 
         monitor_header, monitor_hdr_layout, monitor_title = _make_panel_header(
-            "Program Monitor"
+            tr(self._lang, "panel_monitor")
         )
+        self.video_name_label = QLabel("")
+        self.video_name_label.setObjectName("videoNameLabel")
+        self.video_name_label.setMaximumWidth(150)
+        self.video_name_label.setVisible(False)
+
+        self.video_meta_badge = QLabel("")
+        self.video_meta_badge.setObjectName("metaBadge")
+        self.video_meta_badge.setVisible(False)
+
+        self.btn_browse_video = QPushButton()
+        self.btn_browse_video.setProperty("variant", "tool")
+        self.btn_browse_video.setIcon(make_icon("folder", size=12))
+        self.btn_browse_video.setIconSize(QSize(12, 12))
+        self.btn_browse_video.setFixedSize(24, 22)
+        self.btn_browse_video.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_browse_video.setCursor(Qt.CursorShape.PointingHandCursor)
+
         self.roi_label = QLabel()
         self.roi_label.setObjectName("roiPill")
+
+        monitor_hdr_layout.addWidget(self.video_name_label)
+        monitor_hdr_layout.addWidget(self.video_meta_badge)
+        monitor_hdr_layout.addWidget(self.btn_browse_video)
         monitor_hdr_layout.addWidget(self.roi_label)
         monitor_root.addWidget(monitor_header)
 
@@ -896,13 +870,10 @@ class MainWindow(QMainWindow):
         scrub_row.setSpacing(4)
         self.btn_seek_start = QPushButton()
         self.btn_seek_start.setIcon(make_icon("skip_back", size=13))
-        self.btn_seek_start.setToolTip("Go to start (Home)")
         self.btn_play_pause = QPushButton()
         self.btn_play_pause.setIcon(make_icon("play", size=13))
-        self.btn_play_pause.setToolTip("Play / Pause preview (Space)")
         self.btn_step_back = QPushButton()
         self.btn_step_back.setIcon(make_icon("step_back", size=13))
-        self.btn_step_back.setToolTip("Step back 1 frame — hold to scrub (← / , / <)")
         self.frame_slider = TrimRangeSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
@@ -910,10 +881,8 @@ class MainWindow(QMainWindow):
         self.frame_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_step_fwd = QPushButton()
         self.btn_step_fwd.setIcon(make_icon("step_fwd", size=13))
-        self.btn_step_fwd.setToolTip("Step forward 1 frame — hold to scrub (→ / . / >)")
         self.btn_seek_end = QPushButton()
         self.btn_seek_end.setIcon(make_icon("skip_fwd", size=13))
-        self.btn_seek_end.setToolTip("Go to end (End)")
         for btn in (
             self.btn_seek_start,
             self.btn_play_pause,
@@ -943,39 +912,40 @@ class MainWindow(QMainWindow):
 
         trim_row = QHBoxLayout()
         trim_row.setContentsMargins(0, 0, 0, 0)
-        trim_row.setSpacing(4)
-        self.btn_set_in = QPushButton("In")
+        trim_row.setSpacing(3)
+        self.btn_set_in = QPushButton(tr(self._lang, "trim_in"))
         self.btn_set_in.setProperty("variant", "trim")
         self.btn_set_in.setIcon(make_icon("trim_in", color="#10B981", size=12))
         self.btn_set_in.setIconSize(QSize(12, 12))
         self.btn_set_in.setFixedHeight(24)
         self.btn_set_in.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_set_in.setToolTip("Set In point at current frame (I)")
 
-        self.lbl_trim_range = QLabel("Full episode")
+        self.lbl_trim_range = QLabel(tr(self._lang, "trim_full"))
         self.lbl_trim_range.setObjectName("trimRangeBadge")
         self.lbl_trim_range.setProperty("active", False)
         self.lbl_trim_range.setFixedHeight(24)
         self.lbl_trim_range.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
-        self.btn_set_out = QPushButton("Out")
+        self.btn_set_out = QPushButton(tr(self._lang, "trim_out"))
         self.btn_set_out.setProperty("variant", "trim")
         self.btn_set_out.setIcon(make_icon("trim_out", color="#3EA6FF", size=12))
         self.btn_set_out.setIconSize(QSize(12, 12))
         self.btn_set_out.setFixedHeight(24)
         self.btn_set_out.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_set_out.setToolTip("Set Out point at current frame (O)")
 
-        self.btn_clear_trim = QPushButton("Clear")
-        self.btn_clear_trim.setProperty("variant", "trim")
+        self.btn_clear_trim = QPushButton()
+        self.btn_clear_trim.setProperty("variant", "tool")
         self.btn_clear_trim.setIcon(make_icon("x_mark", color="#A0A0A0", size=11))
         self.btn_clear_trim.setIconSize(QSize(11, 11))
-        self.btn_clear_trim.setFixedHeight(24)
+        self.btn_clear_trim.setFixedSize(24, 24)
         self.btn_clear_trim.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_trim.setToolTip("Clear In/Out trim range to scan full episode")
 
         for trim_btn in (self.btn_set_in, self.btn_set_out, self.btn_clear_trim):
             trim_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        trim_sep = QFrame()
+        trim_sep.setFixedSize(1, 16)
+        trim_sep.setStyleSheet("background-color: #2E2E2E;")
 
         self.test_result_label = QLabel("")
         self.test_result_label.setObjectName("testResultLabel")
@@ -984,20 +954,31 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
 
-        self.btn_test_frame = QPushButton("Test Frame")
+        self.btn_toggle_settings = QPushButton(tr(self._lang, "btn_settings"))
+        self.btn_toggle_settings.setProperty("variant", "toggle")
+        self.btn_toggle_settings.setIcon(make_icon("sidebar", size=12))
+        self.btn_toggle_settings.setIconSize(QSize(12, 12))
+        self.btn_toggle_settings.setCheckable(True)
+        self.btn_toggle_settings.setChecked(True)
+        self.btn_toggle_settings.setFixedHeight(24)
+        self.btn_toggle_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_toggle_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_test_frame = QPushButton(tr(self._lang, "btn_test_frame"))
         self.btn_test_frame.setProperty("variant", "trim")
         self.btn_test_frame.setIcon(make_icon("scan", color="#10B981", size=12))
         self.btn_test_frame.setIconSize(QSize(12, 12))
         self.btn_test_frame.setFixedHeight(24)
         self.btn_test_frame.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_test_frame.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_test_frame.setToolTip("Run text filter & OCR preview on the current frame")
 
         trim_row.addWidget(self.btn_set_in)
         trim_row.addWidget(self.lbl_trim_range)
         trim_row.addWidget(self.btn_set_out)
         trim_row.addWidget(self.btn_clear_trim)
+        trim_row.addWidget(trim_sep)
         trim_row.addWidget(self.test_result_label, 1)
+        trim_row.addWidget(self.btn_toggle_settings)
         trim_row.addWidget(self.btn_test_frame)
         preview_layout.addLayout(trim_row)
         monitor_root.addWidget(monitor_body, 1)
@@ -1009,8 +990,10 @@ class MainWindow(QMainWindow):
         subtitles_root.setContentsMargins(0, 0, 0, 0)
         subtitles_root.setSpacing(0)
 
-        subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header("Subtitles")
-        self.btn_export = QPushButton("Export .ass + .srt")
+        subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header(
+            tr(self._lang, "panel_subtitles")
+        )
+        self.btn_export = QPushButton()
         self.btn_export.setProperty("variant", "primary")
         self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=12))
         self.btn_export.setIconSize(QSize(12, 12))
@@ -1026,7 +1009,6 @@ class MainWindow(QMainWindow):
         self.btn_open_out_dir.setFixedSize(24, 22)
         self.btn_open_out_dir.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_open_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_open_out_dir.setToolTip("Open output folder")
         self.btn_open_out_dir.setEnabled(False)
 
         subtitles_hdr_layout.addWidget(self.btn_export)
@@ -1048,7 +1030,7 @@ class MainWindow(QMainWindow):
         self.workbench_splitter.setStretchFactor(0, 0)
         self.workbench_splitter.setStretchFactor(1, 12)
         self.workbench_splitter.setStretchFactor(2, 11)
-        self.workbench_splitter.setSizes([284, 448, 428])
+        self.workbench_splitter.setSizes([268, 456, 436])
 
         gutter_layout.addWidget(self.workbench_splitter, 1)
         main_layout.addWidget(workbench_gutter, 1)
@@ -1068,6 +1050,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.roi_canvas.roi_changed.connect(self._update_roi_label)
         self.roi_canvas.video_dropped.connect(self._on_video_dropped)
+        self.roi_canvas.open_requested.connect(self._browse_video)
         self.btn_browse_video.clicked.connect(self._browse_video)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         self.btn_save_preset.clicked.connect(lambda: self.save_preset())
@@ -1075,6 +1058,8 @@ class MainWindow(QMainWindow):
         self.btn_toggle_settings.toggled.connect(self._on_toggle_settings)
         self.btn_update_available.clicked.connect(self._on_update_badge_clicked)
         self.btn_check_update.clicked.connect(lambda: self.check_for_updates_async(manual=True))
+        self.btn_author_star.clicked.connect(self._on_author_star_clicked)
+        self.language_combo.currentIndexChanged.connect(self._on_language_combo_changed)
 
         self.btn_seek_start.clicked.connect(self._seek_to_start)
         self.btn_play_pause.clicked.connect(self.toggle_playback)
@@ -1088,15 +1073,11 @@ class MainWindow(QMainWindow):
         self.btn_set_out.clicked.connect(lambda: self.set_trim_out())
         self.btn_clear_trim.clicked.connect(self.clear_trim)
 
-        self.chk_ass.toggled.connect(lambda _: self._update_controls_state())
-        self.chk_srt.toggled.connect(lambda _: self._update_controls_state())
-        self.radio_dir_same.toggled.connect(lambda _: self._update_controls_state())
-        self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
-        self.radio_ass_template.toggled.connect(lambda _: self._refresh_ass_template_styles())
-        self.ass_template_edit.textChanged.connect(lambda _: self._refresh_ass_template_styles())
-        self.ass_style_combo.currentTextChanged.connect(self._on_ass_style_changed)
+        for chip in self._format_chips:
+            chip.toggled.connect(lambda _: self._update_controls_state())
+        self.btn_out_same.toggled.connect(lambda _: self._update_controls_state())
+        self.btn_out_custom.toggled.connect(lambda _: self._update_controls_state())
         self.btn_browse_out_dir.clicked.connect(self._browse_output_dir)
-        self.btn_browse_ass_template.clicked.connect(self._browse_ass_template)
 
         self.btn_test_frame.clicked.connect(self.test_current_frame)
         self.btn_start.clicked.connect(self.start_extraction)
@@ -1110,6 +1091,142 @@ class MainWindow(QMainWindow):
         self.review_table.split_requested.connect(self._on_review_split_requested)
         self.review_table.dirty_changed.connect(self._on_review_dirty_changed)
         self.review_table.transport_key_forwarded.connect(self._on_review_transport_key)
+
+    def selected_provider(self) -> str:
+        """Return the active OCR execution provider ('directml' or 'cpu')."""
+        if self._gpu_available and self.btn_render_gpu.isChecked():
+            return "directml"
+        return "cpu"
+
+    def active_language(self) -> str:
+        """Return the active resolved UI language code ('en', 'vi', or 'zh')."""
+        return self._lang
+
+    def _sync_language_combo(self) -> None:
+        idx = self.language_combo.findData(self._language_pref)
+        if idx < 0:
+            idx = 0
+        self.language_combo.blockSignals(True)
+        try:
+            self.language_combo.setCurrentIndex(idx)
+        finally:
+            self.language_combo.blockSignals(False)
+
+    def _on_language_combo_changed(self, index: int) -> None:
+        code = self.language_combo.itemData(index)
+        if isinstance(code, str):
+            self.set_language(code, persist=True)
+
+    def set_language(self, pref: str, *, persist: bool = True) -> None:
+        """Switch UI language live ('auto', 'en', 'vi', 'zh') with optional persistence."""
+        normalized = pref.strip().lower() if isinstance(pref, str) else "auto"
+        if normalized not in ("auto", "en", "vi", "zh"):
+            normalized = "auto"
+        self._language_pref = normalized
+        self._lang = resolve_language(normalized)
+        if persist:
+            try:
+                self._update_prefs.set_language(normalized)
+            except OSError:
+                pass
+        self._sync_language_combo()
+        self._retranslate_ui()
+
+    def _set_status(self, key: str, **kwargs: Any) -> None:
+        self._status_key = key
+        self._status_kwargs = dict(kwargs)
+        self.status_label.setText(tr(self._lang, key, **kwargs))
+
+    def _format_elided_filename(self, name: str) -> str:
+        return self.video_name_label.fontMetrics().elidedText(
+            name, Qt.TextElideMode.ElideMiddle, 146
+        )
+
+    def _on_author_star_clicked(self) -> None:
+        self._open_url_fn(GITHUB_REPO_URL)
+
+    def _retranslate_ui(self) -> None:
+        lang = self._lang
+        self._panel_titles[self.settings_panel].setText(tr(lang, "panel_settings"))
+        self._panel_titles[self.monitor_panel].setText(tr(lang, "panel_monitor"))
+        self._panel_titles[self.subtitles_panel].setText(tr(lang, "panel_subtitles"))
+
+        self.lbl_render_method.setText(tr(lang, "render_method"))
+        self.btn_render_gpu.setText(tr(lang, "render_gpu"))
+        self.btn_render_cpu.setText(tr(lang, "render_cpu"))
+        self.btn_render_gpu.setToolTip(
+            "" if self._gpu_available else tr(lang, "gpu_unavailable_tip")
+        )
+
+        self.lbl_model.setText(tr(lang, "model_label"))
+        self.ocr_model_combo.blockSignals(True)
+        try:
+            self.ocr_model_combo.setItemText(0, tr(lang, "model_precision"))
+            self.ocr_model_combo.setItemText(1, tr(lang, "model_turbo"))
+        finally:
+            self.ocr_model_combo.blockSignals(False)
+        self.ocr_model_combo.setToolTip(tr(lang, "model_tooltip"))
+
+        self.lbl_conf.setText(tr(lang, "flag_threshold"))
+
+        self.lbl_roi_preset.setText(tr(lang, "roi_preset"))
+        if self.preset_combo.count() > 0:
+            self.preset_combo.setItemText(0, tr(lang, "preset_none"))
+        self.btn_save_preset.setToolTip(tr(lang, "preset_save_tip"))
+        self.btn_delete_preset.setToolTip(tr(lang, "preset_delete_tip"))
+
+        self.lbl_export_format.setText(tr(lang, "export_format"))
+        self.lbl_output_folder.setText(tr(lang, "output_folder"))
+        self.btn_out_same.setText(tr(lang, "output_same"))
+        self.btn_out_custom.setText(tr(lang, "output_custom"))
+        self.custom_dir_edit.setPlaceholderText(tr(lang, "output_custom_placeholder"))
+        self.btn_browse_out_dir.setToolTip(tr(lang, "output_browse_tip"))
+
+        self.lbl_language.setText(tr(lang, "language_label"))
+        auto_idx = self.language_combo.findData("auto")
+        if auto_idx >= 0:
+            self.language_combo.setItemText(auto_idx, tr(lang, "lang_auto"))
+
+        self.btn_start.setText(tr(lang, "btn_extract"))
+        self.btn_stop.setText(tr(lang, "btn_stop"))
+
+        self.btn_check_update.setText(tr(lang, "btn_check_updates"))
+        self.btn_check_update.setToolTip(tr(lang, "tip_check_updates"))
+        self.btn_update_available.setToolTip(tr(lang, "tip_update_available"))
+        if self._available_update is not None:
+            self.btn_update_available.setText(
+                tr(lang, "btn_update_available", version=self._available_update.latest_version)
+            )
+        self.btn_author_star.setToolTip(f"{tr(lang, 'star_github_tip')} — wanngxuanji")
+
+        self.btn_browse_video.setToolTip(tr(lang, "open_video_tip"))
+        self.btn_seek_start.setToolTip(tr(lang, "tip_seek_start"))
+        self._update_play_button_icon()
+        self.btn_step_back.setToolTip(tr(lang, "tip_step_back"))
+        self.btn_step_fwd.setToolTip(tr(lang, "tip_step_fwd"))
+        self.btn_seek_end.setToolTip(tr(lang, "tip_seek_end"))
+
+        self.btn_set_in.setText(tr(lang, "trim_in"))
+        self.btn_set_in.setToolTip(tr(lang, "tip_trim_in"))
+        self.btn_set_out.setText(tr(lang, "trim_out"))
+        self.btn_set_out.setToolTip(tr(lang, "tip_trim_out"))
+        self.btn_clear_trim.setToolTip(tr(lang, "tip_trim_clear"))
+        self._update_trim_display()
+
+        self.btn_toggle_settings.setText(tr(lang, "btn_settings"))
+        self.btn_toggle_settings.setToolTip(tr(lang, "tip_toggle_settings"))
+        self.btn_test_frame.setText(tr(lang, "btn_test_frame"))
+        self.btn_test_frame.setToolTip(tr(lang, "test_frame_tip"))
+
+        self.btn_open_out_dir.setToolTip(tr(lang, "open_out_dir_tip"))
+        self._update_roi_label(self.roi_canvas.roi())
+        self._update_export_button()
+
+        if self._status_key is not None:
+            self.status_label.setText(tr(lang, self._status_key, **self._status_kwargs))
+
+        self.roi_canvas.set_language(lang)
+        self.review_table.set_language(lang)
 
     def _install_focus_tracking(self) -> None:
         if self._focus_tracking_active:
@@ -1188,7 +1305,7 @@ class MainWindow(QMainWindow):
         if not checked:
             sizes = self.workbench_splitter.sizes()
             if sizes and sizes[0] > 0:
-                self._saved_settings_width = max(256, min(400, sizes[0]))
+                self._saved_settings_width = max(244, min(380, sizes[0]))
             self.settings_panel.setVisible(False)
             if self._active_panel is self.settings_panel:
                 self._set_active_panel(self.monitor_panel)
@@ -1198,7 +1315,7 @@ class MainWindow(QMainWindow):
         sizes = self.workbench_splitter.sizes()
         total = sum(sizes)
         if total > 0:
-            left = max(256, min(400, self._saved_settings_width))
+            left = max(244, min(380, self._saved_settings_width))
             rem = max(0, total - left)
             mid = int(rem * 12 / 23)
             right = max(0, rem - mid)
@@ -1223,15 +1340,16 @@ class MainWindow(QMainWindow):
     def _update_roi_label(self, roi: RoiRect) -> None:
         if self._video_meta is not None:
             x1, y1, x2, y2 = roi.to_pixels(self._video_meta.width, self._video_meta.height)
-            self.roi_label.setText(f"ROI {x2 - x1}×{y2 - y1} px")
+            dims = f"{x2 - x1}×{y2 - y1} px"
+            self.roi_label.setText(tr(self._lang, "roi_pill", dims=dims))
             self.roi_label.setToolTip(
-                f"ROI region: {x2 - x1}×{y2 - y1} px ({roi.x * 100:.1f}%, {roi.y * 100:.1f}%)"
+                f"{dims} ({roi.x * 100:.1f}%, {roi.y * 100:.1f}%)"
             )
             return
-        self.roi_label.setText(f"ROI {roi.w * 100:.0f}×{roi.h * 100:.0f}%")
+        dims = f"{roi.w * 100:.0f}×{roi.h * 100:.0f}%"
+        self.roi_label.setText(tr(self._lang, "roi_pill", dims=dims))
         self.roi_label.setToolTip(
-            f"ROI region: {roi.x * 100:.1f}%, {roi.y * 100:.1f}% · "
-            f"{roi.w * 100:.1f}×{roi.h * 100:.1f}%"
+            f"{roi.x * 100:.1f}%, {roi.y * 100:.1f}% · {roi.w * 100:.1f}×{roi.h * 100:.1f}%"
         )
 
     def _current_rel_ms(self) -> int:
@@ -1241,7 +1359,7 @@ class MainWindow(QMainWindow):
         self.frame_slider.set_trim_range(self._trim_start_ms, self._trim_end_ms)
         has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
         if not has_trim:
-            self.lbl_trim_range.setText("Full episode")
+            self.lbl_trim_range.setText(tr(self._lang, "trim_full"))
         else:
             in_disp = self._trim_start_ms if self._trim_start_ms is not None else 0
             out_disp = self._trim_end_ms if self._trim_end_ms is not None else self._duration_ms
@@ -1267,7 +1385,7 @@ class MainWindow(QMainWindow):
         self._trim_start_ms = val
         if self._trim_end_ms is not None and self._trim_start_ms >= self._trim_end_ms:
             self._trim_end_ms = None
-            self.status_label.setText("In point set (Out cleared because In ≥ Out)")
+            self._set_status("status_trim_in_cleared_out")
         self._update_trim_display()
         self._update_controls_state()
 
@@ -1281,12 +1399,12 @@ class MainWindow(QMainWindow):
             else max(0, min(int(rel_ms), self._duration_ms))
         )
         if val <= 0:
-            self.status_label.setText("Out point must be greater than 0:00:00.00")
+            self._set_status("status_trim_out_zero")
             return
         self._trim_end_ms = val
         if self._trim_start_ms is not None and self._trim_start_ms >= self._trim_end_ms:
             self._trim_start_ms = None
-            self.status_label.setText("Out point set (In cleared because In ≥ Out)")
+            self._set_status("status_trim_out_cleared_in")
         self._update_trim_display()
         self._update_controls_state()
 
@@ -1345,70 +1463,19 @@ class MainWindow(QMainWindow):
         if self._video_meta is None or self._is_running():
             return
         if not self.review_table.apply_playhead_to_selected_start(self._current_rel_ms()):
-            self.status_label.setText("Cannot set Start ≥ End of the selected row")
+            self._set_status("status_snap_start_invalid")
 
     def _on_review_snap_end(self) -> None:
         if self._video_meta is None or self._is_running():
             return
         if not self.review_table.apply_playhead_to_selected_end(self._current_rel_ms()):
-            self.status_label.setText("Cannot set End ≤ Start of the selected row")
+            self._set_status("status_snap_end_invalid")
 
     def _on_review_split_requested(self) -> None:
         if self._is_running():
             return
         playhead = self._current_rel_ms() if self._video_meta is not None else None
         self.review_table.split_selected_row(playhead)
-
-    def _on_ass_style_changed(self, style_name: str) -> None:
-        tpl_text = self.ass_template_edit.text().strip()
-        if tpl_text and style_name and self.radio_ass_template.isChecked():
-            self._last_ass_style_by_template[tpl_text] = style_name
-
-    def _refresh_ass_template_styles(self) -> None:
-        prev_tpl = self._last_ass_template_path
-        current_combo_style = self.ass_style_combo.currentText()
-        if prev_tpl and current_combo_style:
-            self._last_ass_style_by_template[prev_tpl] = current_combo_style
-
-        tpl_text = self.ass_template_edit.text().strip()
-        prev_style = self._last_ass_style_by_template.get(tpl_text, "")
-
-        styles: list[str] = []
-        if self.radio_ass_template.isChecked() and tpl_text:
-            tpl_path = Path(tpl_text)
-            if tpl_path.is_file():
-                try:
-                    styles = list_ass_template_styles(tpl_path)
-                except Exception:
-                    styles = []
-
-        self._last_ass_template_path = tpl_text
-        self.ass_style_combo.blockSignals(True)
-        try:
-            self.ass_style_combo.clear()
-            if len(styles) > 1:
-                for name in styles:
-                    self.ass_style_combo.addItem(name)
-                if prev_style and prev_style in styles:
-                    self.ass_style_combo.setCurrentText(prev_style)
-                elif "Default" in styles:
-                    self.ass_style_combo.setCurrentText("Default")
-                else:
-                    self.ass_style_combo.setCurrentIndex(0)
-                chosen = self.ass_style_combo.currentText()
-                if tpl_text and chosen:
-                    self._last_ass_style_by_template[tpl_text] = chosen
-                self.ass_style_row_widget.setVisible(True)
-            else:
-                self.ass_style_row_widget.setVisible(False)
-        finally:
-            self.ass_style_combo.blockSignals(False)
-
-        self.ass_style_combo.setEnabled(
-            self.radio_ass_template.isChecked()
-            and self.ass_style_combo.count() > 1
-            and not self._is_running()
-        )
 
     def _on_review_dirty_changed(self, dirty: bool) -> None:
         self._has_unexported_edits = bool(dirty)
@@ -1541,23 +1608,36 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
+    def _selected_export_formats(self) -> list[str]:
+        selected: list[str] = []
+        if self.chk_ass.isChecked():
+            selected.append(".ass")
+        if self.chk_srt.isChecked():
+            selected.append(".srt")
+        if self.chk_vtt.isChecked():
+            selected.append(".vtt")
+        if self.chk_txt.isChecked():
+            selected.append(".txt")
+        return selected
+
     def _update_export_button(self) -> None:
-        want_ass = self.chk_ass.isChecked()
-        want_srt = self.chk_srt.isChecked()
-        if want_ass and want_srt:
-            self.btn_export.setText("Export .ass + .srt")
-        elif want_ass:
-            self.btn_export.setText("Export .ass")
-        elif want_srt:
-            self.btn_export.setText("Export .srt")
+        selected = self._selected_export_formats()
+        if not selected:
+            self.btn_export.setText(tr(self._lang, "btn_no_format"))
+        elif len(selected) <= 2:
+            self.btn_export.setText(
+                tr(self._lang, "btn_export_formats", formats=" + ".join(selected))
+            )
         else:
-            self.btn_export.setText("No format selected")
+            self.btn_export.setText(
+                tr(self._lang, "btn_export_formats", formats=f"({len(selected)})")
+            )
 
         running = self._is_running()
         has_video = self._video_path is not None and self._video_meta is not None
         has_result = self._extract_result is not None
         self.btn_export.setEnabled(
-            has_video and has_result and not running and (want_ass or want_srt)
+            has_video and has_result and not running and bool(selected)
         )
         self.btn_open_out_dir.setEnabled(self._last_export_dir is not None and not running)
 
@@ -1583,21 +1663,21 @@ class MainWindow(QMainWindow):
         self.btn_set_out.setEnabled(has_video and not running)
         self.btn_clear_trim.setEnabled(has_video and has_trim and not running)
 
-        custom_dir = self.radio_dir_custom.isChecked()
+        custom_dir = self.btn_out_custom.isChecked()
+        self.custom_dir_row_widget.setVisible(custom_dir)
+        self.btn_out_same.setEnabled(not running)
+        self.btn_out_custom.setEnabled(not running)
         self.custom_dir_edit.setEnabled(custom_dir and not running)
         self.btn_browse_out_dir.setEnabled(not running)
-
-        custom_tpl = self.radio_ass_template.isChecked()
-        self.ass_template_edit.setEnabled(custom_tpl and not running)
-        self.btn_browse_ass_template.setEnabled(not running)
-        self.ass_style_combo.setEnabled(
-            custom_tpl and self.ass_style_combo.count() > 1 and not running
-        )
+        for chip in self._format_chips:
+            chip.setEnabled(not running)
 
         self.btn_test_frame.setEnabled(has_video and not running)
-        self.provider_combo.setEnabled(not running)
+        self.btn_render_gpu.setEnabled(self._gpu_available and not running)
+        self.btn_render_cpu.setEnabled(not running)
         self.ocr_model_combo.setEnabled(not running)
         self.spin_conf.setEnabled(not running)
+        self.language_combo.setEnabled(not running)
         self.btn_start.setEnabled(has_video and not running)
         self.btn_stop.setEnabled(extracting)
         self._update_export_button()
@@ -1607,7 +1687,7 @@ class MainWindow(QMainWindow):
         self.preset_combo.blockSignals(True)
         try:
             self.preset_combo.clear()
-            self.preset_combo.addItem("(No preset)")
+            self.preset_combo.addItem(tr(self._lang, "preset_none"))
             for name in names:
                 self.preset_combo.addItem(name)
             if select_name and select_name in names:
@@ -1628,16 +1708,10 @@ class MainWindow(QMainWindow):
             return
         self.roi_canvas.set_roi(preset.roi)
         self.spin_conf.setValue(preset.conf_threshold)
-        if preset.ass_template_path:
-            self.radio_ass_template.setChecked(True)
-            self.ass_template_edit.setText(preset.ass_template_path)
-        else:
-            self.radio_ass_default.setChecked(True)
-            self.ass_template_edit.clear()
         self._update_controls_state()
 
     def save_preset(self, name: str | None = None) -> bool:
-        """Save current ROI, threshold, and optional ASS template path as a named preset."""
+        """Save current ROI and confidence threshold as a named preset."""
         preset_name = name
         if preset_name is None:
             default_name = (
@@ -1647,8 +1721,8 @@ class MainWindow(QMainWindow):
             )
             entered, ok = QInputDialog.getText(
                 self,
-                "Save ROI Preset",
-                "Preset name:",
+                tr(self._lang, "dlg_save_preset_title"),
+                tr(self._lang, "dlg_save_preset_prompt"),
                 text=default_name,
             )
             if not ok:
@@ -1659,22 +1733,17 @@ class MainWindow(QMainWindow):
         if not clean_name:
             return False
 
-        tpl_path = (
-            self.ass_template_edit.text().strip()
-            if self.radio_ass_template.isChecked() and self.ass_template_edit.text().strip()
-            else None
-        )
         preset = RoiPreset(
             name=clean_name,
             roi=self.roi_canvas.roi(),
-            ass_template_path=tpl_path,
+            ass_template_path=None,
             conf_threshold=float(self.spin_conf.value()),
         )
         try:
             self._preset_store.save(preset)
         except OSError as exc:
-            self.status_label.setText(f"Failed to save preset: {exc}")
-            QMessageBox.warning(self, "Save Preset Error", str(exc))
+            self._set_status("status_save_preset_error", error=exc)
+            QMessageBox.warning(self, tr(self._lang, "dlg_preset_error_title"), str(exc))
             return False
         self._refresh_presets(select_name=clean_name)
         return True
@@ -1687,8 +1756,8 @@ class MainWindow(QMainWindow):
         try:
             deleted = self._preset_store.delete(name)
         except OSError as exc:
-            self.status_label.setText(f"Failed to delete preset: {exc}")
-            QMessageBox.warning(self, "Delete Preset Error", str(exc))
+            self._set_status("status_delete_preset_error", error=exc)
+            QMessageBox.warning(self, tr(self._lang, "dlg_preset_error_title"), str(exc))
             return False
         self._refresh_presets()
         return deleted
@@ -1739,15 +1808,17 @@ class MainWindow(QMainWindow):
             self._start_pts_ms = 0
             self._duration_ms = 0
             self._current_frame_ms = 0
-            self.video_path_edit.clear()
+            self.video_name_label.clear()
+            self.video_name_label.setToolTip("")
+            self.video_name_label.setVisible(False)
             self.video_meta_badge.clear()
             self.video_meta_badge.setVisible(False)
             self.frame_slider.setRange(0, 0)
             self._update_time_label()
-            self.status_label.setText("Failed to open video")
+            self._set_status("status_open_video_failed")
             self._update_roi_label(self.roi_canvas.roi())
             self._update_controls_state()
-            QMessageBox.warning(self, "Cannot Open Video", str(exc))
+            QMessageBox.warning(self, tr(self._lang, "dlg_open_video_error_title"), str(exc))
             return
 
         self._video_path = path
@@ -1761,7 +1832,9 @@ class MainWindow(QMainWindow):
             max(1, round(1000.0 / max(1.0, float(reader.metadata.fps))))
         )
 
-        self.video_path_edit.setText(str(path))
+        self.video_name_label.setText(self._format_elided_filename(path.name))
+        self.video_name_label.setToolTip(str(path))
+        self.video_name_label.setVisible(True)
         fps_val = reader.metadata.fps
         fps_str = f"{fps_val:.0f}" if abs(fps_val - round(fps_val)) < 0.05 else f"{fps_val:.2f}"
         self.video_meta_badge.setText(
@@ -1776,8 +1849,8 @@ class MainWindow(QMainWindow):
             self.frame_slider.blockSignals(False)
 
         self.progress_bar.setValue(0)
-        self.status_label.setText(
-            "Cleaning up background worker..." if self._has_retiring_threads() else "Ready"
+        self._set_status(
+            "status_cleaning_worker" if self._has_retiring_threads() else "status_ready"
         )
         self._update_roi_label(self.roi_canvas.roi())
         self.seek_to_ms(self._start_pts_ms)
@@ -1787,9 +1860,9 @@ class MainWindow(QMainWindow):
         start_dir = str(self._video_path.parent) if self._video_path is not None else ""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Video",
+            tr(self._lang, "dlg_open_video_title"),
             start_dir,
-            "Video Files (*.mp4 *.mkv *.avi *.mov *.ts *.webm);;All Files (*)",
+            tr(self._lang, "dlg_open_video_filter"),
         )
         if file_path:
             self.load_video(file_path)
@@ -1798,22 +1871,12 @@ class MainWindow(QMainWindow):
         start_dir = self.custom_dir_edit.text().strip() or (
             str(self._video_path.parent) if self._video_path is not None else ""
         )
-        chosen = QFileDialog.getExistingDirectory(self, "Select Output Folder", start_dir)
-        if chosen:
-            self.radio_dir_custom.setChecked(True)
-            self.custom_dir_edit.setText(chosen)
-
-    def _browse_ass_template(self) -> None:
-        start_dir = str(self._video_path.parent) if self._video_path is not None else ""
-        chosen, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select .ass Template",
-            start_dir,
-            "ASS Subtitles (*.ass);;All Files (*)",
+        chosen = QFileDialog.getExistingDirectory(
+            self, tr(self._lang, "dlg_select_out_dir"), start_dir
         )
         if chosen:
-            self.radio_ass_template.setChecked(True)
-            self.ass_template_edit.setText(chosen)
+            self.btn_out_custom.setChecked(True)
+            self.custom_dir_edit.setText(chosen)
 
     def _ensure_preview_reader(self) -> VideoReader | None:
         if self._video_path is None or self._is_extracting():
@@ -1854,10 +1917,10 @@ class MainWindow(QMainWindow):
     def _update_play_button_icon(self) -> None:
         if self._is_playing:
             self.btn_play_pause.setIcon(make_icon("pause", color="#3EA6FF", size=13))
-            self.btn_play_pause.setToolTip("Pause preview (Space)")
+            self.btn_play_pause.setToolTip(tr(self._lang, "tip_pause"))
         else:
             self.btn_play_pause.setIcon(make_icon("play", size=13))
-            self.btn_play_pause.setToolTip("Play preview (Space)")
+            self.btn_play_pause.setToolTip(tr(self._lang, "tip_play"))
 
     def start_playback(self) -> None:
         """Start sequential preview playback on the video canvas."""
@@ -1886,7 +1949,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.stop_playback()
             self._play_iter = None
-            self.status_label.setText(f"Playback error: {exc}")
+            self._set_status("status_playback_error", error=exc)
             return
 
         if wrapped:
@@ -1926,7 +1989,7 @@ class MainWindow(QMainWindow):
             self._play_iter = None
             self._last_advance_error = True
             self.stop_playback()
-            self.status_label.setText(f"Frame read error: {exc}")
+            self._set_status("status_frame_read_error", error=exc)
             return False
         try:
             frame_idx, pts_ms, full_bgr = next(self._play_iter)
@@ -1938,7 +2001,7 @@ class MainWindow(QMainWindow):
             self._play_iter = None
             self._last_advance_error = True
             self.stop_playback()
-            self.status_label.setText(f"Frame read error: {exc}")
+            self._set_status("status_frame_read_error", error=exc)
             return False
         self._at_eof = False
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
@@ -1968,7 +2031,7 @@ class MainWindow(QMainWindow):
                 return
             frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(clamped)
         except Exception as exc:
-            self.status_label.setText(f"Frame seek error: {exc}")
+            self._set_status("status_frame_seek_error", error=exc)
             return
 
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
@@ -2012,7 +2075,7 @@ class MainWindow(QMainWindow):
                     self._display_preview_frame(frame_idx, pts_ms, full_bgr)
                     return
             except Exception as exc:
-                self.status_label.setText(f"Step-back error: {exc}")
+                self._set_status("status_step_back_error", error=exc)
                 return
         step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
         self.seek_to_ms(self._current_frame_ms + delta * step_ms)
@@ -2034,7 +2097,7 @@ class MainWindow(QMainWindow):
 
     def build_config(self) -> ExtractConfig:
         """Build an ExtractConfig from the current UI controls."""
-        provider = self.provider_combo.currentData() or "cpu"
+        provider = self.selected_provider()
         ocr_model = self.ocr_model_combo.currentData() or "accurate"
         return ExtractConfig(
             conf_threshold=float(self.spin_conf.value()),
@@ -2065,12 +2128,13 @@ class MainWindow(QMainWindow):
                 self._current_frame_bgr = full_bgr
             frame_copy = full_bgr.copy()
         except Exception as exc:
-            self.test_result_label.setText(f"Frame test error: {exc}")
-            self.status_label.setText(f"Frame test error: {exc}")
+            err_text = tr(self._lang, "status_frame_test_error", error=exc)
+            self.test_result_label.setText(err_text)
+            self._set_status("status_frame_test_error", error=exc)
             return False
 
-        self.test_result_label.setText("Testing frame...")
-        self.status_label.setText("Testing frame...")
+        self.test_result_label.setText(tr(self._lang, "status_testing_frame"))
+        self._set_status("status_testing_frame")
 
         thread = QThread(self)
         worker = FrameTestWorker(
@@ -2108,14 +2172,21 @@ class MainWindow(QMainWindow):
             self.roi_canvas.set_frame(frame_bgr, mask=result.mask)
         if result.text:
             self.test_result_label.setText(
-                f'OCR: "{result.text}" ({result.confidence:.2f})'
+                tr(
+                    self._lang,
+                    "status_frame_test_ocr",
+                    text=result.text,
+                    conf=result.confidence,
+                )
             )
-            self.status_label.setText(
-                f'Frame test: "{result.text}" ({result.confidence:.2f})'
+            self._set_status(
+                "status_frame_test_done",
+                text=result.text,
+                conf=result.confidence,
             )
         else:
-            self.test_result_label.setText("OCR: (no text detected)")
-            self.status_label.setText("Frame test: no text detected")
+            self.test_result_label.setText(tr(self._lang, "status_frame_test_no_text"))
+            self._set_status("status_frame_test_no_text_status")
         self._update_controls_state()
 
     @Slot(str)
@@ -2123,8 +2194,10 @@ class MainWindow(QMainWindow):
         if self.sender() is not self._frame_test_worker:
             return
         self._cleanup_frame_test_worker()
-        self.test_result_label.setText(f"Frame test error: {message}")
-        self.status_label.setText(f"Frame test error: {message}")
+        self.test_result_label.setText(
+            tr(self._lang, "status_frame_test_error", error=message)
+        )
+        self._set_status("status_frame_test_error", error=message)
         self._update_controls_state()
 
     def start_extraction(self) -> None:
@@ -2139,7 +2212,7 @@ class MainWindow(QMainWindow):
         self._close_preview_reader()
 
         self.progress_bar.setValue(0)
-        self.status_label.setText("Extracting...")
+        self._set_status("status_extracting")
 
         cancel_event = threading.Event()
         thread = QThread(self)
@@ -2172,7 +2245,7 @@ class MainWindow(QMainWindow):
         if self._cancel_event is not None:
             self._cancel_event.set()
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("Stopping...")
+            self._set_status("status_stopping")
 
     @Slot(str, int, int)
     def _on_worker_progress(self, stage: str, current: int, total: int) -> None:
@@ -2181,16 +2254,18 @@ class MainWindow(QMainWindow):
         if stage == "scan":
             pct = int(round(70.0 * current / max(1, total)))
             self.progress_bar.setValue(max(0, min(70, pct)))
-            self.status_label.setText(
-                f"Scanning: {format_ass_time(current)} / {format_ass_time(total)}"
+            self._set_status(
+                "status_scanning",
+                current=format_ass_time(current),
+                total=format_ass_time(total),
             )
         elif stage == "ocr":
             pct = 70 + int(round(29.0 * current / max(1, total)))
             self.progress_bar.setValue(max(70, min(99, pct)))
-            self.status_label.setText(f"OCR: {current}/{total}")
+            self._set_status("status_ocr_progress", current=current, total=total)
         elif stage == "done":
             self.progress_bar.setValue(100)
-            self.status_label.setText(f"Done: {total} cues")
+            self._set_status("status_done_simple", total=total)
 
     @Slot(object)
     def _on_worker_finished(self, result: ExtractResult) -> None:
@@ -2203,8 +2278,10 @@ class MainWindow(QMainWindow):
         self.review_table.set_events(result.events)
         self.progress_bar.setValue(100)
         flagged_count = sum(1 for ev in result.events if ev.flagged)
-        self.status_label.setText(
-            f"Done: {len(result.events)} cues ({flagged_count} flagged)"
+        self._set_status(
+            "status_done",
+            total=len(result.events),
+            flagged=flagged_count,
         )
         self._update_controls_state()
 
@@ -2215,7 +2292,7 @@ class MainWindow(QMainWindow):
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
-        self.status_label.setText("Cancelled")
+        self._set_status("status_cancelled")
         self._update_controls_state()
 
     @Slot(str)
@@ -2225,9 +2302,9 @@ class MainWindow(QMainWindow):
         self._cleanup_worker()
         self._clear_session_results()
         self.progress_bar.setValue(0)
-        self.status_label.setText("Extraction failed")
+        self._set_status("status_extraction_failed")
         self._update_controls_state()
-        QMessageBox.critical(self, "Extraction Error", message)
+        QMessageBox.critical(self, tr(self._lang, "dlg_extract_error_title"), message)
 
     def _stop_and_wait_worker(self) -> None:
         if self._cancel_event is not None:
@@ -2266,8 +2343,11 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
         thread.deleteLater()
         if not self._retiring_threads and not self._is_running():
-            if self.status_label.text() == "Cleaning up background worker...":
-                self.status_label.setText("Ready")
+            if (
+                self._status_key == "status_cleaning_worker"
+                or self.status_label.text() == tr(self._lang, "status_cleaning_worker")
+            ):
+                self._set_status("status_ready")
         self._update_controls_state()
 
     def _finalize_retiring_thread(self, thread: QThread) -> None:
@@ -2310,7 +2390,7 @@ class MainWindow(QMainWindow):
                 if thread.isFinished() and not thread.isRunning():
                     self._retire_thread(thread)
                 else:
-                    self.status_label.setText("Cleaning up background worker...")
+                    self._set_status("status_cleaning_worker")
                     self._update_controls_state()
         elif worker is not None:
             worker.deleteLater()
@@ -2339,7 +2419,7 @@ class MainWindow(QMainWindow):
                 if thread.isFinished() and not thread.isRunning():
                     self._retire_thread(thread)
                 else:
-                    self.status_label.setText("Cleaning up background worker...")
+                    self._set_status("status_cleaning_worker")
                     self._update_controls_state()
         elif worker is not None:
             worker.deleteLater()
@@ -2352,9 +2432,8 @@ class MainWindow(QMainWindow):
 
         reply = QMessageBox.question(
             self,
-            "Unexported Subtitle Edits",
-            "You have unexported edits in the subtitle table.\n"
-            "Discard these edits and continue?",
+            tr(self._lang, "dlg_unsaved_title"),
+            tr(self._lang, "dlg_unsaved_body"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2367,26 +2446,28 @@ class MainWindow(QMainWindow):
         names = "\n".join(f"- {p.name}" for p in existing_paths)
         reply = QMessageBox.question(
             self,
-            "Confirm Overwrite",
-            f"The following files already exist:\n{names}\n\nOverwrite them?",
+            tr(self._lang, "dlg_overwrite_title"),
+            tr(self._lang, "dlg_overwrite_body", names=names),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         return reply == QMessageBox.StandardButton.Yes
 
     def export_subtitles(self) -> bool:
-        """Export current review events to selected .ass/.srt files with overwrite guard."""
+        """Export current review events to selected .ass/.srt/.vtt/.txt files."""
         self.review_table.commit_or_close_active_editor()
         if self._video_path is None or self._extract_result is None:
             return False
 
         want_ass = self.chk_ass.isChecked()
         want_srt = self.chk_srt.isChecked()
-        if not want_ass and not want_srt:
+        want_vtt = self.chk_vtt.isChecked()
+        want_txt = self.chk_txt.isChecked()
+        if not (want_ass or want_srt or want_vtt or want_txt):
             QMessageBox.information(
                 self,
-                "No Format Selected",
-                "Please select at least one export format (.ass or .srt).",
+                tr(self._lang, "dlg_no_format_title"),
+                tr(self._lang, "dlg_no_format_body"),
             )
             return False
 
@@ -2394,43 +2475,39 @@ class MainWindow(QMainWindow):
         if not prepare_export_cues(events):
             QMessageBox.information(
                 self,
-                "No Subtitles to Export",
-                "The subtitle list is empty or contains no valid cues.",
+                tr(self._lang, "dlg_no_cues_title"),
+                tr(self._lang, "dlg_no_cues_body"),
             )
             return False
 
-        if self.radio_dir_same.isChecked():
+        if self.btn_out_same.isChecked():
             out_dir = self._video_path.parent
         else:
             custom = self.custom_dir_edit.text().strip()
             if not custom:
                 QMessageBox.warning(
-                    self, "Missing Output Folder", "Please choose an output folder."
+                    self,
+                    tr(self._lang, "dlg_missing_out_dir_title"),
+                    tr(self._lang, "dlg_missing_out_dir_body"),
                 )
                 return False
             out_dir = Path(custom)
 
-        template_path: Path | None = None
-        if want_ass and self.radio_ass_template.isChecked():
-            tpl_text = self.ass_template_edit.text().strip()
-            if not tpl_text or not Path(tpl_text).is_file():
-                QMessageBox.warning(
-                    self,
-                    "Invalid .ass Template",
-                    "The selected .ass template file could not be found.",
-                )
-                return False
-            template_path = Path(tpl_text)
-
         stem = self._video_path.stem
         ass_path = out_dir / f"{stem}.ass"
         srt_path = out_dir / f"{stem}.srt"
+        vtt_path = out_dir / f"{stem}.vtt"
+        txt_path = out_dir / f"{stem}.txt"
 
         targets: list[Path] = []
         if want_ass:
             targets.append(ass_path)
         if want_srt:
             targets.append(srt_path)
+        if want_vtt:
+            targets.append(vtt_path)
+        if want_txt:
+            targets.append(txt_path)
 
         existing = [p for p in targets if p.exists()]
         if existing and not self._confirm_overwrite(existing):
@@ -2438,38 +2515,29 @@ class MainWindow(QMainWindow):
 
         try:
             if want_ass:
-                style_name = (
-                    self.ass_style_combo.currentText()
-                    if (
-                        template_path is not None
-                        and self.ass_style_combo.count() > 1
-                        and not self.ass_style_row_widget.isHidden()
-                    )
-                    else None
-                )
                 export_ass(
                     events,
                     ass_path,
                     video_width=self._extract_result.width,
                     video_height=self._extract_result.height,
-                    template_path=template_path,
-                    style_name=style_name,
                     frame_pts_ms=self._extract_result.frame_pts_ms,
                 )
             if want_srt:
                 export_srt(events, srt_path)
+            if want_vtt:
+                export_vtt(events, vtt_path)
+            if want_txt:
+                export_txt(events, txt_path)
         except Exception as exc:
-            self.status_label.setText(f"Export error: {exc}")
-            QMessageBox.warning(self, "Export Error", str(exc))
+            self._set_status("status_export_error", error=exc)
+            QMessageBox.warning(self, tr(self._lang, "dlg_export_error_title"), str(exc))
             return False
 
         self.review_table.mark_clean()
         self._has_unexported_edits = False
         self._last_export_dir = out_dir
         self._update_controls_state()
-        self.status_label.setText(
-            "Exported: " + ", ".join(p.name for p in targets)
-        )
+        self._set_status("status_export_done", files=", ".join(p.name for p in targets))
         return True
 
     def check_for_updates_async(self, *, manual: bool = False) -> bool:
@@ -2478,7 +2546,7 @@ class MainWindow(QMainWindow):
             return False
         if manual:
             self.btn_check_update.setEnabled(False)
-            self.status_label.setText("Checking for updates...")
+            self._set_status("status_checking_updates")
 
         thread = QThread(self)
         worker = _UpdateCheckWorker(
@@ -2511,22 +2579,27 @@ class MainWindow(QMainWindow):
                 self.btn_update_available.setVisible(False)
                 return
             self._available_update = info
-            self.btn_update_available.setText(f"Update v{info.latest_version}")
+            self.btn_update_available.setText(
+                tr(self._lang, "btn_update_available", version=info.latest_version)
+            )
             self.btn_update_available.setVisible(True)
             if manual:
-                if self.status_label.text() == "Checking for updates...":
-                    self.status_label.setText(f"Update available: v{info.latest_version}")
+                if (
+                    self._status_key == "status_checking_updates"
+                    or self.status_label.text() == tr(self._lang, "status_checking_updates")
+                ):
+                    self._set_status("status_update_available", version=info.latest_version)
                 self.show_update_dialog(info)
             return
 
         self._available_update = None
         self.btn_update_available.setVisible(False)
         if manual:
-            self.status_label.setText(f"Muzhen is up to date (v{__version__})")
+            self._set_status("status_up_to_date", version=__version__)
             QMessageBox.information(
                 self,
-                "Check for Updates",
-                f"Muzhen is up to date (v{__version__}).",
+                tr(self._lang, "msg_up_to_date_title"),
+                tr(self._lang, "msg_up_to_date_body", version=__version__),
             )
 
     @Slot(str, bool)
@@ -2537,11 +2610,11 @@ class MainWindow(QMainWindow):
         self.btn_check_update.setEnabled(True)
         if not manual:
             return
-        self.status_label.setText("Update check failed")
+        self._set_status("status_update_failed")
         QMessageBox.warning(
             self,
-            "Check for Updates",
-            f"Could not check for updates:\n{message}",
+            tr(self._lang, "msg_up_to_date_title"),
+            tr(self._lang, "msg_update_failed_body", error=message),
         )
 
     def _on_update_badge_clicked(self) -> None:
@@ -2550,7 +2623,7 @@ class MainWindow(QMainWindow):
 
     def show_update_dialog(self, info: UpdateInfo) -> str:
         """Show the UpdateDialog and apply Update Now / Skip This Version / Later."""
-        dialog = UpdateDialog(info, self)
+        dialog = UpdateDialog(info, lang=self._lang, parent=self)
         dialog.exec()
         if dialog.action == "update":
             target_url = info.download_url or info.release_url
