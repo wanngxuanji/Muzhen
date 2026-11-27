@@ -5,14 +5,18 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 dist/
-build/
+release/
+build/*
+!build/transapp.spec
 
 # SDD / Superpowers scratch & internal planning docs
 .superpowers/
 docs/superpowers/
 
-# Local Windows shortcut files
+# Local Windows shortcut files & scratch exports
 *.lnk
+EX/
+Ex/
 
 # Large video assets & generated subtitle outputs
 assets/*.mp4
