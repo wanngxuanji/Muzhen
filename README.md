@@ -15,7 +15,7 @@
 
 <br>
 
-![Muzhen v2.0.0 Premiere/AE Workbench](docs/screenshots/muzhen-v2-workbench.png)
+![Muzhen v2.1.0 Premiere/AE Workbench](docs/screenshots/muzhen-v2-workbench.png)
 
 </div>
 
@@ -33,13 +33,13 @@ Generic OCR scripts routinely drift on NTSC frame rates (`23.976` / `29.97 fps`)
 
 ### Option 1 — Windows Portable Release (Recommended, No Python Required)
 
-1. Download **`Muzhen-v2.0.0-win64-portable.zip`** (and optional `SHA256SUMS.txt`) from [**GitHub Releases**](https://github.com/wanngxuanji/Muzhen/releases).
+1. Download **`Muzhen-v2.1.0-win64-portable.zip`** (and optional `SHA256SUMS.txt`) from [**GitHub Releases**](https://github.com/wanngxuanji/Muzhen/releases).
 2. Extract to any writable directory (for example `D:\Tools\Muzhen\`).
 3. Double-click **`Muzhen.exe`**.
 
 > **First-run OCR models:** On your first extraction (or `Test Frame`), Muzhen automatically downloads the selected `ch_PP-OCRv5` ONNX weights into the portable `models/` directory next to `Muzhen.exe` (falling back to `%LOCALAPPDATA%\Muzhen\models` if extracted to a read-only location). Subsequent runs work 100% offline.
 
-> **Built-in Update Checker:** Muzhen checks GitHub Releases silently in the background on startup (never blocking offline use) and shows a compact **Update** badge in the top bar whenever a newer version is published, with full release notes and **Update Now / Skip This Version / Later** controls. You can also trigger a check manually via the refresh icon in the top bar.
+> **Built-in Update Checker & Multi-Language UI:** Muzhen automatically detects your Windows language (**English / Tiếng Việt / 中文 (简体)**, switchable live in Settings) and checks GitHub Releases silently on startup, revealing a compact **Update** badge inside Settings with full release notes and **Update Now / Skip This Version / Later** controls.
 
 ### Option 2 — Run From Source (Developers)
 
@@ -83,14 +83,15 @@ powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 - **Stage 2 — Consensus Recognition & Multi-Cue Splitting:** Borderless `ch_PP-OCRv5 Server` (default) or `Mobile` (`fast`) recognition with interior-first adaptive early exit, confidence-weighted & character-level consensus voting, selective glare/brightness retry, bounded-stack multi-cue binary-search splitting, and minimal-pair / numeric countdown protection.
 - **Automatic DirectML GPU Acceleration:** Uses `onnxruntime-directml` on Windows GPUs with eager Stage 1 + Stage 2 session verification and seamless CPU fallback.
 
-### Premiere Pro / After Effects Docked Workbench
-- **3-Pane Horizontal Dock (`Settings | Program Monitor | Subtitles`):** Neutral graphite palette (`#111111` / `#161616` / `#1D1D1D`), collapsible Settings panel, Premiere-blue active-panel focus outline (`#2D8CEB`), and blue Program Monitor timecode + frame index (`0:06:55.56 / 0:24:00.60 · #10389`).
-- **Interactive Preview & OP/ED Trim:** Sequential `Play / Pause` (`Space`), hold-to-repeat stepping (`<` / `>`, `←` / `→`, `,` / `.`), VFR-safe single-frame step-back, drag-and-drop video loading, and `In` / `Out` (`I` / `O`) OP/ED trim preserving original absolute episode timestamps.
+### Premiere Pro / After Effects Chrome-Free Workbench
+- **3-Pane Horizontal Dock (`Settings | Program Monitor | Subtitles`):** Neutral graphite palette (`#111111` / `#161616` / `#1D1D1D`), zero wasted top-bar chrome (`Muzhen - V2.1.0`), collapsible Settings panel toggled right below the monitor, Premiere-blue active-panel focus outline (`#2D8CEB`), and blue Program Monitor timecode + frame index (`0:06:55.56 / 0:24:00.60 · #10389`).
+- **Streamlined Settings & Live 3-Language UI:** Auto-detected **GPU / CPU** Render Method, branded **Precision / Turbo** OCR models, inline ROI Presets, 4 format chips (`.ass`, `.srt`, `.vtt`, `.txt`), conditional **Custom** output folder, live **English / Tiếng Việt / 中文 (简体)** switching, and built-in GitHub Release update checker.
+- **Interactive Preview & OP/ED Trim:** Click or drag-and-drop directly onto Program Monitor to open episodes, sequential `Play / Pause` (`Space`), hold-to-repeat stepping (`<` / `>`, `←` / `→`, `,` / `.`), VFR-safe single-frame step-back, and `In` / `Out` (`I` / `O`) OP/ED trim preserving original absolute episode timestamps.
 - **Pro-Subber Review Table & QA Inspector:** Video↔Table Start/End sync (`Alt+S` / `Alt+E`), snap-to-playhead (`Ctrl+[` / `Ctrl+]`), exact `frame_pts_ms` `±1f` nudge (zero NTSC rounding drift), `flag_reason` QA banner with auto-clear on edit (`Ctrl+D`), multi-row delete, Merge (`Ctrl+M`), Split (`Ctrl+K`), 50-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`), and Find & Replace (`Ctrl+F` / `Ctrl+H`).
 
-### Aegisub & Adobe Premiere Pro Export
-- **Inter-Frame Midpoint Centisecond Snapping:** Verified against libass rendering semantics so exported `.ass` cues never start 1 frame late or bleed across hard scene cuts.
-- **Full Template Preservation:** Order-independent `.ass` template parser supporting UTF-8/UTF-16 templates, `[Fonts]` / `[Graphics]` uuencoded payload preservation, multi-style selector, `{}` & `\N` escaping, strict non-overlap clamping, identical `.ass` / `.srt` cue parity, and atomic file writes.
+### Multi-Format Export (`.ass`, `.srt`, `.vtt`, `.txt`)
+- **Aegisub & Premiere Parity:** Inter-frame midpoint centisecond snapping verified against libass rendering semantics so exported `.ass` cues never start 1 frame late or bleed across hard cuts, plus strict non-overlap clamping across `.ass`, `.srt`, and `.vtt`.
+- **Web & Translation Ready:** Export standards-compliant WebVTT (`.vtt`) for web players or clean single-line plain text (`.txt`) ready for translation workflows — all written atomically in UTF-8.
 
 ---
 
@@ -159,20 +160,23 @@ Muzhen/
 │   │   └── presets.py          # Atomic JSON preset persistence
 │   ├── exporters/
 │   │   ├── sanitize.py         # Libass midpoint snapping, escaping, atomic file writes
-│   │   ├── ass_exporter.py     # Order-independent .ass template parser & exporter
-│   │   └── srt_exporter.py     # Premiere Pro .srt exporter
+│   │   ├── ass_exporter.py     # Aegisub .ass exporter
+│   │   ├── srt_exporter.py     # Premiere Pro .srt exporter
+│   │   ├── vtt_exporter.py     # WebVTT .vtt exporter
+│   │   └── txt_exporter.py     # Plain-text .txt script exporter
 │   └── ui/
 │       ├── assets/             # Rounded muzhen.ico, muzhen_icon.png, crisp vector SVGs
+│       ├── i18n.py             # Live English / Vietnamese / Simplified Chinese translations
 │       ├── theme.py            # Adobe Premiere/AE graphite tokens & QSS
-│       ├── main_window.py      # 3-pane docked workbench, transport, async workers, UpdateDialog
+│       ├── main_window.py      # Chrome-free 3-pane workbench, transport, async workers, UpdateDialog
 │       ├── review_table.py     # Editable subtitle table, QA inspector, undo/redo, find/replace
-│       ├── roi_canvas.py       # Interactive ROI overlay & drag-and-drop monitor well
+│       ├── roi_canvas.py       # Interactive ROI overlay & clickable drop monitor well
 │       └── icons.py            # Crisp 1.5px vector SVG icon renderer
 ├── build/muzhen.spec           # PyInstaller --onedir build specification
 ├── scripts/
 │   ├── build_release.ps1       # Portable release builder + smoke test + SHA256
 │   └── create_shortcut.ps1     # One-click Windows Muzhen.lnk launcher generator
-├── tests/                      # Full pytest + pytest-qt suite (189 tests, -W error)
+├── tests/                      # Full pytest + pytest-qt suite (216 tests, -W error)
 └── .github/workflows/          # Windows CI (ci.yml) & tag-triggered GitHub Release (release.yml)
 ```
 

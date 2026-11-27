@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-28
+
+### Added
+- Multi-format export support: **`.vtt`** (WebVTT) and **`.txt`** (clean single-line plain-text script) alongside `.ass` and `.srt`.
+- Built-in **3-language interface (`English`, `Tiếng Việt`, `中文 (简体)`)** with automatic OS locale detection, instant live switching without restart, and persistent preference storage.
+- Click-to-open directly on the empty **Program Monitor** canvas.
+- Compact **Updates** and **`★ wanngxuanji`** GitHub Star footer inside the Settings panel.
+
+### Changed
+- Removed the redundant top bar chrome and moved version display into the native window title (`Muzhen - V2.1.0`), moving active video filename, resolution/FPS metadata, and the Open button into the **Program Monitor** header.
+- Relocated the collapsible **Settings** toggle inline with Program Monitor trim controls (`In | Full episode | Out | × | Settings | Test Frame`).
+- Streamlined the **Settings** panel: segmented **Render Method** (`GPU` / `CPU` with automatic GPU detection), branded **Model** selector (**`Precision`** / **`Turbo`**), inline **ROI Preset** row, 4 compact format chips (`.ass`, `.srt`, `.vtt`, `.txt`), conditional **Custom** output folder input, and removed legacy `ASS Style` controls.
+
 ## [2.0.0] - 2026-11-28
 
 ### Added
