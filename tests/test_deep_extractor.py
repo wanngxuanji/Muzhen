@@ -12,6 +12,8 @@ from transapp.core.deep_extractor import (
     _FrameVote,
     _choose_majority_vote,
     _compute_tight_signature,
+    _find_sandwich_noise,
+    _is_strict_same_cue,
     _tight_signatures_same_cue,
     detect_subtitle_spans,
     extract_subtitles_deep,
@@ -81,9 +83,9 @@ def test_extract_subtitles_deep_bridges_flash_and_splits_back_to_back_cues():
     cfg = ExtractConfig(coarse_step=1, min_duration_ms=120, flash_bridge_max_ms=320)
 
     # Frame timeline (25fps, 40ms/frame):
-    # 0..9:   "那场战斗结束一年后" (with 2 noisy frames)
-    # 10..14: 200ms blank flash gap (no boxes detected)
-    # 15..22: "那场战斗结束一年后" (same cue resuming after flash -> must merge into 1 cue)
+    # 0..9:   "场战斗结束一年后" (glare-clipped leading char + 1 noisy frame)
+    # 10..14: 200ms blank flash gap (no boxes detected; > merge_gap_ms=160, <= flash_bridge_max_ms=320)
+    # 15..22: "那场战斗结束一年后" (fuller cue resuming after flash -> Tier-2 bridges into 1 cue)
     # 23..32: "新战斗陀螺" (back-to-back cue with same box area -> split internally by Stage 2 text!)
     class ScriptedDet:
         def __call__(self, canvas: np.ndarray):
@@ -112,8 +114,12 @@ def test_extract_subtitles_deep_bridges_flash_and_splits_back_to_back_cues():
 
         def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
             fidx = int(bgr_roi[38, 240, 0])
-            if fidx in (2, 16):
-                return ("那场战斗结束一年后2", 0.76)
+            if fidx == 2:
+                return ("场战斗结束一年后#", 0.76)
+            if fidx < 10:
+                return ("场战斗结束一年后", 0.98)
+            if fidx == 16:
+                return ("那场战斗结束一年后#", 0.76)
             if fidx < 23:
                 return ("那场战斗结束一年后", 0.99)
             return ("新战斗陀螺", 0.99)
@@ -1050,3 +1056,250 @@ def test_onset_and_offset_refinement_retains_faded_boundary_frames_with_overlapp
     assert spans[0].end_idx == 19
     assert spans[1].start_idx == 26
     assert spans[1].end_idx == 33
+
+
+def test_numeric_and_grade_prefixed_cues_are_not_merged_or_stripped():
+    assert _is_strict_same_cue("3天后", "5天后", 0.98, 0.98) is False
+    assert _is_strict_same_cue("S级", "A级", 0.96, 0.96) is False
+    assert _is_strict_same_cue("距离爆炸还有3秒", "距离爆炸还有2秒", 0.98, 0.98) is False
+
+    cfg = ExtractConfig(conf_threshold=0.85)
+    img = _solid_roi(77)
+
+    class SpyRetryEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+            self.retry_called = False
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            if brightness_filter:
+                self.retry_called = True
+                return ("天后", 0.99)
+            return ("3天后", 0.98)
+
+    eng = SpyRetryEngine()
+    votes = [
+        _FrameVote(100, "3天后", 0.98, img, frame_idx=1),
+        _FrameVote(200, "3天后", 0.97, img, frame_idx=2),
+        _FrameVote(300, "天后", 0.86, img, frame_idx=3),
+    ]
+    txt, conf, _ = _choose_majority_vote(votes, eng, cfg)
+    assert txt == "3天后"
+    assert conf == pytest.approx(0.98)
+    assert eng.retry_called is False
+
+    # High-confidence grade prefix ("S级") must not trigger forced retry either
+    eng_grade = SpyRetryEngine()
+    votes_grade = [
+        _FrameVote(100, "S级", 0.96, img, frame_idx=1),
+        _FrameVote(200, "S级", 0.95, img, frame_idx=2),
+    ]
+    txt_g, conf_g, _ = _choose_majority_vote(votes_grade, eng_grade, cfg)
+    assert txt_g == "S级"
+    assert conf_g == pytest.approx(0.96)
+    assert eng_grade.retry_called is False
+
+
+def test_stage2_bounded_stack_splits_three_cues_and_transition_glitch_cleanly():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
+    frame_pts_ms = [i * 40 for i in range(25)]
+
+    # 1) 3-cue span where middle cue sits strictly inside a binary-search interval
+    # (initial probes at 4, 11, 19 hit A, C, C while B occupies frames 6..10)
+    span_three = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
+
+    class ThreeCueEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx <= 5:
+                return ("第一句字幕", 0.98)
+            if fidx <= 10:
+                return ("第二句字幕", 0.98)
+            return ("第三句字幕", 0.98)
+
+    segs_three = recognize_spans_with_voting([span_three], frame_pts_ms, ThreeCueEngine(), cfg)
+    assert [s.text for s in segs_three] == ["第一句字幕", "第二句字幕", "第三句字幕"]
+    assert segs_three[0].start_ms == 0
+    assert abs(segs_three[0].end_ms - frame_pts_ms[6]) <= 40
+    assert segs_three[1].start_ms == segs_three[0].end_ms
+    assert abs(segs_three[1].end_ms - frame_pts_ms[11]) <= 40
+    assert segs_three[2].start_ms == segs_three[1].end_ms
+    assert segs_three[2].end_ms == frame_pts_ms[24]
+
+    # Also test balanced 3-cue span [0..7]=A, [8..15]=B, [16..23]=C
+    span_three_eq = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
+
+    class ThreeCueBalancedEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx <= 7:
+                return ("第一句字幕", 0.98)
+            if fidx <= 15:
+                return ("第二句字幕", 0.98)
+            return ("第三句字幕", 0.98)
+
+    segs_eq = recognize_spans_with_voting([span_three_eq], frame_pts_ms, ThreeCueBalancedEngine(), cfg)
+    assert [s.text for s in segs_eq] == ["第一句字幕", "第二句字幕", "第三句字幕"]
+    assert abs(segs_eq[0].end_ms - frame_pts_ms[8]) <= 40
+    assert abs(segs_eq[1].end_ms - frame_pts_ms[16]) <= 40
+
+    # 2) 2-cue span with 1-frame midpoint glitch at frame 12: [0..11]=A, [12]="乱码", [13..23]=B
+    # Must converge around frame 12 without hallucinating a long glitch cue!
+    span_glitch = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
+
+    class MidGlitchEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx <= 11:
+                return ("我不会放过你的", 0.98)
+            if fidx == 12:
+                return ("乱码", 0.65)
+            return ("我不会放过他的", 0.98)
+
+    segs_glitch = recognize_spans_with_voting([span_glitch], frame_pts_ms, MidGlitchEngine(), cfg)
+    assert [s.text for s in segs_glitch] == ["我不会放过你的", "我不会放过他的"]
+    assert abs(segs_glitch[0].end_ms - frame_pts_ms[12]) <= 40
+    assert abs(segs_glitch[1].start_ms - frame_pts_ms[13]) <= 40
+    assert segs_glitch[1].end_ms == frame_pts_ms[24]
+
+
+def test_stage2_pending_cluster_preserves_repeated_dialogue_across_240ms_gap():
+    cfg = ExtractConfig(
+        conf_threshold=0.85,
+        min_duration_ms=120,
+        merge_gap_ms=160,
+        flash_bridge_max_ms=320,
+    )
+    # 25fps (40ms/frame): span 1 = 0..400ms (frames 0..9), 240ms gap (frames 10..15), span 2 = 640..1040ms (frames 16..25)
+    frame_pts_ms = [i * 40 for i in range(27)]
+    span1 = _make_encoded_span(list(range(0, 10)), frame_pts_ms[0:10], end_ms=frame_pts_ms[10])
+    span2 = _make_encoded_span(list(range(16, 26)), frame_pts_ms[16:26], end_ms=frame_pts_ms[26])
+
+    class RepeatEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            return ("快跑！", 0.98)
+
+    segs = recognize_spans_with_voting([span1, span2], frame_pts_ms, RepeatEngine(), cfg)
+    assert len(segs) == 2
+    assert [(s.start_ms, s.end_ms, s.text) for s in segs] == [
+        (0, 400, "快跑！"),
+        (640, 1040, "快跑！"),
+    ]
+
+    # Clean truncation containment across the same 240ms gap still bridges into 1 segment
+    span1_t = _make_encoded_span(list(range(0, 10)), frame_pts_ms[0:10], end_ms=frame_pts_ms[10])
+    span2_t = _make_encoded_span(list(range(16, 26)), frame_pts_ms[16:26], end_ms=frame_pts_ms[26])
+
+    class TruncEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx < 10:
+                return ("个蕴藏着神秘力量的", 0.98)
+            return ("一个蕴藏着神秘力量的", 0.98)
+
+    segs_t = recognize_spans_with_voting([span1_t, span2_t], frame_pts_ms, TruncEngine(), cfg)
+    assert len(segs_t) == 1
+    assert (segs_t[0].start_ms, segs_t[0].end_ms, segs_t[0].text) == (0, 1040, "一个蕴藏着神秘力量的")
+
+
+def test_short_3char_distinct_dialogue_pairs_are_not_merged():
+    assert _is_strict_same_cue("对不起", "真的对不起", 0.99, 0.99) is False
+    assert _is_strict_same_cue("快走吧", "我们快走吧", 0.99, 0.99) is False
+    # Clean 2-char diff containment on >=4 chars at high conf (>=0.93) also stays distinct
+    assert _is_strict_same_cue("不会放过你", "真的不会放过你", 0.96, 0.95) is False
+    # Lower-confidence glare clipping still clusters
+    assert _is_strict_same_cue("不会放过你", "真的不会放过你", 0.88, 0.96) is True
+
+
+def test_low_conf_boundary_1char_glitch_clusters_and_valid_160ms_cue_survives():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
+
+    # 1) 4-9 char cue with low-conf (0.74) 1-char typo on frame 0 clusters cleanly with [1..10]
+    assert _is_strict_same_cue("战斗开使了", "战斗开始了", 0.74, 0.98) is True
+    assert _is_strict_same_cue("战斗开使了", "战斗开始了", 0.92, 0.98) is False
+
+    # Force frame 0 to be evaluated (n=11, dur=3300ms > 2800ms disables early exit; expansion probes frame 0)
+    pts_long = [i * 300 for i in range(12)]
+    span_glitch = _make_encoded_span(list(range(11)), pts_long[:11], end_ms=pts_long[11])
+
+    class EdgeTypoEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx == 0:
+                return ("战斗开使了", 0.74)
+            return ("战斗开始了", 0.98)
+
+    segs_edge = recognize_spans_with_voting([span_glitch], pts_long, EdgeTypoEngine(), cfg)
+    assert len(segs_edge) == 1
+    assert segs_edge[0].text == "战斗开始了"
+    assert segs_edge[0].start_ms == 0
+    assert segs_edge[0].end_ms == pts_long[11]
+
+    # 2) 1-vote 160ms cue at conf=0.86 >= conf_threshold=0.85 must NOT be dropped by _flush_cluster
+    pts_short = [0, 160]
+    span_160 = _make_encoded_span([0], [0], end_ms=160)
+
+    class SingleVoteEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            return ("太好了", 0.86)
+
+    segs_160 = recognize_spans_with_voting([span_160], pts_short, SingleVoteEngine(), cfg)
+    assert len(segs_160) == 1
+    assert (segs_160[0].start_ms, segs_160[0].end_ms, segs_160[0].text) == (0, 160, "太好了")
+
+
+def test_stage2_subgroups_stop_at_evaluated_none_gap_and_alternating_sandwich_safe():
+    # 1) Alternating [A, B, A, B] must NEVER double-absorb both k=1 and k=2
+    img = _solid_roi(88)
+    eval_alt = [
+        (0, _FrameVote(0, "第一句台词", 0.98, img, frame_idx=0)),
+        (1, _FrameVote(40, "第二句台词", 0.98, img, frame_idx=1)),
+        (2, _FrameVote(80, "第一句台词", 0.98, img, frame_idx=2)),
+        (3, _FrameVote(120, "第二句台词", 0.98, img, frame_idx=3)),
+    ]
+    absorbed = _find_sandwich_noise(eval_alt)
+    assert not ({1, 2}.issubset(absorbed))
+    assert absorbed == {1}
+
+    # 2) sub_groups g_end must stop at evaluated None silence gap instead of stretching to next cue
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
+    frame_pts_ms = [i * 40 for i in range(21)]
+    span_gap = _make_encoded_span(list(range(20)), frame_pts_ms[:20], end_ms=frame_pts_ms[20])
+
+    class SilenceGapEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx <= 5:
+                return ("第一句台词", 0.98)
+            if fidx <= 11:
+                return ("", 0.0)
+            return ("第二句台词", 0.98)
+
+    segs = recognize_spans_with_voting([span_gap], frame_pts_ms, SilenceGapEngine(), cfg)
+    assert [s.text for s in segs] == ["第一句台词", "第二句台词"]
+    assert segs[0].end_ms <= frame_pts_ms[6]
+    assert segs[1].start_ms == frame_pts_ms[12]

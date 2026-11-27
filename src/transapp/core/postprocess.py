@@ -29,6 +29,7 @@ _CJK_FULLWIDTH_PUNCT = (
 _CJK_OR_PUNCT_CLASS = f"{_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}"
 _HAS_CJK_RE = re.compile(rf"[{_CJK_CHARS}]")
 _HANZI_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002ebef]")
+_DIGIT_CHAR_RE = re.compile(r"[0-9\uff10-\uff19]")
 _EDGE_LATIN_NOISE_RE = re.compile(
     r"(?:^[A-Za-z]{1,2}[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff][A-Za-z]{1,2}$)"
 )
@@ -118,10 +119,10 @@ def _has_edge_latin_noise(text: str) -> bool:
     return any(_EDGE_LATIN_NOISE_RE.search(line) for line in text.split("\n"))
 
 
-def _is_clean_hanzi_minimal_pair(
+def _is_clean_minimal_pair(
     prev: _MergedCue, curr: _MergedCue, config: ExtractConfig
 ) -> bool:
-    """True when two clean high-conf cues (>=4 stripped chars) differ by exactly 1 Hanzi char."""
+    """True when two clean high-conf cues (>=4 stripped chars) differ by 1 Hanzi or digit char."""
     if prev.confidence < config.conf_threshold or curr.confidence < config.conf_threshold:
         return False
     if (
@@ -139,7 +140,12 @@ def _is_clean_hanzi_minimal_pair(
     if len(diffs) != 1:
         return False
     ca, cb = diffs[0]
-    return bool(_HANZI_CHAR_RE.fullmatch(ca) and _HANZI_CHAR_RE.fullmatch(cb))
+    both_hanzi = bool(_HANZI_CHAR_RE.fullmatch(ca) and _HANZI_CHAR_RE.fullmatch(cb))
+    both_digits = bool(_DIGIT_CHAR_RE.fullmatch(ca) and _DIGIT_CHAR_RE.fullmatch(cb))
+    return both_hanzi or both_digits
+
+
+_is_clean_hanzi_minimal_pair = _is_clean_minimal_pair
 
 
 def _is_strict_containment(a: str, b: str) -> bool:
@@ -162,7 +168,7 @@ def _should_merge(prev: _MergedCue, curr: _MergedCue, config: ExtractConfig) -> 
         return _strip_for_similarity(prev.text) == _strip_for_similarity(curr.text)
 
     if gap_ms <= config.merge_gap_ms:
-        if _is_clean_hanzi_minimal_pair(prev, curr, config):
+        if _is_clean_minimal_pair(prev, curr, config):
             return False
         if text_similarity(prev.text, curr.text) >= config.merge_similarity:
             return True
@@ -199,11 +205,13 @@ def _pick_merged_winner(
     if _is_strict_containment(prev.text, curr.text):
         prev_clean = not _has_suspicious_noise(prev.text)
         curr_clean = not _has_suspicious_noise(curr.text)
-        if len(curr.text) > len(prev.text) and curr_clean:
+        prev_stripped_len = len(_strip_for_similarity(prev.text))
+        curr_stripped_len = len(_strip_for_similarity(curr.text))
+        if curr_stripped_len > prev_stripped_len and curr_clean:
             min_ok = max(config.conf_threshold - 0.05, prev.confidence - 0.08)
             if curr.confidence >= min_ok:
                 return (curr.text, curr.confidence, curr.thumbnail_png)
-        elif len(prev.text) > len(curr.text) and prev_clean:
+        elif prev_stripped_len > curr_stripped_len and prev_clean:
             min_ok = max(config.conf_threshold - 0.05, curr.confidence - 0.08)
             if prev.confidence >= min_ok:
                 return (prev.text, prev.confidence, prev.thumbnail_png)
@@ -253,6 +261,24 @@ def _build_flag_info(cue: _MergedCue, config: ExtractConfig) -> tuple[bool, str]
     return (bool(reasons), "; ".join(reasons))
 
 
+def _merge_adjacent_cues(cues: list[_MergedCue], config: ExtractConfig) -> list[_MergedCue]:
+    if not cues:
+        return []
+    merged: list[_MergedCue] = [cues[0]]
+    for curr in cues[1:]:
+        prev = merged[-1]
+        if _should_merge(prev, curr, config):
+            win_text, win_conf, win_thumb = _pick_merged_winner(prev, curr, config)
+            prev.text = win_text
+            prev.thumbnail_png = win_thumb
+            prev.confidence = win_conf
+            prev.start_ms = min(prev.start_ms, curr.start_ms)
+            prev.end_ms = max(prev.end_ms, curr.end_ms)
+        else:
+            merged.append(curr)
+    return merged
+
+
 def postprocess_segments(
     segments: list[OcrSegment],
     config: ExtractConfig,
@@ -278,18 +304,7 @@ def postprocess_segments(
     if not kept:
         return []
 
-    merged: list[_MergedCue] = [kept[0]]
-    for curr in kept[1:]:
-        prev = merged[-1]
-        if _should_merge(prev, curr, config):
-            win_text, win_conf, win_thumb = _pick_merged_winner(prev, curr, config)
-            prev.text = win_text
-            prev.thumbnail_png = win_thumb
-            prev.confidence = win_conf
-            prev.start_ms = min(prev.start_ms, curr.start_ms)
-            prev.end_ms = max(prev.end_ms, curr.end_ms)
-        else:
-            merged.append(curr)
+    merged = _merge_adjacent_cues(kept, config)
 
     if duration_ms is not None and duration_ms > 0:
         clamped: list[_MergedCue] = []
@@ -311,6 +326,9 @@ def postprocess_segments(
 
     if config.filter_non_cjk_low_conf:
         merged = [cue for cue in merged if not _is_ghost_cue(cue, config)]
+
+    # Re-merge flanking cues once intervening short/ghost artifacts have been removed.
+    merged = _merge_adjacent_cues(merged, config)
 
     # Clamp overlaps AFTER duration and ghost filtering so discarded ghosts cannot truncate valid cues.
     non_overlapping: list[_MergedCue] = []

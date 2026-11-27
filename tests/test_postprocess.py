@@ -357,3 +357,78 @@ def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duratio
     ]
 
 
+def test_postprocess_remerges_identical_cues_after_intervening_40ms_ghost_removed():
+    cfg = ExtractConfig(
+        min_duration_ms=120,
+        merge_gap_ms=160,
+        flash_bridge_max_ms=320,
+        conf_threshold=0.85,
+        filter_non_cjk_low_conf=True,
+    )
+    segs = [
+        OcrSegment(1000, 1500, "你好吗", 0.98, b"p1"),
+        OcrSegment(1500, 1540, "|", 0.60, b"ghost"),
+        OcrSegment(1540, 2500, "你好吗", 0.97, b"p2"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert len(events) == 1
+    assert (events[0].index, events[0].start_ms, events[0].end_ms, events[0].text) == (
+        1,
+        1000,
+        2500,
+        "你好吗",
+    )
+
+
+def test_postprocess_preserves_numeric_countdown_minimal_pairs():
+    cfg = ExtractConfig(
+        min_duration_ms=120,
+        merge_gap_ms=160,
+        flash_bridge_max_ms=320,
+        merge_similarity=0.85,
+        conf_threshold=0.85,
+    )
+    segs = [
+        OcrSegment(0, 1000, "距离爆炸还有3秒", 0.98, b"t3"),
+        OcrSegment(1000, 2000, "距离爆炸还有2秒", 0.98, b"t2"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert [(e.index, e.start_ms, e.end_ms, e.text) for e in events] == [
+        (1, 0, 1000, "距离爆炸还有3秒"),
+        (2, 1000, 2000, "距离爆炸还有2秒"),
+    ]
+
+
+def test_pick_merged_winner_uses_stripped_length_for_containment():
+    cfg = ExtractConfig(
+        min_duration_ms=120,
+        merge_gap_ms=160,
+        flash_bridge_max_ms=320,
+        merge_similarity=0.85,
+        conf_threshold=0.85,
+    )
+    # Truncated text has extra punctuation making raw len("个神秘力量！！！") == 8 > len("一个神秘力量") == 6;
+    # stripped length (6 > 5) must pick the fuller clean text even when truncated has slightly higher conf!
+    segs = [
+        OcrSegment(1000, 1500, "个神秘力量！！！", 0.96, b"punct_trunc"),
+        OcrSegment(1580, 2200, "一个神秘力量", 0.95, b"full"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert len(events) == 1
+    assert events[0].text == "一个神秘力量"
+    assert events[0].thumbnail_png == b"full"
+    assert events[0].confidence == pytest.approx(0.95)
+
+    # Also verify reverse order ("一个神秘力量" 0.95 followed by "个神秘力量！！！" 0.94)
+    segs_rev = [
+        OcrSegment(1000, 1500, "一个神秘力量", 0.95, b"full"),
+        OcrSegment(1580, 2200, "个神秘力量！！！", 0.94, b"punct_trunc"),
+    ]
+    events_rev = postprocess_segments(segs_rev, cfg)
+    assert len(events_rev) == 1
+    assert events_rev[0].text == "一个神秘力量"
+    assert events_rev[0].thumbnail_png == b"full"
+    assert events_rev[0].confidence == pytest.approx(0.95)
+
+
+

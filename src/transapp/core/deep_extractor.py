@@ -33,12 +33,17 @@ _ROI_GRAY_H = 64
 _PROGRESS_INTERVAL_SEC = 0.08
 _PROGRESS_UNTHROTTLED_FRAMES = 16
 _HANZI_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_DIGIT_CHAR_RE = re.compile(r"[0-9\uff10-\uff19]")
 _EDGE_NOISE_RE = re.compile(
-    r"(?:^[A-Za-z0-9#|/\\_^~`]{1,3}[\u4e00-\u9fff]|[\u4e00-\u9fff][A-Za-z0-9#|/\\_^~`]{1,3}$)"
+    r"(?:^[#|/\\_^~`]{1,3}[\u4e00-\u9fff]|[\u4e00-\u9fff][#|/\\_^~`]{1,3}$)"
 )
-_EDGE_NOISE_PREFIX_RE = re.compile(r"^[A-Za-z0-9#|/\\_^~`]{1,3}(?=[\u4e00-\u9fff])")
-_EDGE_NOISE_SUFFIX_RE = re.compile(r"(?<=[\u4e00-\u9fff])[A-Za-z0-9#|/\\_^~`]{1,3}$")
-_EDGE_LATIN_NOISE_RE = _EDGE_NOISE_RE
+_EDGE_NOISE_PREFIX_RE = re.compile(r"^[#|/\\_^~`]{1,3}(?=[\u4e00-\u9fff])")
+_EDGE_NOISE_SUFFIX_RE = re.compile(r"(?<=[\u4e00-\u9fff])[#|/\\_^~`]{1,3}$")
+_LOW_CONF_ASCII_EDGE_RE = re.compile(
+    r"(?:^[A-Za-z]{1,2}[\u4e00-\u9fff]|[\u4e00-\u9fff][A-Za-z]{1,2}$)"
+)
+_LOW_CONF_ASCII_EDGE_PREFIX_RE = re.compile(r"^[A-Za-z]{1,2}(?=[\u4e00-\u9fff])")
+_LOW_CONF_ASCII_EDGE_SUFFIX_RE = re.compile(r"(?<=[\u4e00-\u9fff])[A-Za-z]{1,2}$")
 
 
 @dataclass(slots=True)
@@ -420,13 +425,46 @@ def _strip_edge_noise(text: str) -> str:
     return stripped
 
 
+def _has_low_conf_ascii_edge_noise(
+    text: str, conf: float, conf_threshold: float = 0.85
+) -> bool:
+    """True only when confidence is below threshold and stray ASCII letters touch Hanzi at edges."""
+    return conf < conf_threshold and bool(_LOW_CONF_ASCII_EDGE_RE.search(text))
+
+
+def _strip_low_conf_ascii_edge_noise(text: str) -> str:
+    stripped = _LOW_CONF_ASCII_EDGE_PREFIX_RE.sub("", text)
+    stripped = _LOW_CONF_ASCII_EDGE_SUFFIX_RE.sub("", stripped)
+    return stripped
+
+
+def _is_clean_truncation_pair(a: str, b: str) -> bool:
+    """True when two clean cues form a strict prefix/suffix truncation pair (not identical)."""
+    if (
+        _has_edge_noise(a)
+        or _has_edge_noise(b)
+        or _has_suspicious_noise(a)
+        or _has_suspicious_noise(b)
+    ):
+        return False
+    sa = _strip_for_similarity(a)
+    sb = _strip_for_similarity(b)
+    if not sa or not sb or sa == sb:
+        return False
+    short, long_ = (sa, sb) if len(sa) < len(sb) else (sb, sa)
+    diff = len(long_) - len(short)
+    if len(short) < 4 or not (1 <= diff <= 2):
+        return False
+    return long_.startswith(short) or long_.endswith(short)
+
+
 def _is_strict_same_cue(
     a: str,
     b: str,
     conf_a: float = 1.0,
     conf_b: float = 1.0,
 ) -> bool:
-    """Strict cue equivalence that protects 1-char minimal pairs from blind merging."""
+    """Strict cue equivalence that protects 1-char minimal pairs and short distinct lines."""
     if a == b:
         return True
     if text_similarity(a, b) == 1.0:
@@ -441,26 +479,43 @@ def _is_strict_same_cue(
     if sca == scb:
         return True
 
-    # Strict prefix/suffix containment (diff <= 2 chars, len(short) >= 3)
+    both_clean = not (
+        _has_edge_noise(a)
+        or _has_edge_noise(b)
+        or _has_suspicious_noise(a)
+        or _has_suspicious_noise(b)
+    )
+
+    # Strict prefix/suffix containment (diff 1-2 chars, len(short) >= 4).
+    # Reject 2-char diff when both cues are clean and high-confidence (>= 0.93).
     short, long_ = (sca, scb) if len(sca) <= len(scb) else (scb, sca)
-    if len(short) >= 3 and 1 <= (len(long_) - len(short)) <= 2:
+    diff_len = len(long_) - len(short)
+    if len(short) >= 4 and 1 <= diff_len <= 2:
         if long_.startswith(short) or long_.endswith(short):
+            if diff_len == 2 and both_clean and min(conf_a, conf_b) >= 0.93:
+                return False
             return True
 
-    # Protect same-length 1-char minimal pairs on >= 4 chars (e.g. "我不会放过你的" vs "我不会放过他的")
+    # Protect same-length 1-char minimal pairs on >= 4 chars (Hanzi or digits),
+    # while allowing low-confidence (< 0.85) boundary typos on 4..9 char cues to cluster.
     is_same_len_one_char_sub = (
         len(sca) == len(scb) and sum(1 for x, y in zip(sca, scb) if x != y) == 1
     )
     if is_same_len_one_char_sub and len(sca) >= 4:
         diff_idx = next(i for i, (x, y) in enumerate(zip(sca, scb)) if x != y)
-        both_hanzi = bool(_HANZI_RE.match(sca[diff_idx]) and _HANZI_RE.match(scb[diff_idx]))
-        both_clean = not (
-            _has_edge_noise(a)
-            or _has_edge_noise(b)
-            or _has_suspicious_noise(a)
-            or _has_suspicious_noise(b)
-        )
-        if len(sca) < 10 or (both_hanzi and both_clean and min(conf_a, conf_b) >= 0.90):
+        ch_a, ch_b = sca[diff_idx], scb[diff_idx]
+        both_hanzi = bool(_HANZI_RE.match(ch_a) and _HANZI_RE.match(ch_b))
+        both_digits = bool(_DIGIT_CHAR_RE.match(ch_a) and _DIGIT_CHAR_RE.match(ch_b))
+        min_conf = min(conf_a, conf_b)
+        if len(sca) < 10:
+            if both_digits:
+                return False
+            if both_clean and min_conf >= 0.85:
+                return False
+            return True
+        if both_digits and both_clean and min_conf >= 0.85:
+            return False
+        if (both_hanzi or both_digits) and both_clean and min_conf >= 0.90:
             return False
 
     if min(len(sca), len(scb)) >= 10:
@@ -471,6 +526,7 @@ def _is_strict_same_cue(
 
 def _score_vote_candidates(
     votes: list[_FrameVote],
+    conf_threshold: float = 0.85,
 ) -> tuple[
     Counter[str],
     dict[str, list[float]],
@@ -478,7 +534,7 @@ def _score_vote_candidates(
     dict[str, float],
     Counter[str],
 ]:
-    """Tally votes with edge-noise weight pooling onto matching clean candidates."""
+    """Tally votes with symbol & low-conf ASCII edge-noise weight pooling onto clean candidates."""
     counts: Counter[str] = Counter()
     confs: dict[str, list[float]] = defaultdict(list)
     best_vote_for_text: dict[str, _FrameVote] = {}
@@ -493,10 +549,20 @@ def _score_vote_candidates(
     pooled_bonus: dict[str, float] = defaultdict(float)
     pooled_counts: Counter[str] = Counter(counts)
     for txt, cnt in counts.items():
-        if not _has_edge_noise(txt):
+        stripped = ""
+        if _has_edge_noise(txt):
+            stripped = _strip_edge_noise(txt)
+        elif _has_low_conf_ascii_edge_noise(txt, max(confs[txt]), conf_threshold):
+            stripped = _strip_low_conf_ascii_edge_noise(txt)
+        else:
             continue
-        stripped = _strip_edge_noise(txt)
-        if stripped and stripped != txt and stripped in counts and not _has_edge_noise(stripped):
+        if (
+            stripped
+            and stripped != txt
+            and stripped in counts
+            and not _has_edge_noise(stripped)
+            and not _has_low_conf_ascii_edge_noise(stripped, max(confs[stripped]), conf_threshold)
+        ):
             pooled_bonus[stripped] += 0.85 * sum(confs[txt])
             pooled_counts[stripped] += cnt
 
@@ -508,28 +574,46 @@ def _rank_candidate_key(
     confs: dict[str, list[float]],
     pooled_bonus: dict[str, float],
     pooled_counts: Counter[str],
+    conf_threshold: float = 0.85,
 ) -> tuple[float, int, int, float, int]:
-    is_edge_noisy = _has_edge_noise(txt)
+    max_c = max(confs[txt])
+    is_edge_noisy = _has_edge_noise(txt) or _has_low_conf_ascii_edge_noise(
+        txt, max_c, conf_threshold
+    )
     total_w = (sum(confs[txt]) + pooled_bonus[txt]) * (0.72 if is_edge_noisy else 1.0)
     clean_bonus = 0 if (is_edge_noisy or _has_suspicious_noise(txt)) else 1
     avg_c = sum(confs[txt]) / len(confs[txt])
     return (round(total_w, 4), clean_bonus, pooled_counts[txt], round(avg_c, 3), len(txt))
 
 
-def _group_representative_vote(votes: list[_FrameVote]) -> _FrameVote:
+def _group_representative_vote(
+    votes: list[_FrameVote],
+    conf_threshold: float = 0.85,
+) -> _FrameVote:
     """Select the cleanest majority representative vote of a group without running OCR retries."""
-    counts, confs, best_vote_for_text, pooled_bonus, pooled_counts = _score_vote_candidates(votes)
+    counts, confs, best_vote_for_text, pooled_bonus, pooled_counts = _score_vote_candidates(
+        votes, conf_threshold
+    )
     winner = max(
         counts.keys(),
-        key=lambda t: _rank_candidate_key(t, confs, pooled_bonus, pooled_counts),
+        key=lambda t: _rank_candidate_key(
+            t, confs, pooled_bonus, pooled_counts, conf_threshold
+        ),
     )
     return best_vote_for_text[winner]
 
 
-def _char_level_consensus(votes: list[_FrameVote]) -> tuple[str, _FrameVote] | None:
+def _char_level_consensus(
+    votes: list[_FrameVote],
+    conf_threshold: float = 0.85,
+) -> tuple[str, _FrameVote] | None:
     """Reconstruct character-level consensus via SequenceMatcher alignment when no candidate repeats."""
     clean_votes = [
-        v for v in votes if not _has_edge_noise(v.text) and not _has_suspicious_noise(v.text)
+        v
+        for v in votes
+        if not _has_edge_noise(v.text)
+        and not _has_suspicious_noise(v.text)
+        and not _has_low_conf_ascii_edge_noise(v.text, v.conf, conf_threshold)
     ]
     pivot_pool = clean_votes if clean_votes else votes
     pivot_vote = max(pivot_pool, key=lambda v: (v.conf, len(v.text)))
@@ -543,7 +627,11 @@ def _char_level_consensus(votes: list[_FrameVote]) -> tuple[str, _FrameVote] | N
     total_weight = 0.0
 
     for v in votes:
-        is_noisy = _has_edge_noise(v.text) or _has_suspicious_noise(v.text)
+        is_noisy = (
+            _has_edge_noise(v.text)
+            or _has_suspicious_noise(v.text)
+            or _has_low_conf_ascii_edge_noise(v.text, v.conf, conf_threshold)
+        )
         w = max(0.05, float(v.conf)) * (0.72 if is_noisy else 1.0)
         total_weight += w
         sm = difflib.SequenceMatcher(None, pivot, v.text, autojunk=False)
@@ -601,17 +689,21 @@ def _choose_majority_vote(
     ocr_engine: OcrEngine,
     config: ExtractConfig,
 ) -> tuple[str, float, np.ndarray]:
-    counts, confs, best_vote_for_text, pooled_bonus, pooled_counts = _score_vote_candidates(votes)
+    counts, confs, best_vote_for_text, pooled_bonus, pooled_counts = _score_vote_candidates(
+        votes, config.conf_threshold
+    )
 
     winner = max(
         counts.keys(),
-        key=lambda t: _rank_candidate_key(t, confs, pooled_bonus, pooled_counts),
+        key=lambda t: _rank_candidate_key(
+            t, confs, pooled_bonus, pooled_counts, config.conf_threshold
+        ),
     )
     win_vote = best_vote_for_text[winner]
 
     # Character-level alignment consensus when >= 3 votes have no repeated/pooled candidate
     if len(votes) >= 3 and max(pooled_counts.values()) < 2:
-        cons = _char_level_consensus(votes)
+        cons = _char_level_consensus(votes, config.conf_threshold)
         if cons is not None:
             cons_text, pivot_vote = cons
             if cons_text and cons_text != winner:
@@ -621,7 +713,12 @@ def _choose_majority_vote(
     # Prefer a clean fuller Hanzi containment candidate when strongly supported
     best_fuller: tuple[tuple[float, int, int], str] | None = None
     for cand, cnt in counts.items():
-        if cand == winner or _has_edge_noise(cand) or _has_suspicious_noise(cand):
+        if (
+            cand == winner
+            or _has_edge_noise(cand)
+            or _has_suspicious_noise(cand)
+            or _has_low_conf_ascii_edge_noise(cand, max(confs[cand]), config.conf_threshold)
+        ):
             continue
         if len(cand) > len(winner) and (cand.startswith(winner) or cand.endswith(winner)):
             added = cand[: len(cand) - len(winner)] if cand.endswith(winner) else cand[len(winner) :]
@@ -638,7 +735,12 @@ def _choose_majority_vote(
     win_conf, win_bgr = win_vote.conf, win_vote.bgr
 
     def _needs_retry(txt: str, conf: float) -> bool:
-        return conf < config.conf_threshold or _has_edge_noise(txt) or _has_suspicious_noise(txt)
+        return (
+            conf < config.conf_threshold
+            or _has_edge_noise(txt)
+            or _has_suspicious_noise(txt)
+            or _has_low_conf_ascii_edge_noise(txt, conf, config.conf_threshold)
+        )
 
     # Selective brightness-filtered retry on up to 2 distinct frames when noisy or low-confidence
     if _needs_retry(winner, win_conf):
@@ -674,9 +776,23 @@ def _choose_majority_vote(
             retry_raw, retry_conf = ocr_engine.recognize_roi(rv.bgr, brightness_filter=True)
             retry_text = normalize_cjk_text(retry_raw)
             if retry_text and _HANZI_RE.search(retry_text):
-                winner_noisy = _has_edge_noise(winner) or _has_suspicious_noise(winner)
-                retry_noisy = _has_edge_noise(retry_text) or _has_suspicious_noise(retry_text)
-                clean_base_len = len(_strip_edge_noise(winner)) or len(winner)
+                winner_low_conf_ascii = _has_low_conf_ascii_edge_noise(
+                    winner, win_conf, config.conf_threshold
+                )
+                winner_noisy = (
+                    _has_edge_noise(winner)
+                    or _has_suspicious_noise(winner)
+                    or winner_low_conf_ascii
+                )
+                retry_noisy = (
+                    _has_edge_noise(retry_text)
+                    or _has_suspicious_noise(retry_text)
+                    or _has_low_conf_ascii_edge_noise(retry_text, retry_conf, config.conf_threshold)
+                )
+                clean_base = _strip_edge_noise(winner)
+                if winner_low_conf_ascii:
+                    clean_base = _strip_low_conf_ascii_edge_noise(clean_base)
+                clean_base_len = len(clean_base) or len(winner)
                 cleaned_edge = (
                     winner_noisy
                     and not retry_noisy
@@ -1003,6 +1119,8 @@ def _find_sandwich_noise(evaluated: list[tuple[int, _FrameVote]]) -> set[int]:
     """Identify isolated middle noise votes sandwiched between two identical-cue votes."""
     absorbed: set[int] = set()
     for k in range(1, len(evaluated) - 1):
+        if (k - 1) in absorbed:
+            continue
         v_prev = evaluated[k - 1][1]
         v_curr = evaluated[k][1]
         v_next = evaluated[k + 1][1]
@@ -1122,7 +1240,7 @@ def recognize_spans_with_voting(
         dur_cl = cl.end_ms - cl.start_ms
         stripped = _strip_for_similarity(win_text)
         keep = not (
-            (len(cl.votes) == 1 and dur_cl < max(200, config.min_duration_ms) and win_conf < 0.88)
+            (len(cl.votes) == 1 and dur_cl < config.min_duration_ms and win_conf < config.conf_threshold)
             or (len(cl.votes) <= 2 and len(stripped) <= 2 and win_conf < 0.72)
         )
         if keep:
@@ -1202,6 +1320,9 @@ def recognize_spans_with_voting(
                 and dur <= 2800
                 and not _has_edge_noise(init_votes[0].text)
                 and not _has_suspicious_noise(init_votes[0].text)
+                and not _has_low_conf_ascii_edge_noise(
+                    init_votes[0].text, min(v.conf for v in init_votes), config.conf_threshold
+                )
             )
             empty_early_exit = n >= 4 and len(initial_probes) >= 2 and len(init_votes) == 0 and dur <= 1200
 
@@ -1215,48 +1336,67 @@ def recognize_spans_with_voting(
                 absorbed = _find_sandwich_noise(evaluated)
                 anchors = [(idx, v) for k, (idx, v) in enumerate(evaluated) if k not in absorbed]
 
-                # Targeted binary-search safety split on disagreeing adjacent evaluated samples
-                for pair_idx in range(len(anchors) - 1):
-                    lo_idx, lo_vote = anchors[pair_idx]
-                    hi_idx, hi_vote = anchors[pair_idx + 1]
+                # Bounded-stack binary-search split on disagreeing adjacent evaluated samples
+                pending_intervals: list[tuple[int, _FrameVote, int, _FrameVote]] = []
+                for pair_idx in range(len(anchors) - 1, 0, -1):
+                    lo_idx, lo_vote = anchors[pair_idx - 1]
+                    hi_idx, hi_vote = anchors[pair_idx]
+                    if hi_idx - lo_idx > 1 and not _is_strict_same_cue(
+                        lo_vote.text, hi_vote.text, lo_vote.conf, hi_vote.conf
+                    ):
+                        pending_intervals.append((lo_idx, lo_vote, hi_idx, hi_vote))
+
+                max_extra_probes = 16
+                extra_probes_used = 0
+                while pending_intervals and extra_probes_used < max_extra_probes:
+                    lo_idx, lo_vote, hi_idx, hi_vote = pending_intervals.pop()
                     if hi_idx - lo_idx <= 1:
                         continue
                     if _is_strict_same_cue(lo_vote.text, hi_vote.text, lo_vote.conf, hi_vote.conf):
                         continue
-                    for _ in range(5):
-                        if hi_idx - lo_idx <= 1:
-                            break
-                        mid = (lo_idx + hi_idx) // 2
-                        probe_idx = mid
-                        mid_vote = eval_sample(probe_idx)
-                        if mid_vote is None:
-                            # Probe expanding offsets -1, +1, -2, +2, ... inside (lo_idx, hi_idx)
-                            max_offset = max(mid - lo_idx - 1, hi_idx - mid - 1)
-                            for offset in range(1, max_offset + 1):
-                                for cand in (mid - offset, mid + offset):
-                                    if lo_idx < cand < hi_idx:
-                                        if cand in eval_cache and eval_cache[cand] is None:
-                                            continue
-                                        cand_vote = eval_sample(cand)
-                                        if cand_vote is not None:
-                                            probe_idx = cand
-                                            mid_vote = cand_vote
-                                            break
-                                if mid_vote is not None:
-                                    break
-                            if mid_vote is None:
-                                break
 
-                        if _is_strict_same_cue(
-                            lo_vote.text, mid_vote.text, lo_vote.conf, mid_vote.conf
-                        ):
-                            lo_idx, lo_vote = probe_idx, mid_vote
-                        elif _is_strict_same_cue(
-                            mid_vote.text, hi_vote.text, mid_vote.conf, hi_vote.conf
-                        ):
-                            hi_idx, hi_vote = probe_idx, mid_vote
-                        else:
-                            break
+                    mid = (lo_idx + hi_idx) // 2
+                    probe_idx = mid
+                    if probe_idx not in eval_cache:
+                        extra_probes_used += 1
+                    mid_vote = eval_sample(probe_idx)
+                    if mid_vote is None:
+                        # Probe expanding offsets -1, +1, -2, +2, ... inside (lo_idx, hi_idx)
+                        max_offset = max(mid - lo_idx - 1, hi_idx - mid - 1)
+                        for offset in range(1, max_offset + 1):
+                            for cand in (mid - offset, mid + offset):
+                                if extra_probes_used >= max_extra_probes:
+                                    break
+                                if lo_idx < cand < hi_idx:
+                                    if cand in eval_cache and eval_cache[cand] is None:
+                                        continue
+                                    if cand not in eval_cache:
+                                        extra_probes_used += 1
+                                    cand_vote = eval_sample(cand)
+                                    if cand_vote is not None:
+                                        probe_idx = cand
+                                        mid_vote = cand_vote
+                                        break
+                            if mid_vote is not None or extra_probes_used >= max_extra_probes:
+                                break
+                        if mid_vote is None:
+                            continue
+
+                    if _is_strict_same_cue(
+                        lo_vote.text, mid_vote.text, lo_vote.conf, mid_vote.conf
+                    ):
+                        if hi_idx - probe_idx > 1:
+                            pending_intervals.append((probe_idx, mid_vote, hi_idx, hi_vote))
+                    elif _is_strict_same_cue(
+                        mid_vote.text, hi_vote.text, mid_vote.conf, hi_vote.conf
+                    ):
+                        if probe_idx - lo_idx > 1:
+                            pending_intervals.append((lo_idx, lo_vote, probe_idx, mid_vote))
+                    else:
+                        if hi_idx - probe_idx > 1:
+                            pending_intervals.append((probe_idx, mid_vote, hi_idx, hi_vote))
+                        if probe_idx - lo_idx > 1:
+                            pending_intervals.append((lo_idx, lo_vote, probe_idx, mid_vote))
 
                 evaluated = sorted((idx, v) for idx, v in eval_cache.items() if v is not None)
                 absorbed = _find_sandwich_noise(evaluated)
@@ -1269,7 +1409,17 @@ def recognize_spans_with_voting(
                     idx_k, v_k = evaluated[k]
                     if _is_strict_same_cue(anchor_vote.text, v_k.text, anchor_vote.conf, v_k.conf):
                         sub_groups[-1].append((idx_k, v_k))
-                        if not _has_edge_noise(v_k.text) or _has_edge_noise(anchor_vote.text):
+                        v_k_noisy = _has_edge_noise(v_k.text) or _has_low_conf_ascii_edge_noise(
+                            v_k.text, v_k.conf, config.conf_threshold
+                        )
+                        anchor_noisy = _has_edge_noise(
+                            anchor_vote.text
+                        ) or _has_low_conf_ascii_edge_noise(
+                            anchor_vote.text, anchor_vote.conf, config.conf_threshold
+                        )
+                        if (not v_k_noisy and anchor_noisy) or (
+                            not v_k_noisy and v_k.conf >= anchor_vote.conf
+                        ):
                             anchor_vote = v_k
                     else:
                         sub_groups.append([(idx_k, v_k)])
@@ -1291,21 +1441,43 @@ def recognize_spans_with_voting(
                     if g_idx == len(sub_groups) - 1:
                         g_end = max(g_start + 1, span.end_ms)
                     else:
-                        next_first = sub_groups[g_idx + 1][0][1]
+                        last_sample_idx = grp_items[-1][0]
+                        next_sample_idx, next_first = sub_groups[g_idx + 1][0]
                         if 0 <= next_first.frame_idx < total_frames:
                             next_start_ms = frame_pts_ms[next_first.frame_idx]
                         else:
                             next_start_ms = next_first.pts_ms
+                        none_idxs = [
+                            idx
+                            for idx, vote in eval_cache.items()
+                            if vote is None and last_sample_idx < idx < next_sample_idx
+                        ]
+                        if none_idxs:
+                            first_none_sample = samples[min(none_idxs)]
+                            if 0 <= first_none_sample.frame_idx < total_frames:
+                                none_pts_ms = frame_pts_ms[first_none_sample.frame_idx]
+                            else:
+                                none_pts_ms = first_none_sample.pts_ms
+                            next_start_ms = min(next_start_ms, none_pts_ms)
                         g_end = max(g_start + 1, next_start_ms)
                     prev_g_end = g_end
 
-                    grp_rep = _group_representative_vote(grp_votes)
+                    grp_rep = _group_representative_vote(grp_votes, config.conf_threshold)
                     if pending_cluster is not None:
                         gap_ms = g_start - pending_cluster.end_ms
-                        prev_rep = _group_representative_vote(pending_cluster.votes)
-                        if gap_ms <= config.flash_bridge_max_ms and _is_strict_same_cue(
-                            prev_rep.text, grp_rep.text, prev_rep.conf, grp_rep.conf
-                        ):
+                        prev_rep = _group_representative_vote(
+                            pending_cluster.votes, config.conf_threshold
+                        )
+                        should_merge_cluster = False
+                        if gap_ms <= config.merge_gap_ms:
+                            should_merge_cluster = _is_strict_same_cue(
+                                prev_rep.text, grp_rep.text, prev_rep.conf, grp_rep.conf
+                            )
+                        elif gap_ms <= config.flash_bridge_max_ms:
+                            should_merge_cluster = _is_clean_truncation_pair(
+                                prev_rep.text, grp_rep.text
+                            )
+                        if should_merge_cluster:
                             pending_cluster.end_ms = max(pending_cluster.end_ms, g_end)
                             pending_cluster.votes.extend(grp_votes)
                             continue
