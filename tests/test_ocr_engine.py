@@ -324,3 +324,130 @@ def test_group_boxes_drops_detached_low_conf_non_hanzi_noise_and_keeps_grid_mapp
     assert len(mapped[0]) == 1
     assert mapped[1] == []
     assert len(mapped[2]) == 1
+
+
+def test_det_mobile_params_and_batch_size(monkeypatch):
+    import onnxruntime
+    import rapidocr
+    from transapp.core.ocr_engine import _build_det_mobile_params
+
+    cpu_params = _build_det_mobile_params(use_dml=False)
+    assert cpu_params["Det.box_thresh"] == pytest.approx(0.55)
+    assert cpu_params["Det.thresh"] == pytest.approx(0.30)
+    assert cpu_params["Det.use_dilation"] is True
+    assert cpu_params["Det.score_mode"] == "fast"
+    assert "EngineConfig.onnxruntime.use_dml" not in cpu_params
+
+    dml_params = _build_det_mobile_params(use_dml=True)
+    assert dml_params["Det.box_thresh"] == pytest.approx(0.55)
+    assert dml_params["Det.thresh"] == pytest.approx(0.30)
+    assert dml_params["Det.use_dilation"] is True
+    assert dml_params["Det.score_mode"] == "fast"
+    assert dml_params["EngineConfig.onnxruntime.use_dml"] is True
+
+    assert OcrEngine(provider="directml").det_batch_size == 16
+    assert OcrEngine(provider="cpu").det_batch_size == 8
+
+    # When DirectML falls back to CPU on Det init, det_batch_size drops to 8,
+    # and a fake RapidOCR without _load_det_model falls back to per-ROI det_engine(roi) calls.
+    seen_shapes: list[tuple[int, ...]] = []
+
+    class FakePerRoiRapidOCR:
+        def __init__(self, params=None):
+            self.params = params or {}
+
+        def __call__(self, img: np.ndarray):
+            seen_shapes.append(img.shape)
+
+            class _Out:
+                boxes = np.array(
+                    [[[20.0, 10.0], [180.0, 10.0], [180.0, 40.0], [20.0, 40.0]]],
+                    dtype=np.float32,
+                )
+
+            return _Out()
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", FakePerRoiRapidOCR)
+    monkeypatch.setattr(
+        onnxruntime,
+        "get_available_providers",
+        lambda: ["CPUExecutionProvider"],
+    )
+    fallback_engine = OcrEngine(provider="directml")
+    assert fallback_engine.det_batch_size == 16
+    rois = [_make_bgr(64, 320), _make_bgr(64, 320)]
+    out = fallback_engine.detect_grid_batch(rois)
+    assert fallback_engine.det_batch_size == 8
+    assert seen_shapes == [(64, 320, 3), (64, 320, 3)]
+    assert len(out) == 2
+    assert len(out[0]) == 1 and len(out[1]) == 1
+
+
+def test_detect_batch_4d_native_tensor_and_empty_map_short_circuit():
+    dark_roi = _load_bgr(FIXTURES_DIR / "sample_dark_bg.png")
+    bright_roi = _load_bgr(FIXTURES_DIR / "sample_bright_bg.png")
+    # Bright colored blank anime ROI (orange BGR) that previously triggered black-grid edge false positives
+    blank_bright_orange = _make_bgr(dark_roi.shape[0], dark_roi.shape[1], color=(40, 165, 255))
+
+    engine = OcrEngine(provider="cpu")
+    det_engine = engine._ensure_det_engine()
+    det_model = det_engine._load_det_model()
+
+    session_shapes: list[tuple[int, ...]] = []
+    orig_session = det_model.session
+
+    def spy_session(batch_tensor: np.ndarray) -> np.ndarray:
+        session_shapes.append(tuple(batch_tensor.shape))
+        return orig_session(batch_tensor)
+
+    postprocess_calls = 0
+    orig_postprocess = det_model.postprocess_op
+
+    def spy_postprocess(pred: np.ndarray, ori_shape: tuple[int, int]):
+        nonlocal postprocess_calls
+        postprocess_calls += 1
+        return orig_postprocess(pred, ori_shape)
+
+    det_model.session = spy_session
+    det_model.postprocess_op = spy_postprocess
+
+    results = engine.detect_grid_batch([dark_roi, blank_bright_orange, bright_roi])
+
+    assert len(results) == 3
+    assert len(results[0]) >= 1, "Expected subtitle box on sample_dark_bg.png"
+    assert results[1] == [], "Blank bright orange ROI must produce zero boxes"
+    assert len(results[2]) >= 1, "Expected subtitle box on sample_bright_bg.png"
+    # Must execute as a single 4D NCHW batch (N=3, C=3, rh, rw)
+    assert len(session_shapes) == 1
+    assert len(session_shapes[0]) == 4
+    assert session_shapes[0][0] == 3
+    assert session_shapes[0][1] == 3
+    # Empty-map short-circuit must skip postprocess_op for the blank frame
+    assert postprocess_calls == 2
+
+
+def test_detect_batch_preserves_small_subtitle_in_tall_roi():
+    from transapp.core.ocr_engine import _polys_to_normalized_boxes
+
+    # Exact 3% height box is kept (previously dropped by > 0.05); <= 2% tiny sliver is dropped
+    poly_3pct = np.array([[100.0, 900.0], [500.0, 900.0], [500.0, 930.0], [100.0, 930.0]], dtype=np.float32)
+    poly_1pct = np.array([[100.0, 100.0], [500.0, 100.0], [500.0, 115.0], [100.0, 115.0]], dtype=np.float32)
+    kept = _polys_to_normalized_boxes([poly_3pct, poly_1pct], orig_w=1000, orig_h=1000)
+    assert len(kept) == 1
+    assert (kept[0][3] - kept[0][1]) == pytest.approx(0.03)
+
+    # Real Det Mobile on a tall ROI (height=1800) where a 1-line subtitle occupies ~4% (< 5%) of ROI height
+    dark_roi = _load_bgr(FIXTURES_DIR / "sample_dark_bg.png")
+    h_sub, w_sub = dark_roi.shape[:2]
+    bg_color = tuple(int(c) for c in np.median(dark_roi[0, :, :], axis=0))
+    tall_roi = _make_bgr(1800, w_sub, color=bg_color)
+    y_top = 1800 - h_sub - 40
+    tall_roi[y_top : y_top + h_sub, 0:w_sub] = dark_roi
+
+    engine = OcrEngine(provider="cpu")
+    results = engine.detect_grid_batch([tall_roi])
+
+    assert len(results) == 1
+    assert len(results[0]) >= 1
+    assert any(0.02 < (y2 - y1) < 0.05 for (_x1, y1, _x2, y2) in results[0])
+

@@ -18,6 +18,13 @@ _MIN_OCR_HEIGHT = 56
 _MAX_OCR_WIDTH = 960
 _DET_LIMIT_TYPE = "max"
 _DET_LIMIT_SIDE_LEN = 960
+_DET_MOBILE_THRESH = 0.30
+_DET_MOBILE_BOX_THRESH = 0.55
+_DET_BATCH_MAX_WIDTH = 640
+_DET_BATCH_SIZE_DML = 16
+_DET_BATCH_SIZE_CPU = 8
+_MIN_DET_BOX_W_RATIO = 0.01
+_MIN_DET_BOX_H_RATIO = 0.02
 _GRID_PAD_X = 12
 _GRID_PAD_Y = 20
 _GRID_MAX_WIDTH = 640
@@ -185,6 +192,10 @@ def _build_det_mobile_params(*, use_dml: bool) -> dict[str, Any]:
         "Det.lang_type": LangDet.CH,
         "Det.limit_type": _DET_LIMIT_TYPE,
         "Det.limit_side_len": _DET_LIMIT_SIDE_LEN,
+        "Det.thresh": _DET_MOBILE_THRESH,
+        "Det.box_thresh": _DET_MOBILE_BOX_THRESH,
+        "Det.use_dilation": True,
+        "Det.score_mode": "fast",
     }
     if use_dml:
         params["EngineConfig.onnxruntime.use_dml"] = True
@@ -203,8 +214,48 @@ def _dim_dark_background(bgr_roi: np.ndarray, brightness_min: int = 175) -> np.n
     return np.clip(bgr_roi.astype(np.float32) * scale, 0, 255).astype(np.uint8)
 
 
+def _normalize_det_roi(roi: np.ndarray | None) -> np.ndarray | None:
+    """Validate and coerce an ROI into a 3-channel uint8 BGR array for Det Mobile."""
+    if roi is None or not isinstance(roi, np.ndarray) or roi.size == 0 or roi.ndim < 2:
+        return None
+    if roi.ndim == 2:
+        return cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+    if roi.ndim == 3:
+        channels = roi.shape[2]
+        if channels == 3:
+            return roi
+        if channels == 4:
+            return roi[:, :, :3]
+        if channels == 1:
+            return cv2.cvtColor(roi[:, :, 0], cv2.COLOR_GRAY2BGR)
+    return None
+
+
+def _polys_to_normalized_boxes(
+    boxes_arr: Any,
+    orig_w: int,
+    orig_h: int,
+) -> list[tuple[float, float, float, float]]:
+    """Convert polygon detections in ROI pixel coordinates into normalized [0, 1] boxes."""
+    if boxes_arr is None or len(boxes_arr) == 0:
+        return []
+    inv_w = 1.0 / max(1.0, float(orig_w))
+    inv_h = 1.0 / max(1.0, float(orig_h))
+    normalized: list[tuple[float, float, float, float]] = []
+    for poly in boxes_arr:
+        xs = [float(p[0]) for p in poly]
+        ys = [float(p[1]) for p in poly]
+        nx1 = max(0.0, min(1.0, min(xs) * inv_w))
+        nx2 = max(0.0, min(1.0, max(xs) * inv_w))
+        ny1 = max(0.0, min(1.0, min(ys) * inv_h))
+        ny2 = max(0.0, min(1.0, max(ys) * inv_h))
+        if (nx2 - nx1) > _MIN_DET_BOX_W_RATIO and (ny2 - ny1) > _MIN_DET_BOX_H_RATIO:
+            normalized.append((nx1, ny1, nx2, ny2))
+    return normalized
+
+
 class OcrEngine:
-    """Lazy RapidOCR v3+ wrapper using ch_PP-OCRv5 (Server/Mobile) + fast grid Det Mobile."""
+    """Lazy RapidOCR v3+ wrapper using ch_PP-OCRv5 (Server/Mobile) + native 4D Det Mobile."""
 
     def __init__(
         self,
@@ -227,6 +278,14 @@ class OcrEngine:
         self._det_engine: Callable[[np.ndarray], Any] | None = det_callable
         self._injected_callable: bool = ocr_callable is not None
         self._injected_det_callable: bool = det_callable is not None
+        self._det_dml_active: bool | None = None
+
+    @property
+    def det_batch_size(self) -> int:
+        """Optimal native 4D Det Mobile batch size (16 for active DirectML, 8 for CPU)."""
+        if self._det_dml_active is not None:
+            return _DET_BATCH_SIZE_DML if self._det_dml_active else _DET_BATCH_SIZE_CPU
+        return _DET_BATCH_SIZE_DML if self.provider == "directml" else _DET_BATCH_SIZE_CPU
 
     @staticmethod
     def available_providers() -> list[str]:
@@ -250,7 +309,10 @@ class OcrEngine:
         """Return supported OCR model preset keys."""
         return _SUPPORTED_MODELS
 
-    def _init_rapidocr_with_fallback(self, params_builder: Callable[..., dict[str, Any]]) -> Any:
+    def _init_rapidocr_with_fallback(
+        self,
+        params_builder: Callable[..., dict[str, Any]],
+    ) -> tuple[Any, bool]:
         import rapidocr
 
         cpu_params = params_builder(use_dml=False)
@@ -259,21 +321,21 @@ class OcrEngine:
                 logger.warning(
                     "DirectML execution provider is unavailable; falling back to CPU OCR."
                 )
-                return rapidocr.RapidOCR(params=cpu_params)
+                return rapidocr.RapidOCR(params=cpu_params), False
             try:
                 dml_params = params_builder(use_dml=True)
-                return rapidocr.RapidOCR(params=dml_params)
+                return rapidocr.RapidOCR(params=dml_params), True
             except Exception as exc:
                 logger.warning(
                     "Failed to initialize RapidOCR with DirectML (%s); falling back to CPU OCR.",
                     exc,
                 )
-        return rapidocr.RapidOCR(params=cpu_params)
+        return rapidocr.RapidOCR(params=cpu_params), False
 
     def _ensure_engine(self) -> Callable[[np.ndarray], Any]:
         if self._engine is not None:
             return self._engine
-        self._engine = self._init_rapidocr_with_fallback(
+        self._engine, _ = self._init_rapidocr_with_fallback(
             lambda *, use_dml: _build_rapidocr_params(self.ocr_model, use_dml=use_dml)
         )
         return self._engine
@@ -281,53 +343,17 @@ class OcrEngine:
     def _ensure_det_engine(self) -> Callable[[np.ndarray], Any]:
         if self._det_engine is not None:
             return self._det_engine
-        self._det_engine = self._init_rapidocr_with_fallback(
+        self._det_engine, self._det_dml_active = self._init_rapidocr_with_fallback(
             lambda *, use_dml: _build_det_mobile_params(use_dml=use_dml)
         )
         return self._det_engine
 
-    def detect_grid_batch(
+    def _detect_injected_grid_batch(
         self,
+        det_engine: Callable[[np.ndarray], Any],
         rois: list[np.ndarray],
     ) -> list[list[tuple[float, float, float, float]]]:
-        """Run fast ch_PP-OCRv5 Det Mobile on a vertical strip grid of ROIs.
-
-        Returns per-ROI list of normalized text boxes (x1, y1, x2, y2) in [0.0, 1.0].
-        """
-        if not rois:
-            return []
-
-        # When a test injects only a mock Rec callable (no Det model), derive text boxes
-        # cleanly via stroke mask without triggering Rec call counters during Stage 1 detection.
-        if self._injected_callable and not self._injected_det_callable:
-            from transapp.core.models import ExtractConfig
-            from transapp.core.subtitle_mask import build_stroke_mask, mask_fg_ratio
-
-            cfg = ExtractConfig()
-            results: list[list[tuple[float, float, float, float]]] = []
-            for roi in rois:
-                if roi is None or roi.size == 0:
-                    results.append([])
-                    continue
-                mask = build_stroke_mask(roi, cfg)
-                if mask_fg_ratio(mask) < cfg.fg_ratio_min:
-                    results.append([])
-                    continue
-                ys, xs = np.where(mask > 0)
-                h, w = roi.shape[:2]
-                results.append(
-                    [
-                        (
-                            float(xs.min()) / max(1.0, float(w)),
-                            float(ys.min()) / max(1.0, float(h)),
-                            float(xs.max() + 1) / max(1.0, float(w)),
-                            float(ys.max() + 1) / max(1.0, float(h)),
-                        )
-                    ]
-                )
-            return results
-
-        det_engine = self._ensure_det_engine()
+        """Legacy vertical grid path retained exclusively for injected mock det_callable tests."""
         h0, w0 = rois[0].shape[:2]
         if w0 > _GRID_MAX_WIDTH:
             scale = _GRID_MAX_WIDTH / float(w0)
@@ -383,10 +409,153 @@ class OcrEngine:
                 nx2 = max(0.0, min(1.0, bx2 / float(cell_w)))
                 ny1 = max(0.0, min(1.0, (by1 - cell_y0) / float(cell_h)))
                 ny2 = max(0.0, min(1.0, (by2 - cell_y0) / float(cell_h)))
-                if (nx2 - nx1) > 0.01 and (ny2 - ny1) > 0.05:
+                if (nx2 - nx1) > _MIN_DET_BOX_W_RATIO and (ny2 - ny1) > _MIN_DET_BOX_H_RATIO:
                     out_boxes[start + cell_idx].append((nx1, ny1, nx2, ny2))
 
         return out_boxes
+
+    def _detect_per_roi_fallback(
+        self,
+        det_engine: Callable[[np.ndarray], Any],
+        rois: list[np.ndarray],
+    ) -> list[list[tuple[float, float, float, float]]]:
+        """Borderless per-ROI fallback when a RapidOCR double does not expose _load_det_model."""
+        out_boxes: list[list[tuple[float, float, float, float]]] = [[] for _ in rois]
+        for idx, raw_roi in enumerate(rois):
+            roi = _normalize_det_roi(raw_roi)
+            if roi is None:
+                continue
+            orig_h, orig_w = roi.shape[:2]
+            det_res = det_engine(roi)
+            boxes_arr = getattr(det_res, "boxes", None)
+            out_boxes[idx] = _polys_to_normalized_boxes(boxes_arr, orig_w, orig_h)
+        return out_boxes
+
+    def _detect_native_4d_batch(
+        self,
+        det_model: Any,
+        rois: list[np.ndarray],
+    ) -> list[list[tuple[float, float, float, float]]]:
+        """Run ch_PP-OCRv5 Det Mobile natively on dynamic 4D NCHW batches without black padding."""
+        out_boxes: list[list[tuple[float, float, float, float]]] = [[] for _ in rois]
+        batch_size = self.det_batch_size
+
+        raw_mean = getattr(det_model, "mean", None)
+        raw_std = getattr(det_model, "std", None)
+        mean = np.array(raw_mean if raw_mean is not None else [0.5, 0.5, 0.5], dtype=np.float32).reshape(
+            1, 1, 1, 3
+        )
+        std = np.array(raw_std if raw_std is not None else [0.5, 0.5, 0.5], dtype=np.float32).reshape(
+            1, 1, 1, 3
+        )
+        box_thresh = float(getattr(det_model.postprocess_op, "box_thresh", _DET_MOBILE_BOX_THRESH))
+
+        for start in range(0, len(rois), batch_size):
+            chunk = rois[start : start + batch_size]
+            valid_entries: list[tuple[int, np.ndarray, int, int]] = []
+            for offset, raw_roi in enumerate(chunk):
+                roi = _normalize_det_roi(raw_roi)
+                if roi is None:
+                    continue
+                valid_entries.append((start + offset, roi, roi.shape[0], roi.shape[1]))
+
+            if not valid_entries:
+                continue
+
+            _, _, h0, w0 = valid_entries[0]
+            scale = min(1.0, float(_DET_BATCH_MAX_WIDTH) / float(w0))
+            tw = max(32, round(w0 * scale))
+            th = max(32, round(h0 * scale))
+            rw = max(32, int(round(tw / 32.0)) * 32)
+            rh = max(32, int(round(th / 32.0)) * 32)
+
+            batch_uint8 = np.empty((len(valid_entries), rh, rw, 3), dtype=np.uint8)
+            for idx, (_orig_idx, roi, orig_h, orig_w) in enumerate(valid_entries):
+                if orig_h != rh or orig_w != rw:
+                    interp = cv2.INTER_AREA if (orig_w > rw or orig_h > rh) else cv2.INTER_LINEAR
+                    batch_uint8[idx] = cv2.resize(roi, (rw, rh), interpolation=interp)
+                else:
+                    batch_uint8[idx] = roi
+
+            batch_f32 = batch_uint8.astype(np.float32) * (1.0 / 255.0)
+            batch_f32 -= mean
+            batch_f32 /= std
+            batch_tensor = np.ascontiguousarray(batch_f32.transpose((0, 3, 1, 2)))
+
+            preds = det_model.session(batch_tensor)
+            for idx, (orig_idx, _roi, orig_h, orig_w) in enumerate(valid_entries):
+                pred_map = preds[idx : idx + 1]
+                # Fast empty-map short-circuit: no box mean can exceed the map maximum
+                if float(pred_map.max()) < box_thresh:
+                    continue
+                boxes, _scores = det_model.postprocess_op(pred_map, (orig_h, orig_w))
+                out_boxes[orig_idx] = _polys_to_normalized_boxes(boxes, orig_w, orig_h)
+
+        return out_boxes
+
+    def detect_grid_batch(
+        self,
+        rois: list[np.ndarray],
+    ) -> list[list[tuple[float, float, float, float]]]:
+        """Run fast ch_PP-OCRv5 Det Mobile on a batch of ROIs using native 4D ONNX tensors.
+
+        Returns per-ROI list of normalized text boxes (x1, y1, x2, y2) in [0.0, 1.0].
+        """
+        if not rois:
+            return []
+
+        # When a test injects only a mock Rec callable (no Det model), derive text boxes
+        # cleanly via stroke mask without triggering Rec call counters during Stage 1 detection.
+        if self._injected_callable and not self._injected_det_callable:
+            from transapp.core.models import ExtractConfig
+            from transapp.core.subtitle_mask import build_stroke_mask, mask_fg_ratio
+
+            cfg = ExtractConfig()
+            results: list[list[tuple[float, float, float, float]]] = []
+            for roi in rois:
+                if roi is None or roi.size == 0:
+                    results.append([])
+                    continue
+                mask = build_stroke_mask(roi, cfg)
+                if mask_fg_ratio(mask) < cfg.fg_ratio_min:
+                    results.append([])
+                    continue
+                ys, xs = np.where(mask > 0)
+                h, w = roi.shape[:2]
+                results.append(
+                    [
+                        (
+                            float(xs.min()) / max(1.0, float(w)),
+                            float(ys.min()) / max(1.0, float(h)),
+                            float(xs.max() + 1) / max(1.0, float(w)),
+                            float(ys.max() + 1) / max(1.0, float(h)),
+                        )
+                    ]
+                )
+            return results
+
+        det_engine = self._ensure_det_engine()
+        if self._injected_det_callable:
+            return self._detect_injected_grid_batch(det_engine, rois)
+
+        load_det = getattr(det_engine, "_load_det_model", None)
+        if callable(load_det):
+            try:
+                det_model = load_det()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load Det Mobile model for 4D batching (%s); falling back to per-ROI detection.",
+                    exc,
+                )
+                det_model = None
+            if (
+                det_model is not None
+                and callable(getattr(det_model, "session", None))
+                and callable(getattr(det_model, "postprocess_op", None))
+            ):
+                return self._detect_native_4d_batch(det_model, rois)
+
+        return self._detect_per_roi_fallback(det_engine, rois)
 
     def recognize_roi(
         self,
