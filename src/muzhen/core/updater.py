@@ -211,6 +211,36 @@ class UpdatePrefsStore:
         data["language"] = normalized
         self._write_prefs(data)
 
+    def _get_bool_pref(self, key: str, default: bool) -> bool:
+        data = self._read_prefs()
+        val = data.get(key)
+        if isinstance(val, bool):
+            return val
+        return default
+
+    def _set_bool_pref(self, key: str, value: bool) -> None:
+        data = self._read_prefs()
+        data[key] = bool(value)
+        self._write_prefs(data)
+
+    def get_discord_rpc_enabled(self) -> bool:
+        return self._get_bool_pref("discord_rpc_enabled", True)
+
+    def set_discord_rpc_enabled(self, enabled: bool) -> None:
+        self._set_bool_pref("discord_rpc_enabled", enabled)
+
+    def get_discord_rpc_hide_filename(self) -> bool:
+        return self._get_bool_pref("discord_rpc_hide_filename", True)
+
+    def set_discord_rpc_hide_filename(self, hide_filename: bool) -> None:
+        self._set_bool_pref("discord_rpc_hide_filename", hide_filename)
+
+    def get_discord_rpc_show_github_button(self) -> bool:
+        return self._get_bool_pref("discord_rpc_show_github_button", True)
+
+    def set_discord_rpc_show_github_button(self, show_button: bool) -> None:
+        self._set_bool_pref("discord_rpc_show_github_button", show_button)
+
     def is_version_skipped(self, tag_name: str) -> bool:
         if not isinstance(tag_name, str) or not tag_name.strip():
             return False
