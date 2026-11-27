@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -110,6 +110,7 @@ class ExtractResult:
     duration_ms: int
     events: list[SubtitleEvent]
     elapsed_sec: float
+    frame_pts_ms: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)

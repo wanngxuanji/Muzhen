@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -32,6 +34,11 @@ class FrameSlice:
     frame_index: int
     pts_ms: int
     bgr_roi: np.ndarray
+    rel_ms: int = -1
+
+    def __post_init__(self) -> None:
+        if self.rel_ms < 0:
+            self.rel_ms = max(0, int(self.pts_ms))
 
 
 class VideoReader:
@@ -59,8 +66,13 @@ class VideoReader:
         self._container: av.container.InputContainer | None = container
         self._stream: av.video.stream.VideoStream | None = stream
         try:
-            self._start_pts_ms: int = self._compute_start_pts_ms(stream)
-            self._metadata: VideoMetadata = self._build_metadata(container, stream)
+            fallback_start_pts_ms = self._compute_start_pts_ms(stream)
+            self._start_pts_ms: int = fallback_start_pts_ms
+            self._first_pts_ticks: int | None = stream.start_time
+            self._fps_frac: Fraction = self._extract_fps_fraction(stream)
+            self._metadata: VideoMetadata = self._build_metadata(
+                container, stream, fallback_start_pts_ms
+            )
         except Exception:
             self.close()
             raise
@@ -85,23 +97,69 @@ class VideoReader:
                 self._container = None
                 self._stream = None
 
-    def iter_roi_frames(self, roi: RoiRect) -> Iterator[FrameSlice]:
-        """Stream decoded frames from the beginning, yielding only the cropped ROI."""
+    def iter_roi_frames(
+        self,
+        roi: RoiRect,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> Iterator[FrameSlice]:
+        """Stream decoded frames (optionally bounded by 0-based rel_ms window), yielding ROI crops."""
         container, stream = self._ensure_open()
         x1, y1, x2, y2 = roi.to_pixels(self._metadata.width, self._metadata.height)
 
-        self._seek_to_start(container, stream)
+        norm_start_ms = max(0, int(start_ms)) if start_ms is not None else None
+        norm_end_ms = int(end_ms) if end_ms is not None else None
+        if norm_start_ms is not None and norm_end_ms is not None and norm_start_ms > norm_end_ms:
+            return
+        if norm_end_ms is not None and norm_end_ms < 0:
+            return
+
+        if norm_start_ms is not None and norm_start_ms > 0:
+            target_raw_ms = self._start_pts_ms + norm_start_ms
+            tb = self._to_time_base_fraction(stream.time_base)
+            seek_ticks = math.floor(Fraction(target_raw_ms, 1000) / tb)
+            try:
+                container.seek(seek_ticks, backward=True, any_frame=False, stream=stream)
+            except av.error.FFmpegError:
+                self._seek_to_start(
+                    container,
+                    stream,
+                    start_pts_ms=self._start_pts_ms,
+                    first_pts_ticks=self._first_pts_ticks,
+                )
+        else:
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=self._start_pts_ms,
+                first_pts_ticks=self._first_pts_ticks,
+            )
 
         frame_index = 0
+        decoded_index = 0
         prev_pts_ms: int | None = None
         try:
             for frame in container.decode(stream):
-                pts_ms = self._frame_pts_ms(frame, stream, frame_index, prev_pts_ms)
+                pts_ms = self._frame_pts_ms(frame, stream, decoded_index, prev_pts_ms)
                 prev_pts_ms = pts_ms
+                decoded_index += 1
+
+                rel_ms = max(0, pts_ms - self._start_pts_ms)
+                if norm_start_ms is not None and rel_ms < norm_start_ms:
+                    continue
+                if norm_end_ms is not None and rel_ms > norm_end_ms:
+                    break
+
                 full_bgr = frame.to_ndarray(format="bgr24")
                 # Copy only the ROI slice so the full-frame buffer can be freed immediately.
                 bgr_roi = np.ascontiguousarray(full_bgr[y1:y2, x1:x2])
-                yield FrameSlice(frame_index=frame_index, pts_ms=pts_ms, bgr_roi=bgr_roi)
+                yield FrameSlice(
+                    frame_index=frame_index,
+                    pts_ms=pts_ms,
+                    bgr_roi=bgr_roi,
+                    rel_ms=rel_ms,
+                )
                 frame_index += 1
         except av.error.EOFError:
             return
@@ -109,13 +167,14 @@ class VideoReader:
     def read_frame_at_ms(self, target_ms: int) -> tuple[int, int, np.ndarray]:
         """Seek near target_ms and return (frame_index, pts_ms, full_bgr_frame)."""
         container, stream = self._ensure_open()
-        clamped_ms = max(0, int(target_ms))
+        min_target_ms = min(0, self._start_pts_ms)
+        clamped_ms = max(min_target_ms, int(target_ms))
 
         result = self._decode_near_ms(container, stream, clamped_ms, seek_ms=clamped_ms)
         if result is None:
             # Seeking past EOF or mid-stream can yield zero frames; fall back near tail then start.
-            tail_ms = max(0, self._start_pts_ms + self._metadata.duration_ms - 5000)
-            if 0 < tail_ms < clamped_ms:
+            tail_ms = max(self._start_pts_ms, self._start_pts_ms + self._metadata.duration_ms - 5000)
+            if self._start_pts_ms < tail_ms < clamped_ms:
                 result = self._decode_near_ms(container, stream, clamped_ms, seek_ms=tail_ms)
         if result is None:
             result = self._decode_near_ms(container, stream, clamped_ms, seek_ms=None)
@@ -129,38 +188,65 @@ class VideoReader:
         return self._container, self._stream
 
     @staticmethod
+    def _to_time_base_fraction(time_base: Fraction | float | None) -> Fraction:
+        if isinstance(time_base, Fraction) and time_base > 0:
+            return time_base
+        if time_base:
+            frac = Fraction(time_base).limit_denominator(1_000_000)
+            if frac > 0:
+                return frac
+        return Fraction(1, 1000)
+
+    @staticmethod
+    def _ticks_to_ms(ticks: int, time_base: Fraction | float | None) -> int:
+        tb = VideoReader._to_time_base_fraction(time_base)
+        return int(round(Fraction(ticks) * tb * 1000))
+
+    @staticmethod
+    def _extract_fps_fraction(stream: av.video.stream.VideoStream) -> Fraction:
+        rate = stream.average_rate or stream.guessed_rate or stream.base_rate
+        if isinstance(rate, Fraction) and rate > 0:
+            return rate
+        if rate is not None and float(rate) > 0.0:
+            return Fraction(float(rate)).limit_denominator(100_000)
+        return Fraction(25, 1)
+
+    @staticmethod
     def _compute_start_pts_ms(stream: av.video.stream.VideoStream) -> int:
         if stream.start_time is not None and stream.time_base:
-            return max(0, int(round(stream.start_time * float(stream.time_base) * 1000.0)))
+            return VideoReader._ticks_to_ms(stream.start_time, stream.time_base)
         return 0
 
     def _build_metadata(
         self,
         container: av.container.InputContainer,
         stream: av.video.stream.VideoStream,
+        fallback_start_pts_ms: int,
     ) -> VideoMetadata:
         width = int(stream.codec_context.width or stream.width or 0)
         height = int(stream.codec_context.height or stream.height or 0)
+        fps = float(self._fps_frac)
 
-        rate = stream.average_rate or stream.guessed_rate or stream.base_rate
-        fps = float(rate) if rate is not None and float(rate) > 0.0 else 25.0
+        # Always probe frame 0 once to anchor signed origin_pts_ms to the actual first decoded frame.
+        first_dims, first_pts_ticks, first_pts_ms = self._probe_first_frame(container, stream)
+        if first_pts_ms is not None:
+            self._start_pts_ms = first_pts_ms
+            self._first_pts_ticks = first_pts_ticks
+        else:
+            self._start_pts_ms = fallback_start_pts_ms
+            self._first_pts_ticks = stream.start_time
+
+        if width <= 0 or height <= 0:
+            width, height = first_dims
 
         duration_ms = 0
         if stream.duration is not None and stream.duration > 0 and stream.time_base is not None:
-            duration_ms = max(0, int(round(stream.duration * float(stream.time_base) * 1000.0)))
+            duration_ms = max(0, self._ticks_to_ms(stream.duration, stream.time_base))
         if duration_ms <= 0 and container.duration is not None and container.duration > 0:
-            duration_ms = max(0, int(round(container.duration * 1000.0 / av.time_base)))
+            duration_ms = max(0, int(round(Fraction(container.duration * 1000, av.time_base))))
 
-        need_dims = width <= 0 or height <= 0
-        need_duration = duration_ms <= 0
-        if need_dims or need_duration:
-            first_dims, scanned_dur = self._probe_stream(
-                container, stream, fps, probe_duration=need_duration
-            )
-            if need_dims:
-                width, height = first_dims
-            if need_duration:
-                duration_ms = scanned_dur
+        if duration_ms <= 0:
+            duration_ms = self._probe_duration_via_demux(container, stream, self._fps_frac)
 
         if width <= 0 or height <= 0:
             raise ValueError(f"Invalid video dimensions ({width}x{height}) in {self._path}")
@@ -168,7 +254,7 @@ class VideoReader:
         if stream.frames and stream.frames > 0:
             estimated_frames = int(stream.frames)
         elif duration_ms > 0:
-            estimated_frames = max(1, int(round(duration_ms * fps / 1000.0)))
+            estimated_frames = max(1, int(round(Fraction(duration_ms) * self._fps_frac / 1000)))
         else:
             estimated_frames = 0
 
@@ -181,29 +267,102 @@ class VideoReader:
             start_pts_ms=self._start_pts_ms,
         )
 
-    def _probe_stream(
+    def _probe_first_frame(
         self,
         container: av.container.InputContainer,
         stream: av.video.stream.VideoStream,
-        fps: float,
-        *,
-        probe_duration: bool = True,
-    ) -> tuple[tuple[int, int], int]:
-        """Fallback probe when container headers lack dimensions or duration."""
-        self._seek_to_start(container, stream)
+    ) -> tuple[tuple[int, int], int | None, int | None]:
+        """Decode only frame 0 to anchor signed origin_pts_ms and recover missing dimensions."""
         width = 0
         height = 0
+        first_pts_ticks: int | None = None
+        first_pts_ms: int | None = None
+        try:
+            for frame in container.decode(stream):
+                width = int(frame.width)
+                height = int(frame.height)
+                if frame.pts is not None:
+                    first_pts_ticks = int(frame.pts)
+                    first_pts_ms = self._ticks_to_ms(frame.pts, frame.time_base or stream.time_base)
+                break
+        except av.error.FFmpegError:
+            pass
+        finally:
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=first_pts_ms if first_pts_ms is not None else self._start_pts_ms,
+                first_pts_ticks=first_pts_ticks if first_pts_ticks is not None else stream.start_time,
+            )
+        return (width, height), first_pts_ticks, first_pts_ms
+
+    def _probe_duration_via_demux(
+        self,
+        container: av.container.InputContainer,
+        stream: av.video.stream.VideoStream,
+        fps_frac: Fraction,
+    ) -> int:
+        """Estimate stream duration via packet demuxing without decoding every frame."""
+        self._seek_to_start(
+            container,
+            stream,
+            start_pts_ms=self._start_pts_ms,
+            first_pts_ticks=self._first_pts_ticks,
+        )
+        step_ms = max(1, int(round(Fraction(1000) / fps_frac)))
+        min_pts_ms: int | None = None
+        max_end_ms: int | None = None
+        try:
+            for packet in container.demux(stream):
+                if packet.pts is None:
+                    continue
+                tb = packet.time_base or stream.time_base
+                pts_ms = self._ticks_to_ms(packet.pts, tb)
+                if packet.duration is not None and packet.duration > 0:
+                    end_ms = self._ticks_to_ms(packet.pts + packet.duration, tb)
+                else:
+                    end_ms = pts_ms + step_ms
+                if min_pts_ms is None or pts_ms < min_pts_ms:
+                    min_pts_ms = pts_ms
+                if max_end_ms is None or end_ms > max_end_ms:
+                    max_end_ms = end_ms
+        except av.error.FFmpegError:
+            pass
+        finally:
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=self._start_pts_ms,
+                first_pts_ticks=self._first_pts_ticks,
+            )
+
+        if min_pts_ms is not None and max_end_ms is not None:
+            origin = min(min_pts_ms, self._start_pts_ms)
+            return max(1, max_end_ms - origin)
+
+        return self._probe_duration_via_decode(container, stream, fps_frac)
+
+    def _probe_duration_via_decode(
+        self,
+        container: av.container.InputContainer,
+        stream: av.video.stream.VideoStream,
+        fps_frac: Fraction,
+    ) -> int:
+        """Last-resort duration probe when container headers and packets both lack PTS."""
+        self._seek_to_start(
+            container,
+            stream,
+            start_pts_ms=self._start_pts_ms,
+            first_pts_ticks=self._first_pts_ticks,
+        )
         first_pts: int | None = None
         last_pts: int | None = None
+        prev_pts: int | None = None
         count = 0
         try:
             for frame in container.decode(stream):
-                if width == 0 or height == 0:
-                    width = int(frame.width)
-                    height = int(frame.height)
-                if not probe_duration:
-                    break
-                pts_ms = self._raw_pts_ms(frame, stream, count, fps)
+                pts_ms = self._frame_pts_ms(frame, stream, count, prev_pts)
+                prev_pts = pts_ms
                 if first_pts is None:
                     first_pts = pts_ms
                 last_pts = pts_ms
@@ -211,26 +370,40 @@ class VideoReader:
         except av.error.FFmpegError:
             pass
         finally:
-            self._seek_to_start(container, stream)
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=self._start_pts_ms,
+                first_pts_ticks=self._first_pts_ticks,
+            )
 
         if count == 0:
-            return (width, height), 0
+            return 0
         span = (last_pts - first_pts) if (first_pts is not None and last_pts is not None) else 0
-        step_ms = int(round(1000.0 / fps))
-        return (width, height), max(1, span + step_ms)
+        step_ms = max(1, int(round(Fraction(1000) / fps_frac)))
+        return max(1, span + step_ms)
 
     @staticmethod
     def _seek_to_start(
         container: av.container.InputContainer,
         stream: av.video.stream.VideoStream,
+        *,
+        start_pts_ms: int = 0,
+        first_pts_ticks: int | None = None,
     ) -> None:
+        target_us = min(0, int(start_pts_ms) * 1000)
         try:
-            container.seek(0, backward=True, any_frame=False)
+            container.seek(target_us, backward=True, any_frame=False)
         except av.error.FFmpegError:
+            target_ticks = min(0, int(first_pts_ticks)) if first_pts_ticks is not None else 0
             try:
-                container.seek(0, backward=True, stream=stream)
+                container.seek(target_ticks, backward=True, stream=stream)
             except av.error.FFmpegError:
-                pass
+                if target_us < 0:
+                    try:
+                        container.seek(0, backward=True, any_frame=False)
+                    except av.error.FFmpegError:
+                        pass
 
     def _raw_pts_ms(
         self,
@@ -239,11 +412,14 @@ class VideoReader:
         frame_index: int,
         fps: float,
     ) -> int:
-        tick = frame.pts if frame.pts is not None else frame.dts
-        if tick is not None:
-            tb = float(frame.time_base or stream.time_base or (1.0 / 1000.0))
-            return max(0, int(round(tick * tb * 1000.0)))
-        return max(0, int(round(frame_index * 1000.0 / fps)))
+        if frame.pts is not None:
+            return self._ticks_to_ms(frame.pts, frame.time_base or stream.time_base)
+        fps_frac = (
+            self._fps_frac
+            if self._fps_frac > 0
+            else Fraction(fps).limit_denominator(100_000)
+        )
+        return self._start_pts_ms + int(round(Fraction(frame_index * 1000) / fps_frac))
 
     def _frame_pts_ms(
         self,
@@ -252,7 +428,14 @@ class VideoReader:
         frame_index: int,
         prev_pts_ms: int | None,
     ) -> int:
-        pts_ms = self._raw_pts_ms(frame, stream, frame_index, self._metadata.fps)
+        if frame.pts is not None:
+            pts_ms = self._ticks_to_ms(frame.pts, frame.time_base or stream.time_base)
+        elif prev_pts_ms is not None:
+            frame_step_ms = max(1, int(round(Fraction(1000) / self._fps_frac)))
+            pts_ms = prev_pts_ms + frame_step_ms
+        else:
+            pts_ms = self._start_pts_ms + int(round(Fraction(frame_index * 1000) / self._fps_frac))
+
         if prev_pts_ms is not None and pts_ms <= prev_pts_ms:
             pts_ms = prev_pts_ms + 1
         return pts_ms
@@ -265,11 +448,16 @@ class VideoReader:
         *,
         seek_ms: int | None,
     ) -> tuple[int, int, np.ndarray] | None:
-        if seek_ms is None or seek_ms <= 0:
-            self._seek_to_start(container, stream)
+        if seek_ms is None or seek_ms <= self._start_pts_ms:
+            self._seek_to_start(
+                container,
+                stream,
+                start_pts_ms=self._start_pts_ms,
+                first_pts_ticks=self._first_pts_ticks,
+            )
         else:
-            tb = float(stream.time_base) if stream.time_base else 1.0 / 1000.0
-            seek_pts = int(round((seek_ms / 1000.0) / tb))
+            tb = self._to_time_base_fraction(stream.time_base)
+            seek_pts = math.floor(Fraction(seek_ms, 1000) / tb)
             try:
                 container.seek(seek_pts, backward=True, any_frame=False, stream=stream)
             except av.error.FFmpegError:
@@ -287,8 +475,11 @@ class VideoReader:
 
                 if base_index is None:
                     delta_ms = max(0, pts_ms - self._start_pts_ms)
-                    base_index = 0 if delta_ms <= int(round(500.0 / self._metadata.fps)) else int(
-                        round(delta_ms * self._metadata.fps / 1000.0)
+                    half_frame_ms = int(round(Fraction(500) / self._fps_frac))
+                    base_index = (
+                        0
+                        if delta_ms <= half_frame_ms
+                        else int(round(Fraction(delta_ms) * self._fps_frac / 1000))
                     )
 
                 frame_index = base_index + local_idx
