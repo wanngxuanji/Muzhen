@@ -276,7 +276,8 @@ def test_video_reader_start_pts_ms_falsy_timebase_and_init_error_closes_containe
         class _FakeStream:
             time_base = None
 
-        assert reader._raw_pts_ms(_FakeFrame(), _FakeStream(), 0, meta.fps) == 1234
+        assert reader._frame_pts_ms(_FakeFrame(), _FakeStream(), 0, None) == 1234
+        assert not hasattr(reader, "_raw_pts_ms")
 
     # Init error during _compute_start_pts_ms / _build_metadata must close container
     real_open = av.open
@@ -454,7 +455,7 @@ def test_video_reader_ntsc_23976_rational_pts_zero_drift(tmp_path: Path):
         for k in range(1000):
             expected_ms = int(round(Fraction(k * 1001 * 1000, 24000)))
             got_frame = reader._frame_pts_ms(_FakeFrame(k, tb_frame), stream_frame, k, prev_pts)
-            got_fine = reader._raw_pts_ms(_FakeFrame(k * 1001, tb_fine), stream_fine, k, 24000 / 1001)
+            got_fine = reader._frame_pts_ms(_FakeFrame(k * 1001, tb_fine), stream_fine, k, None)
             assert got_frame == expected_ms
             assert got_fine == expected_ms
             prev_pts = got_frame
@@ -463,8 +464,8 @@ def test_video_reader_ntsc_23976_rational_pts_zero_drift(tmp_path: Path):
         k_24m = 34_560
         expected_24m = int(round(Fraction(k_24m * 1001 * 1000, 24000)))
         assert expected_24m == 1_441_440
-        assert reader._raw_pts_ms(_FakeFrame(k_24m, tb_frame), stream_frame, k_24m, 24000 / 1001) == expected_24m
-        assert reader._raw_pts_ms(_FakeFrame(k_24m * 1001, tb_fine), stream_fine, k_24m, 24000 / 1001) == expected_24m
+        assert reader._frame_pts_ms(_FakeFrame(k_24m, tb_frame), stream_frame, k_24m, None) == expected_24m
+        assert reader._frame_pts_ms(_FakeFrame(k_24m * 1001, tb_fine), stream_fine, k_24m, None) == expected_24m
 
 
 def test_video_reader_packet_demux_duration_probe_without_full_decode(tmp_path: Path, monkeypatch):
@@ -672,7 +673,7 @@ def test_video_reader_missing_pts_after_seek_ntsc_zero_drift_and_demux_origin(
     ntsc_rate = Fraction(24000, 1001)
     tb_ms = Fraction(1, 1000)
 
-    # Subtest A: Post-seek consecutive missing-PTS frames on 24000/1001 keep 0ms drift and anchor at target_raw_ms.
+    # Subtest A: Post-seek consecutive missing-PTS frames on 24000/1001 keep 0ms drift and anchor at seek_raw_ms.
     init_ntsc = [_FakeFrame(pts=0, dts=0, tb=tb_ms)]
     missing_ntsc = [_FakeFrame(pts=None, dts=9999 - i, tb=tb_ms) for i in range(101)]
     stream_ntsc = _FakeStream(start_time=0, time_base=tb_ms, rate=ntsc_rate)
@@ -681,36 +682,39 @@ def test_video_reader_missing_pts_after_seek_ntsc_zero_drift_and_demux_origin(
     monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont_ntsc)
     with VideoReader(dummy_file) as reader:
         slices = list(reader.iter_roi_frames(roi, start_ms=1000, end_ms=6000))
-        assert len(slices) == 101
-        assert slices[0].pts_ms == 1000
-        assert slices[0].rel_ms == 1000
-        expected_100 = 1000 + int(round(Fraction(100 * 1000) / ntsc_rate))
-        assert expected_100 == 5171
-        assert slices[100].pts_ms == expected_100
-        assert slices[100].rel_ms == expected_100
+        # Anchored at seek_raw_ms=500 -> frames 0..11 (<1000ms) skipped; frames 12..100 yielded with 0ms drift.
+        assert len(slices) == 89
+        expected_first = 500 + int(round(Fraction(12 * 1000) / ntsc_rate))
+        expected_last = 500 + int(round(Fraction(100 * 1000) / ntsc_rate))
+        assert expected_first == 1000
+        assert expected_last == 4671
+        assert slices[0].pts_ms == expected_first
+        assert slices[0].rel_ms == expected_first
+        assert slices[-1].pts_ms == expected_last
+        assert slices[-1].rel_ms == expected_last
 
-        # _decode_near_ms (via read_frame_at_ms) also anchors post-seek missing PTS at seek_ms (not origin 0).
+        # _decode_near_ms (via read_frame_at_ms) anchors post-seek missing PTS at seek_raw_ms (700) and picks nearest.
         _idx, got_pts, _bgr = reader.read_frame_at_ms(1200)
-        assert got_pts == 1200
+        assert got_pts == 700 + int(round(Fraction(12 * 1000) / ntsc_rate))
 
-    # Subtest B: Real pre-roll frame.pts < target_raw_ms arriving after a missing-PTS frame must NOT clamp forward.
+    # Subtest B: Real pre-roll frame.pts < target_raw_ms arriving after a missing-PTS frame must NOT clamp forward,
+    # and the pre-window PTS-less frame anchored at seek_raw_ms is skipped cleanly.
     init_preroll = [_FakeFrame(pts=500, dts=500, tb=tb_ms)]
     seek_preroll = [
-        _FakeFrame(pts=None, dts=800, tb=tb_ms),  # synthesized as target_raw_ms=900 (guess)
-        _FakeFrame(pts=820, dts=820, tb=tb_ms),   # real pre-roll < 900 -> rel_ms=320, must be skipped
-        _FakeFrame(pts=None, dts=860, tb=tb_ms),  # synthesized from 820 -> 860 (rel_ms=360), skipped
-        _FakeFrame(pts=900, dts=900, tb=tb_ms),   # rel_ms=400 -> yielded
-        _FakeFrame(pts=940, dts=940, tb=tb_ms),   # rel_ms=440 -> yielded
+        _FakeFrame(pts=None, dts=1380, tb=tb_ms),  # anchored at seek_raw_ms=1000 -> skipped
+        _FakeFrame(pts=1420, dts=1420, tb=tb_ms),  # real pre-roll < 1500 -> rel_ms=920, skipped
+        _FakeFrame(pts=None, dts=1460, tb=tb_ms),  # synthesized from 1420 -> 1460 (rel_ms=960), skipped
+        _FakeFrame(pts=1500, dts=1500, tb=tb_ms),  # rel_ms=1000 -> yielded
+        _FakeFrame(pts=1540, dts=1540, tb=tb_ms),  # rel_ms=1040 -> yielded
     ]
     stream_preroll = _FakeStream(start_time=500, time_base=tb_ms, rate=Fraction(25, 1))
     cont_preroll = _FakeContainer(stream_preroll, init_preroll, seek_frames=seek_preroll)
 
     monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont_preroll)
     with VideoReader(dummy_file) as reader:
-        slices = list(reader.iter_roi_frames(roi, start_ms=400, end_ms=600))
-        # Frame 0 (unanchored guess=900) + frames 3 & 4 (real 900 & 940); pre-roll 820 & 860 skipped.
-        assert [sl.rel_ms for sl in slices] == [400, 400, 440]
-        assert [sl.pts_ms for sl in slices] == [900, 900, 940]
+        slices = list(reader.iter_roi_frames(roi, start_ms=1000, end_ms=1200))
+        assert [sl.rel_ms for sl in slices] == [1000, 1040]
+        assert [sl.pts_ms for sl in slices] == [1500, 1540]
 
     # Subtest C: Demux duration probe with unknown origin (frame 0 pts=None, stream.start_time=None)
     # must anchor at min_pts_ms (12000), NOT inflate duration to 13000 via fallback 0.
@@ -725,3 +729,394 @@ def test_video_reader_missing_pts_after_seek_ntsc_zero_drift_and_demux_origin(
     with VideoReader(dummy_file) as reader:
         assert reader.metadata.start_pts_ms == 0
         assert reader.metadata.duration_ms == 1000
+
+
+def test_read_prev_frame_before_ms_does_not_deadlock_on_vfr_gap(tmp_path: Path, monkeypatch):
+    """read_prev_frame_before_ms returns latest frame strictly < current_pts_ms across VFR gaps."""
+    video_path = tmp_path / "vfr_gap.mp4"
+    pts_list = (0, 1000, 1084, 1126)
+    _make_synthetic_vfr_mp4(video_path, width=320, height=180, pts_ms_list=pts_list)
+
+    with VideoReader(video_path) as reader:
+        bgr_1000, pts_1000 = reader.read_prev_frame_before_ms(1084)
+        assert pts_1000 == 1000
+        assert bgr_1000.shape == (180, 320, 3)
+        assert bgr_1000.dtype == np.uint8
+
+        # Stepping back from 1000 crosses a 1000ms (>500ms) gap to frame 0 without deadlocking.
+        bgr_0, pts_0 = reader.read_prev_frame_before_ms(1000)
+        assert pts_0 == 0
+        assert bgr_0.shape == (180, 320, 3)
+
+        # Verify distinct frame pixels (not corrupted or duplicated buffer).
+        assert abs(float(bgr_1000[:40, :40, 0].mean()) - float(bgr_0[:40, :40, 0].mean())) > 15.0
+
+        # Already at start -> returns frame 0 cleanly.
+        bgr_start, pts_start = reader.read_prev_frame_before_ms(0)
+        assert pts_start == 0
+        assert bgr_start.shape == (180, 320, 3)
+
+    # Also verify progressive backoff (500, 2000, 5000, None) when container seek lands >= current_pts_ms.
+    tb_ms = Fraction(1, 1000)
+
+    class _FakeFrame:
+        def __init__(self, pts: int):
+            self.pts = pts
+            self.dts = pts
+            self.time_base = tb_ms
+            self.width = 64
+            self.height = 64
+            self.convert_calls = 0
+
+        def to_ndarray(self, format: str = "bgr24") -> np.ndarray:
+            self.convert_calls += 1
+            return np.full((64, 64, 3), self.pts % 250, dtype=np.uint8)
+
+    class _FakeStream:
+        start_time = 0
+        time_base = tb_ms
+        average_rate = Fraction(24, 1)
+        guessed_rate = Fraction(24, 1)
+        base_rate = Fraction(24, 1)
+        duration = 10_000
+        frames = 4
+        width = 64
+        height = 64
+        thread_type = "AUTO"
+
+        class _Codec:
+            width = 64
+            height = 64
+
+        codec_context = _Codec()
+
+    frames = [_FakeFrame(0), _FakeFrame(4000), _FakeFrame(7000), _FakeFrame(7042)]
+
+    class _BackoffContainer:
+        def __init__(self) -> None:
+            self.duration = 10_000_000
+            self._seek_ms = 0
+            self.seek_targets: list[int] = []
+
+            class _Streams:
+                video = [_FakeStream()]
+
+            self.streams = _Streams()
+
+        def seek(self, offset, *args, **kwargs):
+            # Stream-less _seek_to_start uses microseconds; stream seek uses tb_ms ticks.
+            pos_ms = int(offset // 1000) if "stream" not in kwargs else int(offset)
+            self._seek_ms = pos_ms
+            self.seek_targets.append(pos_ms)
+
+        def decode(self, _stream):
+            # Simulate keyframes only at 0, 4000, 7000 where seeks > 4000 snap to 7000.
+            if self._seek_ms <= 0:
+                yield from frames
+            elif self._seek_ms <= 4000:
+                yield from frames[1:]
+            else:
+                yield from frames[2:]
+
+        def close(self) -> None:
+            pass
+
+    cont = _BackoffContainer()
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont)
+    with VideoReader(video_path) as reader:
+        cont.seek_targets.clear()
+        bgr, pts = reader.read_prev_frame_before_ms(7000)
+        assert pts == 4000
+        assert int(bgr[0, 0, 0]) == 4000 % 250
+        # Backoff tried 7000-500=6500, 7000-2000=5000, then 7000-5000=2000 (<=4000) which succeeded.
+        assert cont.seek_targets == [6500, 5000, 2000]
+        # Only the chosen frame was converted to bgr24.
+        assert sum(f.convert_calls for f in frames) == 1
+
+
+def test_iter_full_frames_from_ms_handles_negative_start_pts_vfr_and_past_eof(
+    tmp_path: Path, monkeypatch
+):
+    """iter_full_frames_from_ms streams mid-clip VFR, negative start_pts_ms, and yields empty past EOF."""
+    video_path = tmp_path / "vfr_full_stream.mp4"
+    pts_list = (500, 540, 620, 700, 860, 910)
+    _make_synthetic_vfr_mp4(video_path, width=320, height=180, pts_ms_list=pts_list)
+
+    with VideoReader(video_path) as reader:
+        mid = list(reader.iter_full_frames_from_ms(650))
+        assert [pts for _, pts, _ in mid] == [700, 860, 910]
+        assert all(bgr.shape == (180, 320, 3) and bgr.dtype == np.uint8 for _, _, bgr in mid)
+
+        past_eof = list(reader.iter_full_frames_from_ms(5000))
+        assert past_eof == []
+
+    # Negative start_pts_ms + backward seek safety margin verification.
+    tb_ms = Fraction(1, 1000)
+
+    class _FakeFrame:
+        def __init__(self, pts: int):
+            self.pts = pts
+            self.dts = pts
+            self.time_base = tb_ms
+            self.width = 64
+            self.height = 64
+
+        def to_ndarray(self, format: str = "bgr24") -> np.ndarray:
+            return np.zeros((64, 64, 3), dtype=np.uint8)
+
+    class _FakeStream:
+        start_time = 0
+        time_base = tb_ms
+        average_rate = Fraction(25, 1)
+        guessed_rate = Fraction(25, 1)
+        base_rate = Fraction(25, 1)
+        duration = 2000
+        frames = 40
+        width = 64
+        height = 64
+        thread_type = "AUTO"
+
+        class _Codec:
+            width = 64
+            height = 64
+
+        codec_context = _Codec()
+
+    neg_frames = [_FakeFrame(-83 + i * 40) for i in range(40)]  # -83 .. 1477
+
+    class _NegContainer:
+        def __init__(self) -> None:
+            self.duration = 2_000_000
+            self.seek_calls: list[tuple[int, bool]] = []
+
+            class _Streams:
+                video = [_FakeStream()]
+
+            self.streams = _Streams()
+
+        def seek(self, offset, *args, **kwargs):
+            self.seek_calls.append((int(offset), "stream" in kwargs))
+
+        def decode(self, _stream):
+            yield from neg_frames
+
+        def close(self) -> None:
+            pass
+
+    cont = _NegContainer()
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont)
+    with VideoReader(video_path) as reader:
+        assert reader.metadata.start_pts_ms == -83
+
+        from_neg = list(reader.iter_full_frames_from_ms(-43))
+        assert from_neg[0][1] == -43
+        assert from_neg[-1][1] == neg_frames[-1].pts
+
+        cont.seek_calls.clear()
+        from_mid = list(reader.iter_full_frames_from_ms(1000))
+        assert from_mid[0][1] == 1037
+        # Must apply 500ms backward safety margin (seek <= 1000 - 500 = 500).
+        stream_seeks = [off for off, has_stream in cont.seek_calls if has_stream]
+        assert stream_seeks and stream_seeks[0] <= 500
+
+        empty = list(reader.iter_full_frames_from_ms(9999))
+        assert empty == []
+
+
+def test_seek_applies_backward_safety_margin_and_defers_bgr_conversion(
+    tmp_path: Path, monkeypatch
+):
+    """_decode_near_ms & iter_roi_frames seek with >=500ms backward margin and convert only chosen frame."""
+    dummy_path = tmp_path / "lazy_bgr.mp4"
+    # First verify real PyAV VideoFrame buffer integrity when prev_frame is chosen after decoding next frame.
+    real_pts = tuple(i * 100 for i in range(15))  # 0, 100, ..., 1400
+    _make_synthetic_vfr_mp4(dummy_path, width=160, height=90, pts_ms_list=real_pts)
+    with VideoReader(dummy_path) as reader:
+        # 520 is closer to prev frame 500 (dist 20) than curr frame 600 (dist 80).
+        _, pts_500, bgr_500 = reader.read_frame_at_ms(520)
+        _, pts_600, bgr_600 = reader.read_frame_at_ms(600)
+        assert pts_500 == 500
+        assert pts_600 == 600
+        # Frame 5 and frame 6 have distinct top-region colors in _make_synthetic_vfr_mp4.
+        assert abs(float(bgr_500[:20, :20, 0].mean()) - float(bgr_600[:20, :20, 0].mean())) > 15.0
+
+    # Spy on seek offsets and to_ndarray() calls across _decode_near_ms and iter_roi_frames.
+    tb_ms = Fraction(1, 1000)
+
+    class _CountingFrame:
+        def __init__(self, pts: int, counter: list[int]):
+            self.pts = pts
+            self.dts = pts
+            self.time_base = tb_ms
+            self.width = 64
+            self.height = 64
+            self._counter = counter
+
+        def to_ndarray(self, format: str = "bgr24") -> np.ndarray:
+            self._counter.append(self.pts)
+            return np.full((64, 64, 3), self.pts % 250, dtype=np.uint8)
+
+    class _FakeStream:
+        start_time = 200
+        time_base = tb_ms
+        average_rate = Fraction(10, 1)
+        guessed_rate = Fraction(10, 1)
+        base_rate = Fraction(10, 1)
+        duration = 2400
+        frames = 24
+        width = 64
+        height = 64
+        thread_type = "AUTO"
+
+        class _Codec:
+            width = 64
+            height = 64
+
+        codec_context = _Codec()
+
+    converted_pts: list[int] = []
+    fake_frames = [_CountingFrame(200 + i * 100, converted_pts) for i in range(24)]  # 200..2500
+
+    class _SpyContainer:
+        def __init__(self) -> None:
+            self.duration = 2_400_000
+            self.stream_seeks: list[int] = []
+            self.start_seeks: list[int] = []
+
+            class _Streams:
+                video = [_FakeStream()]
+
+            self.streams = _Streams()
+
+        def seek(self, offset, *args, **kwargs):
+            if "stream" in kwargs:
+                self.stream_seeks.append(int(offset))
+            else:
+                self.start_seeks.append(int(offset))
+
+        def decode(self, _stream):
+            yield from fake_frames
+
+        def close(self) -> None:
+            pass
+
+    cont = _SpyContainer()
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont)
+    with VideoReader(dummy_path) as reader:
+        assert reader.metadata.start_pts_ms == 200
+
+        # Case 1: target=1500 -> seeks <= 1500 - 500 = 1000, converts ONLY chosen frame (1500).
+        cont.stream_seeks.clear()
+        converted_pts.clear()
+        _, pts, bgr = reader.read_frame_at_ms(1500)
+        assert pts == 1500
+        assert int(bgr[0, 0, 0]) == 1500 % 250
+        assert cont.stream_seeks == [1000]
+        assert converted_pts == [1500]
+
+        # Case 2: target=1430 -> prev_frame (1400) wins over curr_frame (1500), ONLY 1400 converted.
+        cont.stream_seeks.clear()
+        converted_pts.clear()
+        _, pts, bgr = reader.read_frame_at_ms(1430)
+        assert pts == 1400
+        assert int(bgr[0, 0, 0]) == 1400 % 250
+        assert cont.stream_seeks == [930]
+        assert converted_pts == [1400]
+
+        # Case 3: target=400 -> 400 - 500 = -100 clamped to start_pts_ms (200) -> seeks to start.
+        cont.stream_seeks.clear()
+        cont.start_seeks.clear()
+        converted_pts.clear()
+        _, pts, _ = reader.read_frame_at_ms(400)
+        assert pts == 400
+        assert cont.stream_seeks == []
+        assert len(cont.start_seeks) >= 1
+        assert converted_pts == [400]
+
+        # Case 4: iter_roi_frames(start_ms=1300) -> target_raw_ms=1500 -> seeks <= 1000.
+        cont.stream_seeks.clear()
+        slices = list(reader.iter_roi_frames(RoiRect(0.0, 0.0, 1.0, 1.0), start_ms=1300, end_ms=1400))
+        assert [sl.pts_ms for sl in slices] == [1500, 1600]
+        assert cont.stream_seeks == [1000]
+
+
+def test_pts_less_frames_before_trim_start_are_not_anchored_prematurely(
+    tmp_path: Path, monkeypatch
+):
+    """Post-seek frames with pts=None before target_raw_ms anchor at seek_raw_ms and are skipped."""
+    dummy_path = tmp_path / "pts_less_preroll.mp4"
+    _make_synthetic_vfr_mp4(dummy_path, width=64, height=64, pts_ms_list=(0, 40))
+
+    tb_ms = Fraction(1, 1000)
+
+    class _FakeFrame:
+        def __init__(self, pts: int | None, tag: int):
+            self.pts = pts
+            self.dts = None
+            self.time_base = tb_ms
+            self.width = 64
+            self.height = 64
+            self.tag = tag
+
+        def to_ndarray(self, format: str = "bgr24") -> np.ndarray:
+            return np.full((64, 64, 3), self.tag, dtype=np.uint8)
+
+    class _FakeStream:
+        start_time = 500
+        time_base = tb_ms
+        average_rate = Fraction(25, 1)
+        guessed_rate = Fraction(25, 1)
+        base_rate = Fraction(25, 1)
+        duration = 3000
+        frames = 75
+        width = 64
+        height = 64
+        thread_type = "AUTO"
+
+        class _Codec:
+            width = 64
+            height = 64
+
+        codec_context = _Codec()
+
+    init_frames = [_FakeFrame(pts=500, tag=10)]
+    post_seek_frames = [
+        _FakeFrame(pts=None, tag=20),   # pre-window keyframe without pts -> anchored at seek_raw_ms=1000
+        _FakeFrame(pts=None, tag=30),   # 1040 -> skipped
+        _FakeFrame(pts=1420, tag=40),   # real pre-roll < 1500 -> skipped
+        _FakeFrame(pts=None, tag=50),   # synthesized 1460 < 1500 -> skipped
+        _FakeFrame(pts=1500, tag=60),   # target_raw_ms=1500 (rel_ms=1000) -> yielded
+        _FakeFrame(pts=1540, tag=70),   # 1540 (rel_ms=1040) -> yielded
+    ]
+
+    class _FakeContainer:
+        def __init__(self) -> None:
+            self.duration = 3_000_000
+            self._after_seek = False
+
+            class _Streams:
+                video = [_FakeStream()]
+
+            self.streams = _Streams()
+
+        def seek(self, offset, *args, **kwargs):
+            self._after_seek = "stream" in kwargs and int(offset) > 500
+
+        def decode(self, _stream):
+            yield from (post_seek_frames if self._after_seek else init_frames)
+
+        def close(self) -> None:
+            pass
+
+    cont = _FakeContainer()
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont)
+    roi = RoiRect(0.0, 0.0, 1.0, 1.0)
+    with VideoReader(dummy_path) as reader:
+        slices = list(reader.iter_roi_frames(roi, start_ms=1000, end_ms=1100))
+        assert [sl.pts_ms for sl in slices] == [1500, 1540]
+        assert [sl.rel_ms for sl in slices] == [1000, 1040]
+        assert [int(sl.bgr_roi[0, 0, 0]) for sl in slices] == [60, 70]
+
+        full_frames = list(reader.iter_full_frames_from_ms(1500))
+        assert [pts for _, pts, _ in full_frames] == [1500, 1540]
+        assert [int(bgr[0, 0, 0]) for _, _, bgr in full_frames] == [60, 70]
