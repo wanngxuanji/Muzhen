@@ -678,3 +678,139 @@ def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
     assert recognize_spans_with_voting([span_ghost], ghost_pts, FixedEngine("生", 0.55), cfg) == []
     kept = recognize_spans_with_voting([span_real], ghost_pts, FixedEngine("嗯", 0.95), cfg)
     assert len(kept) == 1 and kept[0].text == "嗯"
+
+
+def test_stage2_streams_pending_cluster_inline_and_honors_cancel_on_flush():
+    from transapp.core.models import ExtractionCancelled
+
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=200)
+    frame_pts_ms = [i * 100 for i in range(40)]
+    # 3 distinct cues separated by > flash_bridge_max_ms
+    span1 = _make_encoded_span([0, 1, 2, 3, 4], [0, 100, 200, 300, 400], end_ms=500)
+    span2 = _make_encoded_span([10, 11, 12, 13, 14], [1000, 1100, 1200, 1300, 1400], end_ms=1500)
+    span3 = _make_encoded_span([20, 21, 22, 23, 24], [2000, 2100, 2200, 2300, 2400], end_ms=2500)
+
+    timeline: list[str] = []
+
+    class StreamingTrackEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx < 10:
+                timeline.append("ocr_span1")
+                return ("第一句字幕", 0.98)
+            if fidx < 20:
+                timeline.append("ocr_span2")
+                return ("第二句字幕", 0.98)
+            timeline.append("ocr_span3")
+            return ("第三句字幕", 0.98)
+
+        def encode_thumbnail_png(self, bgr_roi: np.ndarray) -> bytes:
+            timeline.append("flush_thumb")
+            return super().encode_thumbnail_png(bgr_roi)
+
+    segs = recognize_spans_with_voting(
+        [span1, span2, span3], frame_pts_ms, StreamingTrackEngine(), cfg
+    )
+    assert [s.text for s in segs] == ["第一句字幕", "第二句字幕", "第三句字幕"]
+    # Span 1 must be flushed BEFORE span 3 OCR begins (O(1) streaming finalization)
+    first_flush_pos = timeline.index("flush_thumb")
+    first_span3_ocr_pos = timeline.index("ocr_span3")
+    assert first_flush_pos < first_span3_ocr_pos
+
+    # Also verify cancel_check is respected during final _flush_cluster
+    span_cancel = _make_encoded_span([0, 1, 2, 3, 4], [0, 100, 200, 300, 400], end_ms=500)
+    ocr_done = {"count": 0}
+
+    class CancelOnFlushEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            ocr_done["count"] += 1
+            return ("第一句字幕", 0.98)
+
+    with pytest.raises(ExtractionCancelled):
+        recognize_spans_with_voting(
+            [span_cancel],
+            frame_pts_ms,
+            CancelOnFlushEngine(),
+            cfg,
+            cancel_check=lambda: ocr_done["count"] >= 3,
+        )
+
+
+def test_stage2_binary_search_handles_none_midpoint_after_true_cut():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
+    # 24-sample span: true cut at sample 6 (frames 0..5 = A, 6..23 = B), blank glare on 8..12
+    # so midpoint between lo=4 (A) and hi=15 (B) is None AFTER the true cut at 6.
+    frame_pts_ms = [i * 40 for i in range(25)]
+    span = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
+
+    class BlankMidEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if 8 <= fidx <= 12:
+                return ("", 0.0)
+            if fidx <= 5:
+                return ("我不会放过你的", 0.98)
+            return ("我不会放过他的", 0.98)
+
+    segs = recognize_spans_with_voting([span], frame_pts_ms, BlankMidEngine(), cfg)
+    assert len(segs) == 2
+    assert segs[0].text == "我不会放过你的"
+    assert segs[1].text == "我不会放过他的"
+    assert abs(segs[0].end_ms - frame_pts_ms[6]) <= 40
+    assert segs[1].start_ms == segs[0].end_ms
+
+
+def test_stage2_absorbed_high_conf_sandwich_noise_excluded_from_voting():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
+    # 3-sample span: [truncated(0.88), GARBAGE(0.92), fuller(0.89)]
+    # Sandwich noise has HIGHER conf than either real vote, so it must be excluded from voting!
+    frame_pts_ms = [0, 200, 400, 600]
+    span = _make_encoded_span([0, 1, 2], [0, 200, 400], end_ms=600)
+
+    class HighConfGlitchEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx == 0:
+                return ("个蕴藏着神秘力量的", 0.88)
+            if fidx == 1:
+                return ("乱码错字", 0.92)
+            return ("一个蕴藏着神秘力量的", 0.89)
+
+    segs = recognize_spans_with_voting([span], frame_pts_ms, HighConfGlitchEngine(), cfg)
+    assert len(segs) == 1
+    assert segs[0].text == "一个蕴藏着神秘力量的"
+
+
+def test_brightness_retry_cleaned_edge_rejects_severely_truncated_result():
+    cfg = ExtractConfig(conf_threshold=0.85)
+    img = _solid_roi(55)
+
+    class TruncatingRetryEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+            self.called = False
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            if brightness_filter:
+                self.called = True
+                return ("世", 0.95)
+            return ("G我们是救世", 0.78)
+
+    eng = TruncatingRetryEngine()
+    votes = [_FrameVote(100, "G我们是救世", 0.78, img, frame_idx=1)]
+    txt, conf, _ = _choose_majority_vote(votes, eng, cfg)
+    assert eng.called is True
+    assert txt == "G我们是救世"
+    assert conf == pytest.approx(0.78)

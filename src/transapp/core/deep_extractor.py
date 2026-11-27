@@ -550,7 +550,7 @@ def _choose_majority_vote(
             added = cand[: len(cand) - len(winner)] if cand.endswith(winner) else cand[len(winner) :]
             if 1 <= len(added) <= 2 and all(_HANZI_RE.match(ch) for ch in added):
                 max_c = max(confs[cand])
-                if max_c >= 0.92 or (max_c >= 0.90 and cnt >= max(1, counts.get(winner, 1) // 2)):
+                if max_c >= 0.92 or (max_c >= 0.90 and cnt >= max(1, pooled_counts.get(winner, 1) // 2)):
                     cand_key = (max_c, cnt, len(cand))
                     if best_fuller is None or cand_key > best_fuller[0]:
                         best_fuller = (cand_key, cand)
@@ -599,10 +599,12 @@ def _choose_majority_vote(
             if retry_text and _HANZI_RE.search(retry_text):
                 winner_noisy = _has_edge_noise(winner) or _has_suspicious_noise(winner)
                 retry_noisy = _has_edge_noise(retry_text) or _has_suspicious_noise(retry_text)
+                clean_base_len = len(_strip_edge_noise(winner)) or len(winner)
                 cleaned_edge = (
                     winner_noisy
                     and not retry_noisy
                     and retry_conf >= max(0.78, win_conf - 0.05)
+                    and len(retry_text) >= max(1, int(0.70 * clean_base_len))
                 )
                 higher_conf = (
                     (not retry_noisy)
@@ -1016,11 +1018,45 @@ def recognize_spans_with_voting(
         return []
 
     total_frames = len(frame_pts_ms)
-    clusters: list[_VoteCluster] = []
+    ocr_segments: list[OcrSegment] = []
+    pending_cluster: _VoteCluster | None = None
+
+    def _flush_cluster(cl: _VoteCluster | None) -> None:
+        if cl is None or not cl.votes:
+            return
+        if cancel_check is not None and cancel_check():
+            raise ExtractionCancelled("Deep OCR recognition cancelled")
+        win_text, win_conf, win_bgr = _choose_majority_vote(cl.votes, ocr_engine, config)
+        dur_cl = cl.end_ms - cl.start_ms
+        stripped = _strip_for_similarity(win_text)
+        keep = not (
+            (len(cl.votes) == 1 and dur_cl < max(200, config.min_duration_ms) and win_conf < 0.88)
+            or (len(cl.votes) <= 2 and len(stripped) <= 2 and win_conf < 0.72)
+        )
+        if keep:
+            thumb_png = ocr_engine.encode_thumbnail_png(win_bgr)
+            ocr_segments.append(
+                OcrSegment(
+                    start_ms=cl.start_ms,
+                    end_ms=max(cl.start_ms + 1, cl.end_ms),
+                    text=win_text,
+                    confidence=win_conf,
+                    thumbnail_png=thumb_png,
+                )
+            )
+        cl.votes.clear()
 
     for sp_idx, span in enumerate(eligible):
         if cancel_check is not None and cancel_check():
             raise ExtractionCancelled("Deep OCR recognition cancelled")
+
+        # Eagerly flush pending_cluster once span gap exceeds flash_bridge_max_ms (O(1) RAM)
+        if (
+            pending_cluster is not None
+            and (span.start_ms - pending_cluster.end_ms) > config.flash_bridge_max_ms
+        ):
+            _flush_cluster(pending_cluster)
+            pending_cluster = None
 
         samples = span.samples
         n = len(samples)
@@ -1095,21 +1131,38 @@ def recognize_spans_with_voting(
                         continue
                     if _is_strict_same_cue(lo_vote.text, hi_vote.text, lo_vote.conf, hi_vote.conf):
                         continue
-                    for _ in range(4):
+                    for _ in range(5):
                         if hi_idx - lo_idx <= 1:
                             break
                         mid = (lo_idx + hi_idx) // 2
-                        mid_vote = eval_sample(mid)
+                        probe_idx = mid
+                        mid_vote = eval_sample(probe_idx)
                         if mid_vote is None:
-                            lo_idx = mid
-                        elif _is_strict_same_cue(
+                            # Probe expanding offsets -1, +1, -2, +2, ... inside (lo_idx, hi_idx)
+                            max_offset = max(mid - lo_idx - 1, hi_idx - mid - 1)
+                            for offset in range(1, max_offset + 1):
+                                for cand in (mid - offset, mid + offset):
+                                    if lo_idx < cand < hi_idx:
+                                        if cand in eval_cache and eval_cache[cand] is None:
+                                            continue
+                                        cand_vote = eval_sample(cand)
+                                        if cand_vote is not None:
+                                            probe_idx = cand
+                                            mid_vote = cand_vote
+                                            break
+                                if mid_vote is not None:
+                                    break
+                            if mid_vote is None:
+                                break
+
+                        if _is_strict_same_cue(
                             lo_vote.text, mid_vote.text, lo_vote.conf, mid_vote.conf
                         ):
-                            lo_idx, lo_vote = mid, mid_vote
+                            lo_idx, lo_vote = probe_idx, mid_vote
                         elif _is_strict_same_cue(
                             mid_vote.text, hi_vote.text, mid_vote.conf, hi_vote.conf
                         ):
-                            hi_idx, hi_vote = mid, mid_vote
+                            hi_idx, hi_vote = probe_idx, mid_vote
                         else:
                             break
 
@@ -1119,10 +1172,10 @@ def recognize_spans_with_voting(
                 sub_groups: list[list[tuple[int, _FrameVote]]] = [[evaluated[0]]]
                 anchor_vote = evaluated[0][1]
                 for k in range(1, len(evaluated)):
-                    idx_k, v_k = evaluated[k]
                     if k in absorbed:
-                        sub_groups[-1].append((idx_k, v_k))
-                    elif _is_strict_same_cue(anchor_vote.text, v_k.text, anchor_vote.conf, v_k.conf):
+                        continue
+                    idx_k, v_k = evaluated[k]
+                    if _is_strict_same_cue(anchor_vote.text, v_k.text, anchor_vote.conf, v_k.conf):
                         sub_groups[-1].append((idx_k, v_k))
                         if not _has_edge_noise(v_k.text) or _has_edge_noise(anchor_vote.text):
                             anchor_vote = v_k
@@ -1130,6 +1183,7 @@ def recognize_spans_with_voting(
                         sub_groups.append([(idx_k, v_k)])
                         anchor_vote = v_k
 
+                prev_g_end: int | None = None
                 for g_idx, grp_items in enumerate(sub_groups):
                     grp_votes = [v for _, v in grp_items]
                     first_vote = grp_votes[0]
@@ -1139,9 +1193,11 @@ def recognize_spans_with_voting(
                         g_start = frame_pts_ms[first_vote.frame_idx]
                     else:
                         g_start = first_vote.pts_ms
+                    if prev_g_end is not None and g_start < prev_g_end:
+                        g_start = prev_g_end
 
                     if g_idx == len(sub_groups) - 1:
-                        g_end = span.end_ms
+                        g_end = max(g_start + 1, span.end_ms)
                     else:
                         next_first = sub_groups[g_idx + 1][0][1]
                         if 0 <= next_first.frame_idx < total_frames:
@@ -1149,46 +1205,31 @@ def recognize_spans_with_voting(
                         else:
                             next_start_ms = next_first.pts_ms
                         g_end = max(g_start + 1, next_start_ms)
+                    prev_g_end = g_end
 
                     grp_rep = _group_representative_vote(grp_votes)
-                    if clusters:
-                        prev_cluster = clusters[-1]
-                        gap_ms = g_start - prev_cluster.end_ms
-                        prev_rep = _group_representative_vote(prev_cluster.votes)
+                    if pending_cluster is not None:
+                        gap_ms = g_start - pending_cluster.end_ms
+                        prev_rep = _group_representative_vote(pending_cluster.votes)
                         if gap_ms <= config.flash_bridge_max_ms and _is_strict_same_cue(
                             prev_rep.text, grp_rep.text, prev_rep.conf, grp_rep.conf
                         ):
-                            prev_cluster.end_ms = max(prev_cluster.end_ms, g_end)
-                            prev_cluster.votes.extend(grp_votes)
+                            pending_cluster.end_ms = max(pending_cluster.end_ms, g_end)
+                            pending_cluster.votes.extend(grp_votes)
                             continue
-                    clusters.append(_VoteCluster(start_ms=g_start, end_ms=g_end, votes=list(grp_votes)))
+                        _flush_cluster(pending_cluster)
+                    pending_cluster = _VoteCluster(
+                        start_ms=g_start, end_ms=g_end, votes=list(grp_votes)
+                    )
 
+        eval_cache.clear()
         decoded_cache.clear()
         span.samples.clear()
         span.last_sig = None
         if ocr_progress_cb is not None:
             ocr_progress_cb(sp_idx + 1, total_spans)
 
-    ocr_segments: list[OcrSegment] = []
-    for cl in clusters:
-        win_text, win_conf, win_bgr = _choose_majority_vote(cl.votes, ocr_engine, config)
-        dur = cl.end_ms - cl.start_ms
-        stripped = _strip_for_similarity(win_text)
-        if len(cl.votes) == 1 and dur < max(200, config.min_duration_ms) and win_conf < 0.88:
-            continue
-        if len(cl.votes) <= 2 and len(stripped) <= 2 and win_conf < 0.72:
-            continue
-        thumb_png = ocr_engine.encode_thumbnail_png(win_bgr)
-        ocr_segments.append(
-            OcrSegment(
-                start_ms=cl.start_ms,
-                end_ms=max(cl.start_ms + 1, cl.end_ms),
-                text=win_text,
-                confidence=win_conf,
-                thumbnail_png=thumb_png,
-            )
-        )
-
+    _flush_cluster(pending_cluster)
     return ocr_segments
 
 
