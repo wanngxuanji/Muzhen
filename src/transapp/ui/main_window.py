@@ -7,8 +7,20 @@ from pathlib import Path
 import threading
 
 import numpy as np
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QLinearGradient, QPainter, QPaintEvent, QPen, QRegion
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QDesktopServices,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeyEvent,
+    QLinearGradient,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QRegion,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -51,10 +63,10 @@ from transapp.core.ocr_engine import OcrEngine
 from transapp.core.pipeline import ExtractionPipeline
 from transapp.core.presets import PresetStore, RoiPreset
 from transapp.core.video_reader import VideoMetadata, VideoReader
-from transapp.exporters import export_ass, export_srt, format_ass_time
+from transapp.exporters import export_ass, export_srt, format_ass_time, prepare_export_cues
 from transapp.ui.icons import make_icon
 from transapp.ui.review_table import ReviewTable
-from transapp.ui.roi_canvas import RoiCanvas
+from transapp.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
 
 
 def _make_divider() -> QFrame:
@@ -200,12 +212,14 @@ class MainWindow(QMainWindow):
         preset_store: PresetStore | None = None,
         pipeline: ExtractionPipeline | None = None,
         overwrite_confirm_fn: Callable[[list[Path]], bool] | None = None,
+        unsaved_confirm_fn: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._preset_store = preset_store if preset_store is not None else PresetStore()
         self._pipeline = pipeline if pipeline is not None else ExtractionPipeline()
         self._overwrite_confirm_fn = overwrite_confirm_fn
+        self._unsaved_confirm_fn = unsaved_confirm_fn
 
         self._video_path: Path | None = None
         self._video_meta: VideoMetadata | None = None
@@ -218,6 +232,8 @@ class MainWindow(QMainWindow):
         self._extract_result: ExtractResult | None = None
         self._trim_start_ms: int | None = None
         self._trim_end_ms: int | None = None
+        self._has_unexported_edits: bool = False
+        self._last_export_dir: Path | None = None
         self._is_playing: bool = False
         self._play_iter: Iterator[tuple[int, int, np.ndarray]] | None = None
         self._play_timer = QTimer(self)
@@ -229,6 +245,7 @@ class MainWindow(QMainWindow):
         self._retiring_threads: list[QThread] = []
         self._retiring_workers: dict[QThread, _ExtractionWorker | None] = {}
 
+        self.setAcceptDrops(True)
         self.setWindowTitle("TransApp - Tách Sub Raw Tiếng Trung")
         target_w, target_h = 1160, 680
         screen = self.screen()
@@ -642,7 +659,18 @@ class MainWindow(QMainWindow):
         self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=14))
         self.btn_export.setIconSize(QSize(14, 14))
         self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_open_out_dir = QPushButton()
+        self.btn_open_out_dir.setProperty("variant", "tool")
+        self.btn_open_out_dir.setIcon(make_icon("folder_open", size=14))
+        self.btn_open_out_dir.setIconSize(QSize(14, 14))
+        self.btn_open_out_dir.setFixedSize(28, 28)
+        self.btn_open_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_open_out_dir.setToolTip("Mở thư mục chứa file phụ đề đã xuất")
+        self.btn_open_out_dir.setEnabled(False)
+
         self.review_table.add_header_widget(self.btn_export)
+        self.review_table.add_header_widget(self.btn_open_out_dir)
         review_layout.addWidget(self.review_table, 1)
 
         vertical_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -654,6 +682,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.roi_canvas.roi_changed.connect(self._update_roi_label)
+        self.roi_canvas.video_dropped.connect(self._on_video_dropped)
         self.btn_browse_video.clicked.connect(self._browse_video)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         self.btn_save_preset.clicked.connect(lambda: self.save_preset())
@@ -671,6 +700,8 @@ class MainWindow(QMainWindow):
         self.btn_set_out.clicked.connect(lambda: self.set_trim_out())
         self.btn_clear_trim.clicked.connect(self.clear_trim)
 
+        self.chk_ass.toggled.connect(lambda _: self._update_controls_state())
+        self.chk_srt.toggled.connect(lambda _: self._update_controls_state())
         self.radio_dir_same.toggled.connect(lambda _: self._update_controls_state())
         self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
         self.btn_browse_out_dir.clicked.connect(self._browse_output_dir)
@@ -680,6 +711,12 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self.start_extraction)
         self.btn_stop.clicked.connect(self.stop_extraction)
         self.btn_export.clicked.connect(self.export_subtitles)
+        self.btn_open_out_dir.clicked.connect(self.open_output_folder)
+
+        self.review_table.jump_requested.connect(self._on_review_jump_requested)
+        self.review_table.snap_start_requested.connect(self._on_review_snap_start)
+        self.review_table.snap_end_requested.connect(self._on_review_snap_end)
+        self.review_table.events_modified.connect(self._on_review_events_modified)
 
     def _is_running(self) -> bool:
         return self._worker_thread is not None and self._worker_thread.isRunning()
@@ -773,73 +810,163 @@ class MainWindow(QMainWindow):
             return True
         return False
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if not self._is_running() and extract_dropped_video_path(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._is_running():
+            event.ignore()
+            return
+        video_path = extract_dropped_video_path(event.mimeData())
+        if video_path is not None:
+            event.acceptProposedAction()
+            self.load_video(video_path)
+            return
+        event.ignore()
+
+    def _on_video_dropped(self, path_str: str) -> None:
+        if self._is_running():
+            return
+        self.load_video(path_str)
+
+    def _on_review_jump_requested(self, rel_ms: int) -> None:
+        if self._video_meta is None or self._is_running():
+            return
+        self.seek_to_ms(self._start_pts_ms + int(rel_ms))
+
+    def _on_review_snap_start(self) -> None:
+        if self._video_meta is None or self._is_running():
+            return
+        if not self.review_table.apply_playhead_to_selected_start(self._current_rel_ms()):
+            self.status_label.setText("Không thể đặt Start ≥ End của dòng đang chọn")
+
+    def _on_review_snap_end(self) -> None:
+        if self._video_meta is None or self._is_running():
+            return
+        if not self.review_table.apply_playhead_to_selected_end(self._current_rel_ms()):
+            self.status_label.setText("Không thể đặt End ≤ Start của dòng đang chọn")
+
+    def _on_review_events_modified(self) -> None:
+        self._has_unexported_edits = True
+
+    def open_output_folder(self) -> bool:
+        """Open the folder containing the most recently exported subtitle files."""
+        if self._last_export_dir is None or not self._last_export_dir.exists():
+            return False
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_export_dir)))
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if not self._is_text_input_focused() and self._video_meta is not None and not self._is_running():
+        if not self._is_text_input_focused() and not self._is_running():
             key = event.key()
             mods = event.modifiers()
             no_mod = mods == Qt.KeyboardModifier.NoModifier
             shift_only = mods == Qt.KeyboardModifier.ShiftModifier
             ctrl_only = mods == Qt.KeyboardModifier.ControlModifier
+            alt_only = mods == Qt.KeyboardModifier.AltModifier
 
-            if key == Qt.Key.Key_Space and no_mod:
-                if not event.isAutoRepeat():
-                    self.toggle_playback()
+            if key == Qt.Key.Key_S and alt_only:
+                self.review_table.jump_to_selected_start()
                 event.accept()
                 return
-            if key == Qt.Key.Key_I and no_mod:
-                if not event.isAutoRepeat():
-                    self.set_trim_in()
+            if key == Qt.Key.Key_E and alt_only:
+                self.review_table.jump_to_selected_end()
                 event.accept()
                 return
-            if key == Qt.Key.Key_O and no_mod:
-                if not event.isAutoRepeat():
-                    self.set_trim_out()
+            if key == Qt.Key.Key_BracketLeft and ctrl_only:
+                self._on_review_snap_start()
                 event.accept()
                 return
-            if (
-                (key in (Qt.Key.Key_Left, Qt.Key.Key_Comma) and no_mod)
-                or (key == Qt.Key.Key_Less and (no_mod or shift_only))
-            ):
-                self._step_frame(-1)
+            if key == Qt.Key.Key_BracketRight and ctrl_only:
+                self._on_review_snap_end()
                 event.accept()
                 return
-            if (
-                (key in (Qt.Key.Key_Right, Qt.Key.Key_Period) and no_mod)
-                or (key == Qt.Key.Key_Greater and (no_mod or shift_only))
-            ):
-                self._step_frame(1)
+            if key == Qt.Key.Key_D and ctrl_only:
+                self.review_table.mark_selected_ok()
                 event.accept()
                 return
-            if key == Qt.Key.Key_Left and shift_only:
-                self._jump_ms(-1000)
-                event.accept()
-                return
-            if key == Qt.Key.Key_Right and shift_only:
-                self._jump_ms(1000)
-                event.accept()
-                return
-            if key == Qt.Key.Key_Left and ctrl_only:
-                self._jump_ms(-5000)
-                event.accept()
-                return
-            if key == Qt.Key.Key_Right and ctrl_only:
-                self._jump_ms(5000)
-                event.accept()
-                return
-            if key == Qt.Key.Key_Home and no_mod:
-                self._seek_to_start()
-                event.accept()
-                return
-            if key == Qt.Key.Key_End and no_mod:
-                self._seek_to_end()
-                event.accept()
-                return
+
+            if self._video_meta is not None:
+                if key == Qt.Key.Key_Space and no_mod:
+                    if not event.isAutoRepeat():
+                        self.toggle_playback()
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_I and no_mod:
+                    if not event.isAutoRepeat():
+                        self.set_trim_in()
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_O and no_mod:
+                    if not event.isAutoRepeat():
+                        self.set_trim_out()
+                    event.accept()
+                    return
+                if (
+                    (key in (Qt.Key.Key_Left, Qt.Key.Key_Comma) and no_mod)
+                    or (key == Qt.Key.Key_Less and (no_mod or shift_only))
+                ):
+                    self._step_frame(-1)
+                    event.accept()
+                    return
+                if (
+                    (key in (Qt.Key.Key_Right, Qt.Key.Key_Period) and no_mod)
+                    or (key == Qt.Key.Key_Greater and (no_mod or shift_only))
+                ):
+                    self._step_frame(1)
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_Left and shift_only:
+                    self._jump_ms(-1000)
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_Right and shift_only:
+                    self._jump_ms(1000)
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_Left and ctrl_only:
+                    self._jump_ms(-5000)
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_Right and ctrl_only:
+                    self._jump_ms(5000)
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_Home and no_mod:
+                    self._seek_to_start()
+                    event.accept()
+                    return
+                if key == Qt.Key.Key_End and no_mod:
+                    self._seek_to_end()
+                    event.accept()
+                    return
         super().keyPressEvent(event)
+
+    def _update_export_button(self) -> None:
+        want_ass = self.chk_ass.isChecked()
+        want_srt = self.chk_srt.isChecked()
+        if want_ass and want_srt:
+            self.btn_export.setText("Xuất .ass + .srt")
+        elif want_ass:
+            self.btn_export.setText("Xuất .ass")
+        elif want_srt:
+            self.btn_export.setText("Xuất .srt")
+        else:
+            self.btn_export.setText("Chưa chọn định dạng")
+
+        running = self._is_running()
+        has_video = self._video_path is not None and self._video_meta is not None
+        has_result = self._extract_result is not None
+        self.btn_export.setEnabled(
+            has_video and has_result and not running and (want_ass or want_srt)
+        )
+        self.btn_open_out_dir.setEnabled(self._last_export_dir is not None and not running)
 
     def _update_controls_state(self) -> None:
         running = self._is_running()
         has_video = self._video_path is not None and self._video_meta is not None
-        has_result = self._extract_result is not None
         has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
 
         self.btn_browse_video.setEnabled(not running)
@@ -871,7 +998,7 @@ class MainWindow(QMainWindow):
         self.spin_conf.setEnabled(not running)
         self.btn_start.setEnabled(has_video and not running)
         self.btn_stop.setEnabled(running)
-        self.btn_export.setEnabled(has_video and has_result and not running)
+        self._update_export_button()
 
     def _refresh_presets(self, select_name: str | None = None) -> None:
         names = self._preset_store.list_names()
@@ -966,11 +1093,15 @@ class MainWindow(QMainWindow):
     def _clear_session_results(self) -> None:
         """Release previous episode's extracted events and thumbnails from memory."""
         self._extract_result = None
+        self._has_unexported_edits = False
+        self._last_export_dir = None
         self.review_table.clear()
         self.test_result_label.setText("")
 
     def load_video(self, video_path: Path | str) -> None:
         """Load a single video episode, clearing any previous episode's memory state."""
+        if not self._confirm_discard_unsaved_edits():
+            return
         self._stop_and_wait_worker()
 
         self._clear_session_results()
@@ -1009,6 +1140,9 @@ class MainWindow(QMainWindow):
         self._duration_ms = max(0, reader.metadata.duration_ms)
         self._current_frame_ms = self._start_pts_ms
         self._current_frame_index = 0
+        self.review_table.set_frame_step_ms(
+            max(1, round(1000.0 / max(1.0, float(reader.metadata.fps))))
+        )
 
         self.video_path_edit.setText(str(path))
         fps_val = reader.metadata.fps
@@ -1285,6 +1419,8 @@ class MainWindow(QMainWindow):
         """Launch single-episode extraction on a background QThread."""
         if self._video_path is None or self._is_running():
             return
+        if not self._confirm_discard_unsaved_edits():
+            return
 
         self._clear_session_results()
         self._close_preview_reader()
@@ -1349,6 +1485,7 @@ class MainWindow(QMainWindow):
             return
         self._cleanup_worker()
         self._extract_result = result
+        self._has_unexported_edits = False
         self.review_table.set_events(result.events)
         self.progress_bar.setValue(100)
         self.status_label.setText(
@@ -1435,6 +1572,22 @@ class MainWindow(QMainWindow):
         elif worker is not None:
             worker.deleteLater()
 
+    def _confirm_discard_unsaved_edits(self) -> bool:
+        if not self._has_unexported_edits:
+            return True
+        if self._unsaved_confirm_fn is not None:
+            return bool(self._unsaved_confirm_fn())
+
+        reply = QMessageBox.question(
+            self,
+            "Chưa xuất chỉnh sửa phụ đề",
+            "Bạn có chỉnh sửa trong bảng rà soát chưa được xuất.\n"
+            "Bạn có chắc muốn bỏ các chỉnh sửa này không?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _confirm_overwrite(self, existing_paths: list[Path]) -> bool:
         if self._overwrite_confirm_fn is not None:
             return bool(self._overwrite_confirm_fn(existing_paths))
@@ -1461,6 +1614,15 @@ class MainWindow(QMainWindow):
                 self,
                 "Chưa chọn định dạng",
                 "Vui lòng chọn ít nhất một định dạng xuất (.ass hoặc .srt).",
+            )
+            return False
+
+        events = self.review_table.events()
+        if not prepare_export_cues(events):
+            QMessageBox.information(
+                self,
+                "Không có phụ đề để xuất",
+                "Danh sách phụ đề hiện đang trống hoặc không có dòng hợp lệ.",
             )
             return False
 
@@ -1499,7 +1661,6 @@ class MainWindow(QMainWindow):
         if existing and not self._confirm_overwrite(existing):
             return False
 
-        events = self.review_table.events()
         try:
             if want_ass:
                 export_ass(
@@ -1517,6 +1678,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Lỗi xuất phụ đề", str(exc))
             return False
 
+        self._has_unexported_edits = False
+        self._last_export_dir = out_dir
+        self._update_controls_state()
         self.status_label.setText(
             "Đã xuất: " + ", ".join(p.name for p in targets)
         )
@@ -1524,6 +1688,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background extraction, close open readers, and clear review memory."""
+        if not self._confirm_discard_unsaved_edits():
+            event.ignore()
+            return
         self._stop_and_wait_worker()
         for retiring in list(self._retiring_threads):
             retiring.quit()

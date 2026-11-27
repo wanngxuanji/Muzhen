@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QMimeData, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QDragEnterEvent,
+    QDropEvent,
     QImage,
     QMouseEvent,
     QPainter,
@@ -21,7 +24,22 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from transapp.core.models import RoiRect
 
+VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mkv", ".avi", ".mov", ".ts", ".webm")
+
 _DEFAULT_ROI = RoiRect(0.10, 0.78, 0.80, 0.16)
+
+
+def extract_dropped_video_path(mime_data: QMimeData | None) -> Path | None:
+    """Return the first local video file path from drag-and-drop mime data, or None."""
+    if mime_data is None or not mime_data.hasUrls():
+        return None
+    for url in mime_data.urls():
+        if not url.isLocalFile():
+            continue
+        candidate = Path(url.toLocalFile())
+        if candidate.suffix.lower() in VIDEO_EXTENSIONS:
+            return candidate
+    return None
 _HANDLE_HIT_PX = 8.0
 _HANDLE_DRAW_PX = 6.0
 _MIN_ROI_SPAN = 0.01
@@ -44,6 +62,7 @@ class RoiCanvas(QWidget):
     """Displays a video frame, optional stroke-mask overlay, and an editable normalized ROI."""
 
     roi_changed = Signal(object)
+    video_dropped = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -56,6 +75,7 @@ class RoiCanvas(QWidget):
         self._drag_anchor_norm: tuple[float, float] = (0.0, 0.0)
         self._drag_start_roi: RoiRect = self._roi
 
+        self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setMinimumSize(320, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -271,6 +291,23 @@ class RoiCanvas(QWidget):
             return
         super().mouseReleaseEvent(event)
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self.isEnabled() and extract_dropped_video_path(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not self.isEnabled():
+            event.ignore()
+            return
+        video_path = extract_dropped_video_path(event.mimeData())
+        if video_path is not None:
+            event.acceptProposedAction()
+            self.video_dropped.emit(str(video_path))
+            return
+        event.ignore()
+
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -289,7 +326,7 @@ class RoiCanvas(QWidget):
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "Chọn file video ở thanh trên để xem trước và kéo chọn vùng ROI",
+                "Chọn hoặc kéo thả file video vào đây để xem trước và vẽ vùng ROI",
             )
 
         roi_rect = self._roi_to_rect(self._roi, disp)

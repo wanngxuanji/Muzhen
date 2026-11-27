@@ -1291,3 +1291,319 @@ def test_main_window_playback_autorepeat_and_keyboard_scrubbing(qtbot, tmp_path:
     assert window._current_frame_ms == window._start_pts_ms
     window.close()
 
+
+def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot):
+    from transapp.ui.review_table import ReviewTable
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(940, 440)
+    table.show()
+
+    ev1 = SubtitleEvent(
+        index=1,
+        start_ms=1000,
+        end_ms=2200,
+        text="第一行\n第二行",
+        confidence=0.96,
+        flagged=False,
+        thumbnail_png=_make_png_bytes((40, 200, 40)),
+    )
+    ev2 = SubtitleEvent(
+        index=2,
+        start_ms=2500,
+        end_ms=3700,
+        text="可疑字幕",
+        confidence=0.68,
+        flagged=True,
+        thumbnail_png=_make_png_bytes((40, 40, 220)),
+        flag_reason="Độ tin cậy thấp (0.68 < 0.85)",
+    )
+    ev3 = SubtitleEvent(
+        index=3,
+        start_ms=4000,
+        end_ms=4080,
+        text="短",
+        confidence=0.71,
+        flagged=True,
+        thumbnail_png=_make_png_bytes((200, 40, 40)),
+        flag_reason="",
+    )
+
+    jumps: list[int] = []
+    snap_starts: list[bool] = []
+    snap_ends: list[bool] = []
+    modified_hits: list[bool] = []
+    table.jump_requested.connect(jumps.append)
+    table.snap_start_requested.connect(lambda: snap_starts.append(True))
+    table.snap_end_requested.connect(lambda: snap_ends.append(True))
+    table.events_modified.connect(lambda: modified_hits.append(True))
+
+    table.set_frame_step_ms(40)
+    table.set_events([ev1, ev2, ev3])
+
+    # Uniform HH:MM:SS.mmm display + multi-line \N encoding
+    assert table.table.item(0, 1).text() == "00:00:01.000"
+    assert table.table.item(0, 2).text() == "00:00:02.200"
+    assert table.table.item(0, 4).text() == r"第一行\N第二行"
+    assert table.flag_banner.isVisible() is False
+    assert "1.20s" in table.lbl_cue_meta.text()
+
+    # Editing multi-line cell with \N preserves real \n in SubtitleEvent.text
+    table.table.item(0, 4).setText(r"第一行改\N第二行改")
+    assert table.events()[0].text == "第一行改\n第二行改"
+    assert len(modified_hits) == 1
+
+    # Flagged row displays flag_reason in side-panel banner and cell tooltip
+    table.table.selectRow(1)
+    assert table.flag_banner.isVisible() is True
+    assert "Độ tin cậy thấp (0.68 < 0.85)" in table.lbl_flag_reason.text()
+    assert table.table.item(1, 4).toolTip() == "Độ tin cậy thấp (0.68 < 0.85)"
+
+    # Jump Start / End buttons and Alt+S / Alt+E emit exact start_ms / end_ms
+    table.btn_jump_start.click()
+    table.btn_jump_end.click()
+    assert jumps == [2500, 3700]
+
+    qtbot.keyClick(table.table, Qt.Key.Key_S, Qt.KeyboardModifier.AltModifier)
+    qtbot.keyClick(table.table, Qt.Key.Key_E, Qt.KeyboardModifier.AltModifier)
+    assert jumps == [2500, 3700, 2500, 3700]
+
+    # Snap In / Out buttons and Ctrl+[ / Ctrl+] emit snap signals, and helpers update timing
+    table.btn_snap_in.click()
+    table.btn_snap_out.click()
+    qtbot.keyClick(table.table, Qt.Key.Key_BracketLeft, Qt.KeyboardModifier.ControlModifier)
+    qtbot.keyClick(table.table, Qt.Key.Key_BracketRight, Qt.KeyboardModifier.ControlModifier)
+    assert len(snap_starts) == 2
+    assert len(snap_ends) == 2
+
+    assert table.apply_playhead_to_selected_start(2600) is True
+    assert table.events()[1].start_ms == 2600
+    assert table.apply_playhead_to_selected_start(4000) is False  # >= end_ms rejected
+    assert table.apply_playhead_to_selected_end(3600) is True
+    assert table.events()[1].end_ms == 3600
+    assert table.apply_playhead_to_selected_end(2500) is False  # <= start_ms rejected
+
+    # Nudge +1f / -1f shifts (start_ms, end_ms) preserving duration and clamping >= 0
+    table.btn_nudge_fwd.click()
+    assert (table.events()[1].start_ms, table.events()[1].end_ms) == (2640, 3640)
+    table.btn_nudge_back.click()
+    assert (table.events()[1].start_ms, table.events()[1].end_ms) == (2600, 3600)
+    assert table.nudge_selected_timing(-5000) is True
+    assert (table.events()[1].start_ms, table.events()[1].end_ms) == (0, 1000)
+    # Restore timing cleanly
+    assert table.nudge_selected_timing(2500) is True
+    assert (table.events()[1].start_ms, table.events()[1].end_ms) == (2500, 3500)
+
+    # Switch to flagged_only: manual text edit clears flagged & decrements badge IN-PLACE (no eviction)
+    table.set_filter_mode("flagged_only")
+    assert table.table.rowCount() == 2
+    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (2)"
+
+    table.table.selectRow(0)
+    table.table.item(0, 4).setText("已人工校对")
+    assert table.table.rowCount() == 2  # Row stays visible in flagged_only until filter switch
+    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (1)"
+    assert table.events()[1].flagged is False
+    assert table.events()[1].flag_reason == ""
+    assert table.table.item(0, 0).text() == "2"
+    assert table.table.item(0, 4).toolTip() == ""
+    assert table.flag_banner.isVisible() is False
+
+    # Selecting second row (empty flag_reason fallback + short cue warning) & clicking [Duyệt]
+    table.table.selectRow(1)
+    assert table.flag_banner.isVisible() is True
+    assert table.lbl_flag_reason.text() == "Cần kiểm tra"
+    assert bool(table.lbl_cue_meta.property("warning")) is True
+    table.btn_mark_ok.click()
+    assert table.table.rowCount() == 2  # Still visible in-place
+    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (0)"
+    assert table.events()[2].flagged is False
+    assert table.flag_banner.isVisible() is False
+
+    # Switching tabs refreshes cleanly
+    table.set_filter_mode("all")
+    table.set_filter_mode("flagged_only")
+    assert table.table.rowCount() == 0
+
+
+def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
+    from PySide6.QtWidgets import QMessageBox
+    from transapp.ui.main_window import MainWindow
+
+    ep1 = tmp_path / "guard_ep1.mp4"
+    ep2 = tmp_path / "guard_ep2.mp4"
+    _make_synthetic_subtitle_mp4(
+        ep1, width=640, height=360, fps=25, duration_sec=1.6, start_pts_ms=2000, cues=((200, 1200, "第一句"),)
+    )
+    _make_synthetic_subtitle_mp4(
+        ep2, width=640, height=360, fps=25, duration_sec=1.0, cues=((200, 800, "第二集"),)
+    )
+
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "第一句", 0.94]],
+            [0.01],
+        )
+    )
+    pipeline = ExtractionPipeline(ocr_engine=fake_ocr)
+    store = PresetStore(config_dir=tmp_path / "cfg")
+
+    unsaved_prompts: list[bool] = []
+    unsaved_allow = {"value": False}
+
+    def fake_unsaved_confirm() -> bool:
+        unsaved_prompts.append(True)
+        return unsaved_allow["value"]
+
+    window = MainWindow(
+        preset_store=store,
+        pipeline=pipeline,
+        unsaved_confirm_fn=fake_unsaved_confirm,
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    # Dynamic btn_export label synced to chk_ass / chk_srt
+    assert window.btn_export.text() == "Xuất .ass + .srt"
+    assert window.btn_open_out_dir.isEnabled() is False
+    window.chk_srt.setChecked(False)
+    assert window.btn_export.text() == "Xuất .ass"
+    window.chk_ass.setChecked(False)
+    assert window.btn_export.isEnabled() is False
+    window.chk_srt.setChecked(True)
+    assert window.btn_export.text() == "Xuất .srt"
+    window.chk_ass.setChecked(True)
+    assert window.btn_export.text() == "Xuất .ass + .srt"
+
+    # Drag-and-drop non-video file is ignored; video onto MainWindow loads ep1
+    bad_mime = QMimeData()
+    bad_mime.setUrls([QUrl.fromLocalFile(str(tmp_path / "notes.txt"))])
+    bad_enter = QDragEnterEvent(
+        QPointF(20.0, 20.0),
+        Qt.DropAction.CopyAction,
+        bad_mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.dragEnterEvent(bad_enter)
+    assert bad_enter.isAccepted() is False
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(ep1))])
+    drag_enter = QDragEnterEvent(
+        QPointF(20.0, 20.0),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.dragEnterEvent(drag_enter)
+    assert drag_enter.isAccepted() is True
+
+    drop_event = QDropEvent(
+        QPointF(20.0, 20.0),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.dropEvent(drop_event)
+    assert drop_event.isAccepted() is True
+    assert window._video_path == ep1
+    assert window._start_pts_ms == 2000
+
+    # Extract so we have events in ReviewTable
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: len(window.review_table.events()) > 0, timeout=10000)
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=5000)
+    assert window._has_unexported_edits is False
+
+    # Jump sync seeks MainWindow to _start_pts_ms + rel_ms; Ctrl+[ snaps Start to playhead
+    ev0 = window.review_table.events()[0]
+    window.review_table.jump_requested.emit(ev0.start_ms)
+    assert abs(window._current_frame_ms - (2000 + ev0.start_ms)) <= 60
+
+    window.seek_to_ms(2000 + ev0.start_ms + 80)
+    snapped_rel = window._current_rel_ms()
+    window.review_table.snap_start_requested.emit()
+    assert window.review_table.events()[0].start_ms == snapped_rel
+    assert window._has_unexported_edits is True
+
+    # Manual edit keeps _has_unexported_edits = True -> blocks load_video, start_extraction, closeEvent
+    window.review_table.table.item(0, 4).setText("第一句手动修正")
+    assert window._has_unexported_edits is True
+
+    unsaved_allow["value"] = False
+    window.load_video(ep2)
+    assert window._video_path == ep1  # blocked!
+    assert len(unsaved_prompts) == 1
+
+    window.start_extraction()
+    assert window._is_running() is False  # blocked!
+    assert len(unsaved_prompts) == 2
+
+    window.close()
+    assert window.isVisible() is True  # closeEvent ignored!
+    assert len(unsaved_prompts) == 3
+
+    # Empty-cue export guard warns and returns False without writing files
+    info_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, text: info_calls.append((title, text)),
+    )
+    window.review_table.table.item(0, 4).setText("   ")
+    assert window.export_subtitles() is False
+    assert len(info_calls) == 1
+    assert not (tmp_path / "guard_ep1.ass").exists()
+    assert not (tmp_path / "guard_ep1.srt").exists()
+
+    # Restore text -> export succeeds -> resets _has_unexported_edits and enables btn_open_out_dir
+    window.review_table.table.item(0, 4).setText("第一句手动修正")
+    assert window.export_subtitles() is True
+    assert window._has_unexported_edits is False
+    assert window.btn_open_out_dir.isEnabled() is True
+
+    opened_urls: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: (opened_urls.append(url), True)[1])
+    window.btn_open_out_dir.click()
+    assert len(opened_urls) == 1
+    assert Path(opened_urls[0].toLocalFile()) == tmp_path
+
+    # With edits exported, drag-and-drop onto RoiCanvas loads ep2 without prompting
+    prev_prompts = len(unsaved_prompts)
+    mime2 = QMimeData()
+    mime2.setUrls([QUrl.fromLocalFile(str(ep2))])
+    canvas_enter = QDragEnterEvent(
+        QPointF(10.0, 10.0),
+        Qt.DropAction.CopyAction,
+        mime2,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.roi_canvas.dragEnterEvent(canvas_enter)
+    assert canvas_enter.isAccepted() is True
+    canvas_drop = QDropEvent(
+        QPointF(10.0, 10.0),
+        Qt.DropAction.CopyAction,
+        mime2,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    window.roi_canvas.dropEvent(canvas_drop)
+    assert canvas_drop.isAccepted() is True
+    assert window._video_path == ep2
+    assert len(unsaved_prompts) == prev_prompts
+    assert window.btn_open_out_dir.isEnabled() is False
+
+    # Close cleanly
+    window.close()
+
+
