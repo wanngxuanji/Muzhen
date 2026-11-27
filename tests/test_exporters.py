@@ -9,8 +9,11 @@ from muzhen.core.models import SubtitleEvent
 from muzhen.exporters import (
     export_ass as pkg_export_ass,
     export_srt as pkg_export_srt,
+    export_txt as pkg_export_txt,
+    export_vtt as pkg_export_vtt,
     format_ass_time as pkg_format_ass_time,
     format_srt_time as pkg_format_srt_time,
+    format_vtt_time as pkg_format_vtt_time,
     list_ass_template_styles as pkg_list_ass_template_styles,
     prepare_export_cues as pkg_prepare_export_cues,
     snap_ass_centiseconds as pkg_snap_ass_centiseconds,
@@ -18,6 +21,8 @@ from muzhen.exporters import (
 from muzhen.exporters.ass_exporter import export_ass, format_ass_time, list_ass_template_styles
 from muzhen.exporters.sanitize import prepare_export_cues, snap_ass_centiseconds, write_text_atomic
 from muzhen.exporters.srt_exporter import export_srt, format_srt_time
+from muzhen.exporters.txt_exporter import export_txt
+from muzhen.exporters.vtt_exporter import export_vtt, format_vtt_time
 
 
 def _event(
@@ -42,8 +47,11 @@ def _event(
 def test_exporters_package_reexports():
     assert pkg_export_ass is export_ass
     assert pkg_export_srt is export_srt
+    assert pkg_export_txt is export_txt
+    assert pkg_export_vtt is export_vtt
     assert pkg_format_ass_time is format_ass_time
     assert pkg_format_srt_time is format_srt_time
+    assert pkg_format_vtt_time is format_vtt_time
     assert pkg_list_ass_template_styles is list_ass_template_styles
     assert pkg_prepare_export_cues is prepare_export_cues
     assert pkg_snap_ass_centiseconds is snap_ass_centiseconds
@@ -761,4 +769,84 @@ def test_write_text_atomic_cleans_temp_file_and_preserves_target_on_error(
 
     assert target.read_text(encoding="utf-8") == "ORIGINAL CONTENT\n"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_export_vtt_writes_valid_webvtt_with_non_overlap_and_atomic_write(tmp_path: Path):
+    assert format_vtt_time(-50) == "00:00:00.000"
+    assert format_vtt_time(0) == "00:00:00.000"
+    assert format_vtt_time(3723456) == "01:02:03.456"
+
+    empty_path = tmp_path / "empty.vtt"
+    empty_result = export_vtt([], str(empty_path))
+    assert empty_result == empty_path
+    assert empty_path.read_bytes() == b"WEBVTT\n"
+
+    out_path = tmp_path / "nested" / "测试_—_导出.vtt"
+    events = [
+        _event(3, 3000, 4500, "箭头 --> 测试", confidence=0.74, flagged=True),
+        _event(1, 1000, 3500, "  第一行 \r\n\r\n  第二行  ", confidence=0.96, flagged=False),
+        _event(2, 2000, 2200, "   \r\n\t  "),
+        _event(4, 4500, 4500, "零时长边界"),
+    ]
+
+    result = export_vtt((ev for ev in events), out_path)
+    assert result == out_path
+    raw_bytes = out_path.read_bytes()
+    assert not raw_bytes.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw_bytes
+
+    content = raw_bytes.decode("utf-8")
+    expected = (
+        "WEBVTT\n"
+        "\n"
+        "00:00:01.000 --> 00:00:03.000\n"
+        "第一行\n"
+        "第二行\n"
+        "\n"
+        "00:00:03.000 --> 00:00:04.500\n"
+        "箭头 --&gt; 测试\n"
+        "\n"
+        "00:00:04.500 --> 00:00:04.501\n"
+        "零时长边界\n"
+    )
+    assert content == expected
+    cue_payload_lines = [
+        line
+        for line in content.splitlines()[2:]
+        if line and not (line[:2].isdigit() and " --> " in line)
+    ]
+    assert all("-->" not in line for line in cue_payload_lines)
+    assert list(out_path.parent.glob("*.tmp")) == []
+
+
+def test_export_txt_writes_clean_one_line_per_cue_script(tmp_path: Path):
+    empty_path = tmp_path / "empty.txt"
+    empty_result = export_txt([], str(empty_path))
+    assert empty_result == empty_path
+    assert empty_path.read_bytes() == b""
+
+    out_path = tmp_path / "scripts" / "测试_—_台本.txt"
+    events = [
+        _event(5, 4200, 5600, "最后一句，保持UTF-8中文标点！"),
+        _event(1, 1000, 2200, "  第一行 \r\n\r\n  第二行  "),
+        _event(2, 2300, 2600, "   \n\t \r\n  "),
+        _event(3, 2700, 3000, ""),
+        _event(4, 3100, 4000, "第二句\n带换行\r第三段"),
+    ]
+
+    result = export_txt((ev for ev in events), out_path)
+    assert result == out_path
+    raw_bytes = out_path.read_bytes()
+    assert not raw_bytes.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw_bytes
+
+    content = raw_bytes.decode("utf-8")
+    expected = (
+        "第一行 第二行\n"
+        "第二句 带换行 第三段\n"
+        "最后一句，保持UTF-8中文标点！\n"
+    )
+    assert content == expected
+    assert list(out_path.parent.glob("*.tmp")) == []
+
 
