@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import os
 from pathlib import Path
 import threading
 
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -54,6 +56,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from muzhen import __version__
 from muzhen.core import paths as runtime_paths
 from muzhen.core.models import (
     ExtractConfig,
@@ -65,6 +68,7 @@ from muzhen.core.models import (
 from muzhen.core.ocr_engine import OcrEngine
 from muzhen.core.pipeline import ExtractionPipeline
 from muzhen.core.presets import PresetStore, RoiPreset
+from muzhen.core.updater import UpdateInfo, UpdatePrefsStore, check_for_updates
 from muzhen.core.video_reader import VideoMetadata, VideoReader
 from muzhen.exporters import (
     export_ass,
@@ -265,6 +269,124 @@ class FrameTestWorker(QObject):
             self.finished.emit(result)
 
 
+class UpdateDialog(QDialog):
+    """Premiere-styled dialog presenting an available GitHub release and changelog."""
+
+    def __init__(self, info: UpdateInfo, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.info = info
+        self.action: str = "later"
+
+        self.setWindowTitle("Update Available — Muzhen")
+        self.setModal(True)
+        self.setMinimumWidth(460)
+        self.resize(500, 380)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 14)
+        root.setSpacing(10)
+
+        header = QLabel("A new version of Muzhen is available")
+        header.setObjectName("updateHeaderTitle")
+        root.addWidget(header)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(8)
+        self.version_pill = QLabel(f"v{info.current_version}  →  v{info.latest_version}")
+        self.version_pill.setObjectName("updateVersionPill")
+        meta_row.addWidget(self.version_pill)
+
+        self.published_label: QLabel | None = None
+        if info.published_at:
+            published_date = info.published_at[:10] if len(info.published_at) >= 10 else info.published_at
+            self.published_label = QLabel(f"Released {published_date}")
+            self.published_label.setObjectName("updatePublishedLabel")
+            meta_row.addWidget(self.published_label)
+        meta_row.addStretch(1)
+        root.addLayout(meta_row)
+
+        root.addWidget(_make_section_label("Release Notes"))
+
+        self.changelog_edit = QPlainTextEdit()
+        self.changelog_edit.setObjectName("updateChangelog")
+        self.changelog_edit.setReadOnly(True)
+        self.changelog_edit.setMinimumHeight(180)
+        self.changelog_edit.setPlainText(
+            info.changelog or "See full release notes on GitHub."
+        )
+        root.addWidget(self.changelog_edit, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 4, 0, 0)
+        btn_row.setSpacing(8)
+
+        self.btn_skip_version = QPushButton("Skip This Version")
+        self.btn_skip_version.setProperty("variant", "tool")
+        self.btn_skip_version.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_skip_version.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_later = QPushButton("Later")
+        self.btn_later.setProperty("variant", "tool")
+        self.btn_later.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_later.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_update_now = QPushButton("Update Now")
+        self.btn_update_now.setProperty("variant", "primary")
+        self.btn_update_now.setDefault(True)
+        self.btn_update_now.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_update_now.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        btn_row.addWidget(self.btn_skip_version)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_later)
+        btn_row.addWidget(self.btn_update_now)
+        root.addLayout(btn_row)
+
+        self.btn_update_now.clicked.connect(self._on_update_now)
+        self.btn_skip_version.clicked.connect(self._on_skip_version)
+        self.btn_later.clicked.connect(self._on_later)
+
+    def _on_update_now(self) -> None:
+        self.action = "update"
+        self.accept()
+
+    def _on_skip_version(self) -> None:
+        self.action = "skip"
+        self.reject()
+
+    def _on_later(self) -> None:
+        self.action = "later"
+        self.reject()
+
+
+class _UpdateCheckWorker(QObject):
+    """Runs GitHub Releases update lookup off the Qt UI thread."""
+
+    finished = Signal(object, bool)
+    failed = Signal(str, bool)
+
+    def __init__(
+        self,
+        check_fn: Callable[[str], UpdateInfo | None],
+        current_version: str,
+        manual: bool,
+    ) -> None:
+        super().__init__()
+        self._check_fn = check_fn
+        self._current_version = current_version
+        self._manual = manual
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            info = self._check_fn(self._current_version)
+        except Exception as exc:
+            self.failed.emit(str(exc), self._manual)
+        else:
+            self.finished.emit(info, self._manual)
+
+
 class MainWindow(QMainWindow):
     """Main desktop window coordinating ROI selection, extraction, review, and export."""
 
@@ -275,12 +397,27 @@ class MainWindow(QMainWindow):
         overwrite_confirm_fn: Callable[[list[Path]], bool] | None = None,
         unsaved_confirm_fn: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
+        auto_check_updates: bool = True,
+        update_prefs_store: UpdatePrefsStore | None = None,
+        update_check_fn: Callable[[str], UpdateInfo | None] | None = None,
+        open_url_fn: Callable[[str], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._preset_store = preset_store if preset_store is not None else PresetStore()
         self._pipeline = pipeline if pipeline is not None else ExtractionPipeline()
         self._overwrite_confirm_fn = overwrite_confirm_fn
         self._unsaved_confirm_fn = unsaved_confirm_fn
+        self._update_prefs = (
+            update_prefs_store if update_prefs_store is not None else UpdatePrefsStore()
+        )
+        self._update_check_fn: Callable[[str], UpdateInfo | None] = (
+            update_check_fn if update_check_fn is not None else check_for_updates
+        )
+        self._open_url_fn: Callable[[str], bool] = (
+            open_url_fn
+            if open_url_fn is not None
+            else (lambda url: QDesktopServices.openUrl(QUrl(url)))
+        )
 
         self._video_path: Path | None = None
         self._video_meta: VideoMetadata | None = None
@@ -311,6 +448,14 @@ class MainWindow(QMainWindow):
         self._frame_test_worker: FrameTestWorker | None = None
         self._frame_test_bgr: np.ndarray | None = None
         self._last_frame_test_result: FrameTestResult | None = None
+        self._update_thread: QThread | None = None
+        self._update_worker: _UpdateCheckWorker | None = None
+        self._available_update: UpdateInfo | None = None
+        self._update_startup_timer = QTimer(self)
+        self._update_startup_timer.setSingleShot(True)
+        self._update_startup_timer.timeout.connect(
+            lambda: self.check_for_updates_async(manual=False)
+        )
         self._retiring_threads: list[QThread] = []
         self._retiring_workers: dict[QThread, QObject | None] = {}
         self._saved_settings_width: int = 284
@@ -336,6 +481,10 @@ class MainWindow(QMainWindow):
         self._refresh_presets()
         self._update_roi_label(self.roi_canvas.roi())
         self._update_controls_state()
+
+        in_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        if auto_check_updates and (update_check_fn is not None or not in_pytest):
+            self._update_startup_timer.start(1200)
 
     @property
     def current_result(self) -> ExtractResult | None:
@@ -446,12 +595,31 @@ class MainWindow(QMainWindow):
         self.btn_toggle_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_settings.setToolTip("Show / hide Settings panel")
 
+        self.btn_update_available = QPushButton("")
+        self.btn_update_available.setProperty("variant", "update")
+        self.btn_update_available.setFixedHeight(26)
+        self.btn_update_available.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_update_available.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update_available.setToolTip("View available update and changelog")
+        self.btn_update_available.setVisible(False)
+
+        self.btn_check_update = QPushButton()
+        self.btn_check_update.setProperty("variant", "tool")
+        self.btn_check_update.setIcon(make_icon("refresh", size=14))
+        self.btn_check_update.setIconSize(QSize(14, 14))
+        self.btn_check_update.setFixedSize(28, 26)
+        self.btn_check_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_check_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_check_update.setToolTip("Check for updates")
+
         top_bar_layout.addWidget(preset_lbl)
         top_bar_layout.addWidget(self.preset_combo)
         top_bar_layout.addWidget(self.btn_save_preset)
         top_bar_layout.addWidget(self.btn_delete_preset)
         top_bar_layout.addWidget(v_sep_settings)
         top_bar_layout.addWidget(self.btn_toggle_settings)
+        top_bar_layout.addWidget(self.btn_update_available)
+        top_bar_layout.addWidget(self.btn_check_update)
         main_layout.addWidget(top_bar)
 
         workbench_gutter = QWidget()
@@ -905,6 +1073,8 @@ class MainWindow(QMainWindow):
         self.btn_save_preset.clicked.connect(lambda: self.save_preset())
         self.btn_delete_preset.clicked.connect(self.delete_current_preset)
         self.btn_toggle_settings.toggled.connect(self._on_toggle_settings)
+        self.btn_update_available.clicked.connect(self._on_update_badge_clicked)
+        self.btn_check_update.clicked.connect(lambda: self.check_for_updates_async(manual=True))
 
         self.btn_seek_start.clicked.connect(self._seek_to_start)
         self.btn_play_pause.clicked.connect(self.toggle_playback)
@@ -2302,6 +2472,133 @@ class MainWindow(QMainWindow):
         )
         return True
 
+    def check_for_updates_async(self, *, manual: bool = False) -> bool:
+        """Check GitHub Releases for a newer version on a background QThread."""
+        if self._update_thread is not None:
+            return False
+        if manual:
+            self.btn_check_update.setEnabled(False)
+            self.status_label.setText("Checking for updates...")
+
+        thread = QThread(self)
+        worker = _UpdateCheckWorker(
+            check_fn=self._update_check_fn,
+            current_version=__version__,
+            manual=manual,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_check_finished)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.failed.connect(thread.quit)
+
+        self._update_thread = thread
+        self._update_worker = worker
+        thread.start()
+        return True
+
+    @Slot(object, bool)
+    def _on_update_check_finished(self, info: UpdateInfo | None, manual: bool) -> None:
+        if self.sender() is not self._update_worker:
+            return
+        self._cleanup_update_worker()
+        self.btn_check_update.setEnabled(True)
+
+        if info is not None:
+            if not manual and self._update_prefs.is_version_skipped(info.tag_name):
+                self.btn_update_available.setVisible(False)
+                return
+            self._available_update = info
+            self.btn_update_available.setText(f"Update v{info.latest_version}")
+            self.btn_update_available.setVisible(True)
+            if manual:
+                if self.status_label.text() == "Checking for updates...":
+                    self.status_label.setText(f"Update available: v{info.latest_version}")
+                self.show_update_dialog(info)
+            return
+
+        self._available_update = None
+        self.btn_update_available.setVisible(False)
+        if manual:
+            self.status_label.setText(f"Muzhen is up to date (v{__version__})")
+            QMessageBox.information(
+                self,
+                "Check for Updates",
+                f"Muzhen is up to date (v{__version__}).",
+            )
+
+    @Slot(str, bool)
+    def _on_update_check_failed(self, message: str, manual: bool) -> None:
+        if self.sender() is not self._update_worker:
+            return
+        self._cleanup_update_worker()
+        self.btn_check_update.setEnabled(True)
+        if not manual:
+            return
+        self.status_label.setText("Update check failed")
+        QMessageBox.warning(
+            self,
+            "Check for Updates",
+            f"Could not check for updates:\n{message}",
+        )
+
+    def _on_update_badge_clicked(self) -> None:
+        if self._available_update is not None:
+            self.show_update_dialog(self._available_update)
+
+    def show_update_dialog(self, info: UpdateInfo) -> str:
+        """Show the UpdateDialog and apply Update Now / Skip This Version / Later."""
+        dialog = UpdateDialog(info, self)
+        dialog.exec()
+        if dialog.action == "update":
+            target_url = info.download_url or info.release_url
+            if target_url:
+                self._open_url_fn(target_url)
+        elif dialog.action == "skip":
+            try:
+                self._update_prefs.set_skipped_version(info.tag_name)
+            except OSError:
+                pass
+            self.btn_update_available.setVisible(False)
+        return dialog.action
+
+    def _disconnect_update_slots(self, worker: _UpdateCheckWorker) -> None:
+        for sig, slot in (
+            (worker.finished, self._on_update_check_finished),
+            (worker.failed, self._on_update_check_failed),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _cleanup_update_worker(self) -> None:
+        thread = self._update_thread
+        worker = self._update_worker
+        self._update_thread = None
+        self._update_worker = None
+
+        if worker is not None:
+            self._disconnect_update_slots(worker)
+
+        if thread is not None:
+            thread.quit()
+            finished = thread.wait(5000)
+            if finished and not thread.isRunning():
+                if worker is not None:
+                    worker.deleteLater()
+                thread.deleteLater()
+            else:
+                self._retiring_threads.append(thread)
+                self._retiring_workers[thread] = worker
+                thread.finished.connect(self._on_retiring_thread_finished)
+                if thread.isFinished() and not thread.isRunning():
+                    self._retire_thread(thread)
+        elif worker is not None:
+            worker.deleteLater()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop background extraction, close open readers, and clear review memory."""
         self.review_table.commit_or_close_active_editor()
@@ -2309,6 +2606,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._disconnect_focus_tracking()
+        if self._update_startup_timer.isActive():
+            self._update_startup_timer.stop()
+        self._cleanup_update_worker()
         self._stop_and_wait_worker()
         for retiring in list(self._retiring_threads):
             retiring.quit()

@@ -532,6 +532,69 @@ QPushButton[variant="ok"]:disabled {
     border-color: #262626;
 }
 
+QPushButton[variant="update"] {
+    background-color: rgba(45, 140, 235, 0.18);
+    color: #3EA6FF;
+    border: 1px solid #2D8CEB;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    min-height: 18px;
+}
+
+QPushButton[variant="update"]:hover {
+    background-color: #2D8CEB;
+    color: #FFFFFF;
+    border-color: #439BF0;
+}
+
+QPushButton[variant="update"]:pressed {
+    background-color: #1F75CC;
+    color: #FFFFFF;
+    border-color: #1F75CC;
+}
+
+QPushButton[variant="update"]:disabled {
+    background-color: #1A1A1A;
+    color: #6E6E6E;
+    border-color: #262626;
+}
+
+QLabel#updateHeaderTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: #E6E6E6;
+}
+
+QLabel#updateVersionPill {
+    background-color: rgba(45, 140, 235, 0.18);
+    color: #3EA6FF;
+    border: 1px solid #2D8CEB;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel#updatePublishedLabel {
+    color: #A0A0A0;
+    font-size: 11px;
+}
+
+QPlainTextEdit#updateChangelog {
+    background-color: #141414;
+    border: 1px solid #2E2E2E;
+    border-radius: 3px;
+    color: #E6E6E6;
+    font-family: "Cascadia Mono", "Consolas", "Segoe UI", monospace;
+    font-size: 11.5px;
+    padding: 8px;
+    selection-background-color: #2D8CEB;
+    selection-color: #FFFFFF;
+}
+
 QCheckBox, QRadioButton {
     spacing: 6px;
     color: #E6E6E6;

@@ -2852,3 +2852,194 @@ def test_ui_is_100_percent_english_without_vietnamese_diacritics(qtbot, tmp_path
     window.close()
 
 
+def test_auto_update_shows_badge_opens_changelog_dialog_and_persists_skip(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from muzhen import __version__
+    from muzhen.core.updater import UpdateInfo, UpdatePrefsStore
+    from muzhen.ui.icons import ICON_NAMES, make_icon
+    from muzhen.ui.main_window import MainWindow, UpdateDialog
+    from muzhen.ui.theme import STUDIO_DARK_QSS
+
+    assert "refresh" in ICON_NAMES
+    assert not make_icon("refresh", size=14).isNull()
+    assert 'QPushButton[variant="update"]' in STUDIO_DARK_QSS
+    assert "QPlainTextEdit#updateChangelog" in STUDIO_DARK_QSS
+    assert "/*" not in STUDIO_DARK_QSS
+
+    update_info = UpdateInfo(
+        current_version=__version__,
+        latest_version="2.1.0",
+        tag_name="v2.1.0",
+        release_url="https://github.com/wanngxuanji/Muzhen/releases/tag/v2.1.0",
+        download_url=(
+            "https://github.com/wanngxuanji/Muzhen/releases/download/"
+            "v2.1.0/Muzhen-v2.1.0-win64-portable.zip"
+        ),
+        changelog="## What's New\n- Faster CJK OCR batching\n- Improved timeline snapping",
+        published_at="2026-12-01T10:00:00Z",
+    )
+    check_calls: list[str] = []
+    opened_urls: list[str] = []
+    prefs_store = UpdatePrefsStore(tmp_path / "update_prefs.json")
+
+    def fake_check(current_version: str) -> UpdateInfo | None:
+        check_calls.append(current_version)
+        return update_info
+
+    def fake_open_url(url: str) -> bool:
+        opened_urls.append(url)
+        return True
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        auto_check_updates=False,
+        update_prefs_store=prefs_store,
+        update_check_fn=fake_check,
+        open_url_fn=fake_open_url,
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.btn_update_available.isVisible() is False
+    assert window.btn_check_update.isVisible() is True
+    assert window.btn_check_update.toolTip() == "Check for updates"
+
+    assert window.check_for_updates_async(manual=False) is True
+    qtbot.waitUntil(lambda: window.btn_update_available.isVisible(), timeout=5000)
+    qtbot.waitUntil(lambda: window._update_thread is None, timeout=5000)
+    assert check_calls == [__version__]
+    assert window.btn_update_available.text() == "Update v2.1.0"
+    assert window.minimumSizeHint().width() <= 1280
+    assert window.minimumSizeHint().height() <= 672
+
+    captured_dialogs: list[dict[str, object]] = []
+    next_button = {"name": "btn_later"}
+
+    def fake_dialog_exec(dialog: UpdateDialog) -> int:
+        captured_dialogs.append(
+            {
+                "title": dialog.windowTitle(),
+                "version_text": dialog.version_pill.text(),
+                "changelog": dialog.changelog_edit.toPlainText(),
+                "read_only": dialog.changelog_edit.isReadOnly(),
+                "update_text": dialog.btn_update_now.text(),
+                "skip_text": dialog.btn_skip_version.text(),
+                "later_text": dialog.btn_later.text(),
+            }
+        )
+        getattr(dialog, next_button["name"]).click()
+        return int(dialog.result())
+
+    monkeypatch.setattr(UpdateDialog, "exec", fake_dialog_exec)
+
+    next_button["name"] = "btn_later"
+    window.btn_update_available.click()
+    assert len(captured_dialogs) == 1
+    assert captured_dialogs[0]["title"] == "Update Available — Muzhen"
+    assert f"v{__version__}" in str(captured_dialogs[0]["version_text"])
+    assert "v2.1.0" in str(captured_dialogs[0]["version_text"])
+    assert "Faster CJK OCR batching" in str(captured_dialogs[0]["changelog"])
+    assert captured_dialogs[0]["read_only"] is True
+    assert captured_dialogs[0]["update_text"] == "Update Now"
+    assert captured_dialogs[0]["skip_text"] == "Skip This Version"
+    assert captured_dialogs[0]["later_text"] == "Later"
+    assert opened_urls == []
+    assert prefs_store.get_skipped_version() is None
+    assert window.btn_update_available.isVisible() is True
+
+    next_button["name"] = "btn_update_now"
+    window.btn_update_available.click()
+    assert opened_urls == [update_info.download_url]
+    assert window.btn_update_available.isVisible() is True
+
+    next_button["name"] = "btn_skip_version"
+    window.btn_update_available.click()
+    assert window.btn_update_available.isVisible() is False
+    assert prefs_store.is_version_skipped("v2.1.0") is True
+
+    assert window.check_for_updates_async(manual=False) is True
+    qtbot.waitUntil(lambda: len(check_calls) == 2 and window._update_thread is None, timeout=5000)
+    assert window.btn_update_available.isVisible() is False
+
+    next_button["name"] = "btn_later"
+    window.btn_check_update.click()
+    qtbot.waitUntil(lambda: len(check_calls) == 3 and window._update_thread is None, timeout=5000)
+    assert len(captured_dialogs) == 4
+    assert window.btn_update_available.isVisible() is True
+
+    window.close()
+
+
+def test_auto_update_offline_failure_is_silent_and_manual_up_to_date_informs_user(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+    from muzhen import __version__
+    from muzhen.core.updater import UpdatePrefsStore
+    from muzhen.ui.main_window import MainWindow
+
+    info_calls: list[tuple[str, str]] = []
+    warn_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, text: info_calls.append((title, text)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, text: warn_calls.append((title, text)),
+    )
+
+    mode = {"behavior": "offline"}
+    check_calls: list[str] = []
+
+    def controllable_check(current_version: str):
+        check_calls.append(current_version)
+        if mode["behavior"] == "offline":
+            raise OSError("Network unreachable")
+        if mode["behavior"] == "manual_error":
+            raise OSError("GitHub API timed out")
+        return None
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        auto_check_updates=False,
+        update_prefs_store=UpdatePrefsStore(tmp_path / "update_prefs.json"),
+        update_check_fn=controllable_check,
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.status_label.text() == "Ready"
+    assert window.check_for_updates_async(manual=False) is True
+    qtbot.waitUntil(lambda: len(check_calls) == 1 and window._update_thread is None, timeout=5000)
+    assert info_calls == []
+    assert warn_calls == []
+    assert window.status_label.text() == "Ready"
+    assert window.btn_update_available.isVisible() is False
+
+    mode["behavior"] = "up_to_date"
+    window.btn_check_update.click()
+    qtbot.waitUntil(lambda: len(check_calls) == 2 and window._update_thread is None, timeout=5000)
+    assert len(info_calls) == 1
+    assert info_calls[0][0] == "Check for Updates"
+    assert f"Muzhen is up to date (v{__version__})." in info_calls[0][1]
+    assert f"Muzhen is up to date (v{__version__})" in window.status_label.text()
+    assert warn_calls == []
+    assert window.btn_check_update.isEnabled() is True
+
+    mode["behavior"] = "manual_error"
+    window.btn_check_update.click()
+    qtbot.waitUntil(lambda: len(check_calls) == 3 and window._update_thread is None, timeout=5000)
+    assert len(warn_calls) == 1
+    assert warn_calls[0][0] == "Check for Updates"
+    assert "GitHub API timed out" in warn_calls[0][1]
+    assert window.status_label.text() == "Update check failed"
+    assert window.btn_check_update.isEnabled() is True
+
+    window.close()
+
+
+

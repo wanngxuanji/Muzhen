@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             if not assets_dir.is_dir():
                 raise RuntimeError(f"UI assets directory not found: {assets_dir}")
             runtime_paths.get_models_dir()
-            window = MainWindow()
+            window = MainWindow(auto_check_updates=False)
             if not icon.isNull():
                 window.setWindowIcon(icon)
             if not app.styleSheet().strip():
