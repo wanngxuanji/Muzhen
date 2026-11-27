@@ -135,15 +135,11 @@ class ReviewTable(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setSpacing(5)
 
-        # === Compact Single-Row Header Toolbar ===
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-        title = QLabel("RÀ SOÁT PHỤ ĐỀ")
-        title.setProperty("role", "sectionTitle")
-        header.addWidget(title)
 
         filter_pill = QFrame()
         filter_pill.setObjectName("filterPill")
@@ -161,12 +157,23 @@ class ReviewTable(QWidget):
         pill_layout.addWidget(self.radio_all)
         pill_layout.addWidget(self.radio_flagged)
         header.addWidget(filter_pill)
+        header.addStretch(1)
+
+        self._header_actions_layout = QHBoxLayout()
+        self._header_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._header_actions_layout.setSpacing(4)
+        header.addLayout(self._header_actions_layout)
+        root.addLayout(header)
+
+        action_bar = QHBoxLayout()
+        action_bar.setContentsMargins(0, 0, 0, 0)
+        action_bar.setSpacing(4)
 
         self.btn_find = QPushButton()
         self.btn_find.setProperty("variant", "tool")
         self.btn_find.setIcon(make_icon("search", size=13))
         self.btn_find.setIconSize(QSize(13, 13))
-        self.btn_find.setFixedSize(26, 26)
+        self.btn_find.setFixedSize(26, 24)
         self.btn_find.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_find.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_find.setToolTip("Tìm kiếm & thay thế (Ctrl+F / Ctrl+H)")
@@ -175,7 +182,7 @@ class ReviewTable(QWidget):
         self.btn_undo.setProperty("variant", "tool")
         self.btn_undo.setIcon(make_icon("undo", size=13))
         self.btn_undo.setIconSize(QSize(13, 13))
-        self.btn_undo.setFixedSize(26, 26)
+        self.btn_undo.setFixedSize(26, 24)
         self.btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_undo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_undo.setToolTip("Hoàn tác (Ctrl+Z)")
@@ -185,21 +192,21 @@ class ReviewTable(QWidget):
         self.btn_redo.setProperty("variant", "tool")
         self.btn_redo.setIcon(make_icon("redo", size=13))
         self.btn_redo.setIconSize(QSize(13, 13))
-        self.btn_redo.setFixedSize(26, 26)
+        self.btn_redo.setFixedSize(26, 24)
         self.btn_redo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_redo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_redo.setToolTip("Làm lại (Ctrl+Y / Ctrl+Shift+Z)")
         self.btn_redo.setEnabled(False)
 
         toolbar_sep = QFrame()
-        toolbar_sep.setFixedSize(1, 18)
-        toolbar_sep.setStyleSheet("background-color: #252A34;")
+        toolbar_sep.setFixedSize(1, 16)
+        toolbar_sep.setStyleSheet("background-color: #2E2E2E;")
 
         self.btn_merge = QPushButton("Gộp")
         self.btn_merge.setProperty("variant", "timing")
         self.btn_merge.setIcon(make_icon("merge", size=12))
         self.btn_merge.setIconSize(QSize(12, 12))
-        self.btn_merge.setFixedHeight(26)
+        self.btn_merge.setFixedHeight(24)
         self.btn_merge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_merge.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_merge.setToolTip("Gộp các dòng liền kề đang chọn (Ctrl+M)")
@@ -209,7 +216,7 @@ class ReviewTable(QWidget):
         self.btn_split.setProperty("variant", "timing")
         self.btn_split.setIcon(make_icon("split", size=12))
         self.btn_split.setIconSize(QSize(12, 12))
-        self.btn_split.setFixedHeight(26)
+        self.btn_split.setFixedHeight(24)
         self.btn_split.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_split.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_split.setToolTip("Tách dòng đang chọn tại playhead hoặc điểm giữa (Ctrl+K)")
@@ -217,43 +224,37 @@ class ReviewTable(QWidget):
 
         self.btn_delete_row = QPushButton()
         self.btn_delete_row.setProperty("variant", "danger")
-        self.btn_delete_row.setIcon(make_icon("trash", color="#FCA5A5", size=14))
-        self.btn_delete_row.setIconSize(QSize(14, 14))
-        self.btn_delete_row.setFixedSize(28, 26)
+        self.btn_delete_row.setIcon(make_icon("trash", color="#F08080", size=13))
+        self.btn_delete_row.setIconSize(QSize(13, 13))
+        self.btn_delete_row.setFixedSize(26, 24)
         self.btn_delete_row.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_delete_row.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_delete_row.setToolTip("Xóa các dòng đang chọn khỏi kết quả (Delete)")
         self.btn_delete_row.setEnabled(False)
 
-        header.addWidget(self.btn_find)
-        header.addWidget(self.btn_undo)
-        header.addWidget(self.btn_redo)
-        header.addWidget(toolbar_sep)
-        header.addWidget(self.btn_merge)
-        header.addWidget(self.btn_split)
-        header.addWidget(self.btn_delete_row)
-        header.addStretch(1)
+        action_bar.addWidget(self.btn_find)
+        action_bar.addWidget(self.btn_undo)
+        action_bar.addWidget(self.btn_redo)
+        action_bar.addWidget(toolbar_sep)
+        action_bar.addWidget(self.btn_merge)
+        action_bar.addWidget(self.btn_split)
+        action_bar.addWidget(self.btn_delete_row)
+        action_bar.addStretch(1)
+        root.addLayout(action_bar)
 
-        self._header_actions_layout = QHBoxLayout()
-        self._header_actions_layout.setContentsMargins(0, 0, 0, 0)
-        self._header_actions_layout.setSpacing(6)
-        header.addLayout(self._header_actions_layout)
-        root.addLayout(header)
-
-        # === Collapsible Find & Replace Bar (hidden by default) ===
         self.find_bar = QFrame()
         self.find_bar.setObjectName("findReplaceBar")
         find_layout = QHBoxLayout(self.find_bar)
         find_layout.setContentsMargins(6, 3, 6, 3)
-        find_layout.setSpacing(5)
+        find_layout.setSpacing(4)
 
         self.find_edit = QLineEdit()
         self.find_edit.setPlaceholderText("Tìm kiếm...")
-        self.find_edit.setMinimumWidth(130)
+        self.find_edit.setMinimumWidth(64)
 
         self.replace_edit = QLineEdit()
         self.replace_edit.setPlaceholderText("Thay thế...")
-        self.replace_edit.setMinimumWidth(130)
+        self.replace_edit.setMinimumWidth(64)
 
         self.btn_find_prev = QPushButton()
         self.btn_find_prev.setProperty("variant", "tool")
@@ -292,7 +293,7 @@ class ReviewTable(QWidget):
 
         self.btn_close_find = QPushButton()
         self.btn_close_find.setProperty("variant", "tool")
-        self.btn_close_find.setIcon(make_icon("x_mark", color="#9BA4B5", size=11))
+        self.btn_close_find.setIcon(make_icon("x_mark", color="#A0A0A0", size=11))
         self.btn_close_find.setIconSize(QSize(11, 11))
         self.btn_close_find.setFixedSize(24, 24)
         self.btn_close_find.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -310,7 +311,9 @@ class ReviewTable(QWidget):
         self.find_bar.setVisible(False)
         root.addWidget(self.find_bar)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(3)
+        splitter.setChildrenCollapsible(False)
         self.table = _SubtitleTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["#", "Start", "End", "Conf", "Nội dung phụ đề"])
         self.table.setShowGrid(False)
@@ -322,7 +325,7 @@ class ReviewTable(QWidget):
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(27)
+        self.table.verticalHeader().setDefaultSectionSize(25)
         hdr = self.table.horizontalHeader()
         hdr.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         hdr.setSectionResizeMode(_COL_STT, QHeaderView.ResizeMode.ResizeToContents)
@@ -331,17 +334,18 @@ class ReviewTable(QWidget):
         hdr.setSectionResizeMode(_COL_CONF, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_COL_TEXT, QHeaderView.ResizeMode.Stretch)
 
-        # === Right-hand 4-Row Timing & QA Mini-Inspector ===
         preview_panel = QWidget()
+        preview_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(6, 0, 0, 0)
-        preview_layout.setSpacing(5)
+        preview_layout.setContentsMargins(0, 4, 0, 0)
+        preview_layout.setSpacing(4)
 
-        # Row 1: Header + Cue Meta pill
         inspector_hdr = QHBoxLayout()
         inspector_hdr.setContentsMargins(0, 0, 0, 0)
         inspector_hdr.setSpacing(6)
-        preview_title = QLabel("ĐỐI CHIẾU & TIMING")
+        preview_title = QLabel("Đối chiếu & Timing")
         preview_title.setProperty("role", "sectionTitle")
         self.lbl_cue_meta = QLabel("")
         self.lbl_cue_meta.setObjectName("cueMetaBadge")
@@ -352,7 +356,6 @@ class ReviewTable(QWidget):
         inspector_hdr.addWidget(self.lbl_cue_meta)
         preview_layout.addLayout(inspector_hdr)
 
-        # Row 2: Flag / QA Banner (hidden when selected cue is clean)
         self.flag_banner = QFrame()
         self.flag_banner.setObjectName("flagBanner")
         flag_layout = QHBoxLayout(self.flag_banner)
@@ -366,7 +369,7 @@ class ReviewTable(QWidget):
         )
         self.btn_mark_ok = QPushButton("Duyệt")
         self.btn_mark_ok.setProperty("variant", "ok")
-        self.btn_mark_ok.setIcon(make_icon("check", color="#6EE7B7", size=12))
+        self.btn_mark_ok.setIcon(make_icon("check", color="#10B981", size=12))
         self.btn_mark_ok.setIconSize(QSize(12, 12))
         self.btn_mark_ok.setFixedHeight(22)
         self.btn_mark_ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -378,21 +381,19 @@ class ReviewTable(QWidget):
         self.flag_banner.setVisible(False)
         preview_layout.addWidget(self.flag_banner)
 
-        # Row 3: ROI Crop Thumbnail
         self.preview_label = QLabel("Chọn một dòng để xem ảnh cắt ROI")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(240, 76)
+        self.preview_label.setMinimumSize(180, 56)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.preview_label.setStyleSheet(
-            "background-color: #0A0C10; color: #6E7789; "
-            "border: 1px solid #252A34; border-radius: 6px; padding: 6px;"
+            "background-color: #0B0B0B; color: #6E6E6E; "
+            "border: 1px solid #2E2E2E; border-radius: 2px; padding: 4px;"
         )
         preview_layout.addWidget(self.preview_label, 1)
 
-        # Row 4: Compact Timing Controls
         timing_row = QHBoxLayout()
         timing_row.setContentsMargins(0, 0, 0, 0)
-        timing_row.setSpacing(4)
+        timing_row.setSpacing(3)
 
         self.btn_jump_start = QPushButton("Start")
         self.btn_jump_start.setIcon(make_icon("skip_back", size=11))
@@ -441,8 +442,9 @@ class ReviewTable(QWidget):
 
         splitter.addWidget(self.table)
         splitter.addWidget(preview_panel)
-        splitter.setStretchFactor(0, 16)
-        splitter.setStretchFactor(1, 9)
+        splitter.setStretchFactor(0, 14)
+        splitter.setStretchFactor(1, 5)
+        splitter.setSizes([240, 110])
         root.addWidget(splitter, 1)
 
         self.radio_all.toggled.connect(self._on_filter_radio_toggled)
@@ -1356,12 +1358,12 @@ class ReviewTable(QWidget):
                 continue
             cell.setToolTip(tooltip)
             if ev.flagged:
-                cell.setBackground(QColor(43, 33, 16))
-                cell.setForeground(QColor(252, 211, 77))
+                cell.setBackground(QColor("#2E2514"))
+                cell.setForeground(QColor("#E5B54D"))
             else:
                 cell.setData(Qt.ItemDataRole.BackgroundRole, None)
                 if col_idx in (_COL_STT, _COL_CONF):
-                    cell.setForeground(QColor(155, 164, 181))
+                    cell.setForeground(QColor("#A0A0A0"))
                 else:
                     cell.setData(Qt.ItemDataRole.ForegroundRole, None)
 
@@ -1392,18 +1394,33 @@ class ReviewTable(QWidget):
                 stt_item.setData(Qt.ItemDataRole.UserRole, master_idx)
                 stt_item.setFlags(stt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 stt_item.setFont(self._mono_font)
+                stt_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
 
                 start_item = QTableWidgetItem(_format_cell_time(ev.start_ms))
                 start_item.setFont(self._mono_font)
+                start_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+                )
                 end_item = QTableWidgetItem(_format_cell_time(ev.end_ms))
                 end_item.setFont(self._mono_font)
+                end_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+                )
 
                 conf_item = QTableWidgetItem(f"{ev.confidence:.2f}")
                 conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 conf_item.setFont(self._mono_font)
+                conf_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
 
                 text_item = QTableWidgetItem(_encode_display_text(ev.text))
                 text_item.setFont(self._cjk_font)
+                text_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                )
 
                 for col_idx, cell in enumerate(
                     (stt_item, start_item, end_item, conf_item, text_item)

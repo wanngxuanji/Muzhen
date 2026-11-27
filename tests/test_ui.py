@@ -2825,6 +2825,90 @@ def test_theme_uses_premiere_graphite_tokens_and_active_panel_selectors(qtbot):
     assert not sidebar_icon.pixmap(16, 16).isNull()
 
 
+def test_type_a_workbench_three_panes_collapsible_settings_and_active_panel_border(
+    qtbot, tmp_path: Path
+):
+    from PySide6.QtWidgets import QSplitter
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "workbench_ep.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.2)
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    window.show()
+
+    assert isinstance(window.workbench_splitter, QSplitter)
+    assert window.workbench_splitter.orientation() == Qt.Orientation.Horizontal
+    assert window.workbench_splitter.handleWidth() == 3
+    assert window.workbench_splitter.childrenCollapsible() is False
+    assert window.workbench_splitter.count() == 3
+    assert window.workbench_splitter.widget(0) is window.settings_panel
+    assert window.workbench_splitter.widget(1) is window.monitor_panel
+    assert window.workbench_splitter.widget(2) is window.subtitles_panel
+
+    for pane in (window.settings_panel, window.monitor_panel, window.subtitles_panel):
+        assert bool(pane.property("panel")) is True
+
+    assert bool(window.monitor_panel.property("activePanel")) is True
+    assert bool(window.settings_panel.property("activePanel")) is False
+    assert bool(window.subtitles_panel.property("activePanel")) is False
+
+    assert window.btn_toggle_settings.isCheckable() is True
+    assert window.btn_toggle_settings.isChecked() is True
+    assert window.btn_toggle_settings.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert window.btn_toggle_settings.property("variant") == "toggle"
+    assert window.settings_panel.isVisible() is True
+
+    expanded_hint = window.minimumSizeHint()
+    assert expanded_hint.width() <= 1280
+    assert expanded_hint.height() <= 672
+
+    window.btn_toggle_settings.click()
+    assert window.btn_toggle_settings.isChecked() is False
+    assert window.settings_panel.isVisible() is False
+    collapsed_hint = window.minimumSizeHint()
+    assert collapsed_hint.width() <= 1280
+    assert collapsed_hint.height() <= 672
+
+    window.btn_toggle_settings.click()
+    assert window.btn_toggle_settings.isChecked() is True
+    assert window.settings_panel.isVisible() is True
+    restored_hint = window.minimumSizeHint()
+    assert restored_hint.width() <= 1280
+    assert restored_hint.height() <= 672
+
+    window.review_table.table.setFocus()
+    qtbot.waitUntil(
+        lambda: bool(window.subtitles_panel.property("activePanel")) is True,
+        timeout=2000,
+    )
+    assert bool(window.monitor_panel.property("activePanel")) is False
+    assert bool(window.settings_panel.property("activePanel")) is False
+
+    window.spin_conf.setFocus()
+    qtbot.waitUntil(
+        lambda: bool(window.settings_panel.property("activePanel")) is True,
+        timeout=2000,
+    )
+    assert bool(window.monitor_panel.property("activePanel")) is False
+    assert bool(window.subtitles_panel.property("activePanel")) is False
+
+    qtbot.mousePress(window.btn_play_pause, Qt.MouseButton.LeftButton)
+    qtbot.mouseRelease(window.btn_play_pause, Qt.MouseButton.LeftButton)
+    assert bool(window.monitor_panel.property("activePanel")) is True
+    assert bool(window.settings_panel.property("activePanel")) is False
+    assert bool(window.subtitles_panel.property("activePanel")) is False
+
+    window.load_video(ep)
+    window.seek_to_ms(400)
+    assert f"· #{window._current_frame_index}" in window.time_label.text()
+    assert window._current_frame_index > 0
+
+    window.close()
+
+
+
 
 
 
