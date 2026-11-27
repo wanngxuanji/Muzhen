@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from muzhen import __version__
+from muzhen.core.audio_player import AudioPreviewPlayer
 from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
@@ -76,7 +77,7 @@ from muzhen.exporters import (
 )
 from muzhen.ui.i18n import LANGUAGE_CHOICES, resolve_language, tr
 from muzhen.ui.icons import make_icon
-from muzhen.ui.review_table import ReviewTable
+from muzhen.ui.review_table import ReviewTable, _CompactButton, _ShrinkableLabel
 from muzhen.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
 
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
@@ -100,7 +101,7 @@ def _make_panel_header(title_text: str) -> tuple[QFrame, QHBoxLayout, QLabel]:
     layout = QHBoxLayout(header)
     layout.setContentsMargins(2, 0, 6, 0)
     layout.setSpacing(6)
-    title = QLabel(title_text)
+    title = _ShrinkableLabel(title_text, max_min_width=84)
     title.setObjectName("panelTitle")
     layout.addWidget(title)
     layout.addStretch(1)
@@ -453,6 +454,8 @@ class MainWindow(QMainWindow):
         self._at_eof: bool = False
         self._last_advance_error: bool = False
         self._play_iter: Iterator[tuple[int, int, np.ndarray]] | None = None
+        self._pending_play_frame: tuple[int, int, np.ndarray] | None = None
+        self._audio_player = AudioPreviewPlayer(self)
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._on_playback_tick)
 
@@ -849,7 +852,7 @@ class MainWindow(QMainWindow):
         self.btn_browse_video.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_browse_video.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.roi_label = QLabel()
+        self.roi_label = _ShrinkableLabel("", max_min_width=72)
         self.roi_label.setObjectName("roiPill")
 
         monitor_hdr_layout.addWidget(self.video_name_label)
@@ -883,12 +886,17 @@ class MainWindow(QMainWindow):
         self.btn_step_fwd.setIcon(make_icon("step_fwd", size=13))
         self.btn_seek_end = QPushButton()
         self.btn_seek_end.setIcon(make_icon("skip_fwd", size=13))
+        self.btn_mute = QPushButton()
+        self.btn_mute.setCheckable(True)
+        self.btn_mute.setChecked(False)
+        self.btn_mute.setIcon(make_icon("volume", size=13))
         for btn in (
             self.btn_seek_start,
             self.btn_play_pause,
             self.btn_step_back,
             self.btn_step_fwd,
             self.btn_seek_end,
+            self.btn_mute,
         ):
             btn.setProperty("variant", "tool")
             btn.setIconSize(QSize(13, 13))
@@ -899,7 +907,7 @@ class MainWindow(QMainWindow):
             step_btn.setAutoRepeat(True)
             step_btn.setAutoRepeatDelay(250)
             step_btn.setAutoRepeatInterval(55)
-        self.time_label = QLabel("0:00:00.00 / 0:00:00.00")
+        self.time_label = _ShrinkableLabel("0:00:00.00 / 0:00:00.00", max_min_width=100)
         self.time_label.setObjectName("timecodeBadge")
         scrub_row.addWidget(self.btn_seek_start)
         scrub_row.addWidget(self.btn_play_pause)
@@ -907,26 +915,27 @@ class MainWindow(QMainWindow):
         scrub_row.addWidget(self.frame_slider, 1)
         scrub_row.addWidget(self.btn_step_fwd)
         scrub_row.addWidget(self.btn_seek_end)
+        scrub_row.addWidget(self.btn_mute)
         scrub_row.addWidget(self.time_label)
         preview_layout.addLayout(scrub_row)
 
         trim_row = QHBoxLayout()
         trim_row.setContentsMargins(0, 0, 0, 0)
         trim_row.setSpacing(3)
-        self.btn_set_in = QPushButton(tr(self._lang, "trim_in"))
+        self.btn_set_in = _CompactButton(tr(self._lang, "trim_in"))
         self.btn_set_in.setProperty("variant", "trim")
         self.btn_set_in.setIcon(make_icon("trim_in", color="#10B981", size=12))
         self.btn_set_in.setIconSize(QSize(12, 12))
         self.btn_set_in.setFixedHeight(24)
         self.btn_set_in.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.lbl_trim_range = QLabel(tr(self._lang, "trim_full"))
+        self.lbl_trim_range = _ShrinkableLabel(tr(self._lang, "trim_full"), max_min_width=64)
         self.lbl_trim_range.setObjectName("trimRangeBadge")
         self.lbl_trim_range.setProperty("active", False)
         self.lbl_trim_range.setFixedHeight(24)
         self.lbl_trim_range.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
-        self.btn_set_out = QPushButton(tr(self._lang, "trim_out"))
+        self.btn_set_out = _CompactButton(tr(self._lang, "trim_out"))
         self.btn_set_out.setProperty("variant", "trim")
         self.btn_set_out.setIcon(make_icon("trim_out", color="#3EA6FF", size=12))
         self.btn_set_out.setIconSize(QSize(12, 12))
@@ -954,7 +963,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
 
-        self.btn_toggle_settings = QPushButton(tr(self._lang, "btn_settings"))
+        self.btn_toggle_settings = _CompactButton(tr(self._lang, "btn_settings"))
         self.btn_toggle_settings.setProperty("variant", "toggle")
         self.btn_toggle_settings.setIcon(make_icon("sidebar", size=12))
         self.btn_toggle_settings.setIconSize(QSize(12, 12))
@@ -964,7 +973,7 @@ class MainWindow(QMainWindow):
         self.btn_toggle_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_toggle_settings.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_test_frame = QPushButton(tr(self._lang, "btn_test_frame"))
+        self.btn_test_frame = _CompactButton(tr(self._lang, "btn_test_frame"))
         self.btn_test_frame.setProperty("variant", "trim")
         self.btn_test_frame.setIcon(make_icon("scan", color="#10B981", size=12))
         self.btn_test_frame.setIconSize(QSize(12, 12))
@@ -993,7 +1002,7 @@ class MainWindow(QMainWindow):
         subtitles_header, subtitles_hdr_layout, subtitles_title = _make_panel_header(
             tr(self._lang, "panel_subtitles")
         )
-        self.btn_export = QPushButton()
+        self.btn_export = _CompactButton()
         self.btn_export.setProperty("variant", "primary")
         self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=12))
         self.btn_export.setIconSize(QSize(12, 12))
@@ -1064,6 +1073,7 @@ class MainWindow(QMainWindow):
         self.btn_seek_start.clicked.connect(self._seek_to_start)
         self.btn_play_pause.clicked.connect(self.toggle_playback)
         self.btn_seek_end.clicked.connect(self._seek_to_end)
+        self.btn_mute.toggled.connect(self._on_mute_toggled)
         self.btn_step_back.clicked.connect(lambda: self._step_frame(-1))
         self.btn_step_fwd.clicked.connect(lambda: self._step_frame(1))
         self.frame_slider.sliderPressed.connect(self.stop_playback)
@@ -1086,6 +1096,7 @@ class MainWindow(QMainWindow):
         self.btn_open_out_dir.clicked.connect(self.open_output_folder)
 
         self.review_table.jump_requested.connect(self._on_review_jump_requested)
+        self.review_table.row_seek_requested.connect(self._on_review_jump_requested)
         self.review_table.snap_start_requested.connect(self._on_review_snap_start)
         self.review_table.snap_end_requested.connect(self._on_review_snap_end)
         self.review_table.split_requested.connect(self._on_review_split_requested)
@@ -1205,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.btn_step_back.setToolTip(tr(lang, "tip_step_back"))
         self.btn_step_fwd.setToolTip(tr(lang, "tip_step_fwd"))
         self.btn_seek_end.setToolTip(tr(lang, "tip_seek_end"))
+        self._update_mute_button_icon()
 
         self.btn_set_in.setText(tr(lang, "trim_in"))
         self.btn_set_in.setToolTip(tr(lang, "tip_trim_in"))
@@ -1510,6 +1522,10 @@ class MainWindow(QMainWindow):
             if not event.isAutoRepeat():
                 self.set_trim_out()
             return True
+        if key == Qt.Key.Key_M and no_mod:
+            if not event.isAutoRepeat():
+                self.toggle_mute()
+            return True
         if (
             (key in (Qt.Key.Key_Left, Qt.Key.Key_Comma) and no_mod)
             or (key == Qt.Key.Key_Less and (no_mod or shift_only))
@@ -1659,6 +1675,7 @@ class MainWindow(QMainWindow):
         self.frame_slider.setEnabled(has_video and not running)
         self.btn_step_fwd.setEnabled(has_video and not running)
         self.btn_seek_end.setEnabled(has_video and not running)
+        self.btn_mute.setEnabled(has_video and not running)
         self.btn_set_in.setEnabled(has_video and not running)
         self.btn_set_out.setEnabled(has_video and not running)
         self.btn_clear_trim.setEnabled(has_video and has_trim and not running)
@@ -1922,8 +1939,24 @@ class MainWindow(QMainWindow):
             self.btn_play_pause.setIcon(make_icon("play", size=13))
             self.btn_play_pause.setToolTip(tr(self._lang, "tip_play"))
 
+    def _update_mute_button_icon(self) -> None:
+        if self._audio_player.is_muted():
+            self.btn_mute.setIcon(make_icon("volume_mute", color="#F08080", size=13))
+            self.btn_mute.setToolTip(tr(self._lang, "tip_unmute"))
+        else:
+            self.btn_mute.setIcon(make_icon("volume", size=13))
+            self.btn_mute.setToolTip(tr(self._lang, "tip_mute"))
+
+    def _on_mute_toggled(self, checked: bool) -> None:
+        self._audio_player.set_muted(checked)
+        self._update_mute_button_icon()
+
+    def toggle_mute(self) -> None:
+        """Toggle preview audio mute on/off."""
+        self.btn_mute.setChecked(not self.btn_mute.isChecked())
+
     def start_playback(self) -> None:
-        """Start sequential preview playback on the video canvas."""
+        """Start sequential preview playback on the video canvas with synchronized audio."""
         if self._video_meta is None or self._is_running():
             return
         if self._is_playing:
@@ -1954,15 +1987,23 @@ class MainWindow(QMainWindow):
 
         if wrapped:
             self._at_eof = False
+        self._pending_play_frame = None
+        audio_started = False
+        if self._video_path is not None:
+            audio_started = self._audio_player.start(self._video_path, start_raw)
         self._is_playing = True
         self._update_play_button_icon()
-        interval_ms = max(16, int(round(1000.0 / fps)))
+        interval_ms = 15 if audio_started else max(16, int(round(1000.0 / fps)))
         self._play_timer.start(interval_ms)
 
     def stop_playback(self) -> None:
-        """Pause sequential preview playback."""
+        """Pause sequential preview playback and stop audio output."""
         if self._play_timer.isActive():
             self._play_timer.stop()
+        self._audio_player.stop()
+        if self._pending_play_frame is not None:
+            self._pending_play_frame = None
+            self._play_iter = None
         if self._is_playing:
             self._is_playing = False
             self._update_play_button_icon()
@@ -1974,15 +2015,14 @@ class MainWindow(QMainWindow):
         else:
             self.start_playback()
 
-    def _advance_one_sequential_frame(self) -> bool:
-        """Decode and display the next sequential frame without re-seeking; returns False at EOF."""
+    def _pull_next_sequential_frame(self) -> tuple[int, int, np.ndarray] | None:
         if self._video_meta is None or self._is_running():
-            return False
+            return None
         self._last_advance_error = False
         try:
             reader = self._ensure_preview_reader()
             if reader is None:
-                return False
+                return None
             if self._play_iter is None:
                 self._play_iter = reader.iter_full_frames_from_ms(self._current_frame_ms + 1)
         except Exception as exc:
@@ -1990,19 +2030,26 @@ class MainWindow(QMainWindow):
             self._last_advance_error = True
             self.stop_playback()
             self._set_status("status_frame_read_error", error=exc)
-            return False
+            return None
         try:
-            frame_idx, pts_ms, full_bgr = next(self._play_iter)
+            return next(self._play_iter)
         except StopIteration:
             self._play_iter = None
             self._at_eof = True
-            return False
+            return None
         except Exception as exc:
             self._play_iter = None
             self._last_advance_error = True
             self.stop_playback()
             self._set_status("status_frame_read_error", error=exc)
+            return None
+
+    def _advance_one_sequential_frame(self) -> bool:
+        """Decode and display the next sequential frame without re-seeking; returns False at EOF."""
+        nxt = self._pull_next_sequential_frame()
+        if nxt is None:
             return False
+        frame_idx, pts_ms, full_bgr = nxt
         self._at_eof = False
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
         return True
@@ -2012,8 +2059,38 @@ class MainWindow(QMainWindow):
         if not self._is_playing or self._video_meta is None or self._is_running():
             self.stop_playback()
             return
-        if not self._advance_one_sequential_frame():
-            self.stop_playback()
+
+        audio_pts = self._audio_player.playback_pts_ms()
+        if audio_pts is None:
+            if not self._advance_one_sequential_frame():
+                self.stop_playback()
+            return
+
+        fps = max(1.0, float(self._video_meta.fps))
+        frame_ms = max(1, round(1000.0 / fps))
+        half_frame_ms = max(1, frame_ms // 2)
+
+        latest_due: tuple[int, int, np.ndarray] | None = None
+        for _ in range(6):
+            if self._pending_play_frame is None:
+                self._pending_play_frame = self._pull_next_sequential_frame()
+                if self._pending_play_frame is None:
+                    if latest_due is not None:
+                        self._at_eof = False
+                        self._display_preview_frame(*latest_due)
+                    self.stop_playback()
+                    return
+            _, pts_ms, _ = self._pending_play_frame
+            if pts_ms > audio_pts + half_frame_ms:
+                break
+            latest_due = self._pending_play_frame
+            self._pending_play_frame = None
+            if pts_ms + frame_ms >= audio_pts:
+                break
+
+        if latest_due is not None:
+            self._at_eof = False
+            self._display_preview_frame(*latest_due)
 
     def seek_to_ms(self, target_ms: int) -> None:
         """Seek preview canvas to the frame nearest ``target_ms``."""

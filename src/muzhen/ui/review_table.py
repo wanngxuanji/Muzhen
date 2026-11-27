@@ -8,7 +8,16 @@ from dataclasses import replace as dc_replace
 import re
 import time
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaMethod, QObject, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QItemSelectionModel,
+    QMetaMethod,
+    QObject,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemDelegate,
@@ -81,8 +90,35 @@ def _decode_display_text(text: str) -> str:
     return normalized.replace(r"\N", "\n")
 
 
+class _CompactButton(QPushButton):
+    """QPushButton whose minimumSizeHint tracks content width instead of Qt's 80px default."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        text_w = self.fontMetrics().horizontalAdvance(self.text()) if self.text() else 0
+        icon_w = self.iconSize().width() + (4 if text_w else 0) if not self.icon().isNull() else 0
+        compact_w = max(24, min(text_w + icon_w + 10, 84))
+        return QSize(min(hint.width(), compact_w), hint.height())
+
+
+class _ShrinkableLabel(QLabel):
+    """QLabel keeping full sizeHint while allowing tight layout minimumSizeHint."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None, *, max_min_width: int = 80) -> None:
+        super().__init__(text, parent)
+        self._max_min_width = max(16, int(max_min_width))
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), self._max_min_width), hint.height())
+
+
 class _SubtitleTableWidget(QTableWidget):
-    """QTableWidget keeping ExtendedSelection while making programmatic selectRow exclusive."""
+    """QTableWidget keeping ExtendedSelection while making programmatic selection exclusive."""
 
     def selectRow(self, row: int) -> None:
         sel_model = self.selectionModel()
@@ -90,6 +126,21 @@ class _SubtitleTableWidget(QTableWidget):
             self.clearSelection()
             return
         idx = self.model().index(row, 0)
+        sel_model.setCurrentIndex(
+            idx,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+    def setCurrentCell(self, row: int, column: int, command=None) -> None:
+        if command is not None:
+            super().setCurrentCell(row, column, command)
+            return
+        sel_model = self.selectionModel()
+        if sel_model is None or not (0 <= row < self.rowCount()):
+            super().setCurrentCell(row, column)
+            return
+        idx = self.model().index(row, max(0, min(column, self.columnCount() - 1)))
         sel_model.setCurrentIndex(
             idx,
             QItemSelectionModel.SelectionFlag.ClearAndSelect
@@ -105,6 +156,7 @@ class ReviewTable(QWidget):
     dirty_changed = Signal(bool)
     transport_key_forwarded = Signal(object)
     jump_requested = Signal(int)
+    row_seek_requested = Signal(int)
     snap_start_requested = Signal()
     snap_end_requested = Signal()
     split_requested = Signal()
@@ -115,6 +167,10 @@ class ReviewTable(QWidget):
         self._events: list[SubtitleEvent] = []
         self._filter_mode: str = "all"
         self._populating: bool = False
+        self._suppress_row_seek: bool = False
+        self._last_selected_master_idx: int | None = None
+        self._in_mouse_press: bool = False
+        self._selection_changed_just_seeked: bool = False
         self._raw_pixmap: QPixmap | None = None
         self._frame_step_ms: int = _DEFAULT_FRAME_STEP_MS
         self._frame_pts_ms: tuple[int, ...] = ()
@@ -203,7 +259,7 @@ class ReviewTable(QWidget):
         toolbar_sep.setFixedSize(1, 16)
         toolbar_sep.setStyleSheet("background-color: #2E2E2E;")
 
-        self.btn_merge = QPushButton("Merge")
+        self.btn_merge = _CompactButton("Merge")
         self.btn_merge.setProperty("variant", "timing")
         self.btn_merge.setIcon(make_icon("merge", size=12))
         self.btn_merge.setIconSize(QSize(12, 12))
@@ -213,7 +269,7 @@ class ReviewTable(QWidget):
         self.btn_merge.setToolTip("Merge selected adjacent rows (Ctrl+M)")
         self.btn_merge.setEnabled(False)
 
-        self.btn_split = QPushButton("Split")
+        self.btn_split = _CompactButton("Split")
         self.btn_split.setProperty("variant", "timing")
         self.btn_split.setIcon(make_icon("split", size=12))
         self.btn_split.setIconSize(QSize(12, 12))
@@ -275,14 +331,14 @@ class ReviewTable(QWidget):
         self.btn_find_next.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_find_next.setToolTip("Next match (Enter)")
 
-        self.btn_replace_one = QPushButton("Replace")
+        self.btn_replace_one = _CompactButton("Replace")
         self.btn_replace_one.setProperty("variant", "timing")
         self.btn_replace_one.setFixedHeight(24)
         self.btn_replace_one.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_replace_one.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_replace_one.setToolTip("Replace in selected row")
 
-        self.btn_replace_all = QPushButton("Replace All")
+        self.btn_replace_all = _CompactButton("Replace All")
         self.btn_replace_all.setProperty("variant", "timing")
         self.btn_replace_all.setFixedHeight(24)
         self.btn_replace_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -346,7 +402,7 @@ class ReviewTable(QWidget):
         inspector_hdr = QHBoxLayout()
         inspector_hdr.setContentsMargins(0, 0, 0, 0)
         inspector_hdr.setSpacing(6)
-        self.lbl_inspector_title = QLabel("Inspector & Timing")
+        self.lbl_inspector_title = _ShrinkableLabel("Inspector & Timing", max_min_width=96)
         self.lbl_inspector_title.setProperty("role", "sectionTitle")
         self.lbl_cue_meta = QLabel("")
         self.lbl_cue_meta.setObjectName("cueMetaBadge")
@@ -368,7 +424,7 @@ class ReviewTable(QWidget):
         self.lbl_flag_reason.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self.btn_mark_ok = QPushButton("Mark OK")
+        self.btn_mark_ok = _CompactButton("Mark OK")
         self.btn_mark_ok.setProperty("variant", "ok")
         self.btn_mark_ok.setIcon(make_icon("check", color="#10B981", size=12))
         self.btn_mark_ok.setIconSize(QSize(12, 12))
@@ -396,26 +452,26 @@ class ReviewTable(QWidget):
         timing_row.setContentsMargins(0, 0, 0, 0)
         timing_row.setSpacing(3)
 
-        self.btn_jump_start = QPushButton("Start")
+        self.btn_jump_start = _CompactButton("Start")
         self.btn_jump_start.setIcon(make_icon("skip_back", size=11))
         self.btn_jump_start.setIconSize(QSize(11, 11))
         self.btn_jump_start.setToolTip("Jump video to selected row Start (Alt+S)")
 
-        self.btn_jump_end = QPushButton("End")
+        self.btn_jump_end = _CompactButton("End")
         self.btn_jump_end.setIcon(make_icon("skip_fwd", size=11))
         self.btn_jump_end.setIconSize(QSize(11, 11))
         self.btn_jump_end.setToolTip("Jump video to selected row End (Alt+E)")
 
-        self.btn_snap_in = QPushButton("In")
+        self.btn_snap_in = _CompactButton("In")
         self.btn_snap_in.setToolTip("Snap Start to current video frame (Ctrl+[)")
 
-        self.btn_snap_out = QPushButton("Out")
+        self.btn_snap_out = _CompactButton("Out")
         self.btn_snap_out.setToolTip("Snap End to current video frame (Ctrl+])")
 
-        self.btn_nudge_back = QPushButton("-1f")
+        self.btn_nudge_back = _CompactButton("-1f")
         self.btn_nudge_back.setToolTip("Nudge timing back 1 frame — hold to repeat (Shift: -100ms)")
 
-        self.btn_nudge_fwd = QPushButton("+1f")
+        self.btn_nudge_fwd = _CompactButton("+1f")
         self.btn_nudge_fwd.setToolTip("Nudge timing forward 1 frame — hold to repeat (Shift: +100ms)")
 
         for nudge_btn in (self.btn_nudge_back, self.btn_nudge_fwd):
@@ -474,7 +530,9 @@ class ReviewTable(QWidget):
         self.replace_edit.installEventFilter(self)
         self.preview_label.installEventFilter(self)
         self.table.installEventFilter(self)
+        self.table.viewport().installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.itemClicked.connect(self._on_item_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         self.set_language(self._lang)
 
@@ -571,8 +629,8 @@ class ReviewTable(QWidget):
                 cur = cur.parentWidget()
             editor = cur
         if editor is None and viewport is not None:
-            for child in viewport.findChildren(QWidget):
-                if child.parentWidget() is viewport and child.isVisible():
+            for child in reversed(viewport.findChildren(QWidget)):
+                if child.parentWidget() is viewport and not child.isHidden():
                     editor = child
                     break
         if editor is not None:
@@ -657,6 +715,8 @@ class ReviewTable(QWidget):
         self._clean_revision = 0
         self._next_revision_id = 1
         self._reset_nudge_coalesce()
+        self._last_selected_master_idx = None
+        self._selection_changed_just_seeked = False
         self._raw_pixmap = None
         self._populating = True
         try:
@@ -1492,10 +1552,18 @@ class ReviewTable(QWidget):
 
         if visible_pairs:
             target_row = max(0, min(preferred_row, len(visible_pairs) - 1))
-            self.table.selectRow(target_row)
+            self._last_selected_master_idx = visible_pairs[target_row][0]
+            self._selection_changed_just_seeked = False
+            self._suppress_row_seek = True
+            try:
+                self.table.selectRow(target_row)
+            finally:
+                self._suppress_row_seek = False
             self._render_preview_for_row(target_row)
             self._update_inspector_for_row(target_row)
         else:
+            self._last_selected_master_idx = None
+            self._selection_changed_just_seeked = False
             self._raw_pixmap = None
             self.preview_label.clear()
             empty_key = "inspector_no_match" if self._events else "inspector_empty"
@@ -1510,6 +1578,38 @@ class ReviewTable(QWidget):
         self._update_action_buttons_state()
         if self.find_bar.isVisible():
             self._refresh_find_status()
+        if self._populating or self._suppress_row_seek:
+            return
+        pairs = self._selected_visible_and_master_pairs()
+        if len(pairs) == 1:
+            master_idx = pairs[0][1]
+            if master_idx != self._last_selected_master_idx:
+                self._last_selected_master_idx = master_idx
+                self._selection_changed_just_seeked = self._in_mouse_press
+                self.row_seek_requested.emit(self._events[master_idx].start_ms)
+        else:
+            self._last_selected_master_idx = None
+
+    def _clear_mouse_press_flags(self) -> None:
+        self._in_mouse_press = False
+        self._selection_changed_just_seeked = False
+
+    def _on_item_clicked(self, _item: QTableWidgetItem) -> None:
+        if self._selection_changed_just_seeked:
+            self._selection_changed_just_seeked = False
+            self._in_mouse_press = False
+            return
+        self._in_mouse_press = False
+        if self._populating or self._suppress_row_seek:
+            return
+        mods = QApplication.keyboardModifiers()
+        if mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            return
+        pairs = self._selected_visible_and_master_pairs()
+        if len(pairs) == 1:
+            master_idx = pairs[0][1]
+            self._last_selected_master_idx = master_idx
+            self.row_seek_requested.emit(self._events[master_idx].start_ms)
 
     def _update_inspector_for_row(self, row: int) -> None:
         if row < 0 or row >= self.table.rowCount():
@@ -1678,6 +1778,7 @@ class ReviewTable(QWidget):
             Qt.Key.Key_Space,
             Qt.Key.Key_I,
             Qt.Key.Key_O,
+            Qt.Key.Key_M,
             Qt.Key.Key_Comma,
             Qt.Key.Key_Period,
             Qt.Key.Key_Home,
@@ -1691,7 +1792,18 @@ class ReviewTable(QWidget):
         return False
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.preview_label and event.type() == QEvent.Type.Resize:
+        if (
+            watched is self.table.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self._in_mouse_press = True
+            self._selection_changed_just_seeked = False
+        elif (
+            watched is self.table.viewport()
+            and event.type() == QEvent.Type.MouseButtonRelease
+        ):
+            QTimer.singleShot(0, self, self._clear_mouse_press_flags)
+        elif watched is self.preview_label and event.type() == QEvent.Type.Resize:
             self._update_preview_pixmap()
         elif (
             watched in (self.find_edit, self.replace_edit)
