@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from transapp.core.models import SubtitleEvent
+from transapp.exporters.sanitize import clamp_non_overlapping_intervals, prepare_export_cues
 
 
 def format_srt_time(ms: int) -> str:
@@ -19,24 +21,20 @@ def format_srt_time(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{mmm:03d}"
 
 
-def export_srt(events: list[SubtitleEvent], output_path: Path) -> Path:
+def export_srt(events: Sequence[SubtitleEvent], output_path: Path) -> Path:
     """Export subtitle events as clean UTF-8 ``.srt`` (no BOM, LF newlines)."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    cues = prepare_export_cues(events)
+    raw_timings = [(ev.start_ms, max(ev.start_ms + 1, ev.end_ms)) for ev in cues]
+    resolved_timings = clamp_non_overlapping_intervals(raw_timings)
+
     blocks: list[str] = []
-    seq = 1
-    for event in events:
-        raw = event.text.replace("\r\n", "\n").replace("\r", "\n")
-        clean_text = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
-        if not clean_text:
-            continue
-        start_ms = max(0, int(event.start_ms))
-        end_ms = max(start_ms + 1, int(event.end_ms))
+    for seq, (event, (start_ms, end_ms)) in enumerate(zip(cues, resolved_timings), start=1):
         blocks.append(
-            f"{seq}\n{format_srt_time(start_ms)} --> {format_srt_time(end_ms)}\n{clean_text}"
+            f"{seq}\n{format_srt_time(start_ms)} --> {format_srt_time(end_ms)}\n{event.text}"
         )
-        seq += 1
 
     content = ("\n\n".join(blocks) + "\n") if blocks else ""
     with out.open("w", encoding="utf-8", newline="\n") as fh:
