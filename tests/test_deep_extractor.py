@@ -7,10 +7,15 @@ import numpy as np
 import pytest
 
 from transapp.core.deep_extractor import (
+    TightSignature,
+    _DetectedSpan,
     _FrameVote,
     _choose_majority_vote,
+    _compute_tight_signature,
+    _tight_signatures_same_cue,
     detect_subtitle_spans,
     extract_subtitles_deep,
+    recognize_spans_with_voting,
 )
 from transapp.core.models import ExtractConfig
 from transapp.core.ocr_engine import OcrEngine
@@ -387,3 +392,289 @@ def test_span_sample_reservoir_bounded_at_24_with_full_tail_coverage():
     assert sample_idxs == sorted(sample_idxs)
     max_gap = max(b - a for a, b in zip(sample_idxs, sample_idxs[1:]))
     assert max_gap <= 10
+
+
+def _make_encoded_span(
+    frame_indices: list[int],
+    pts_ms_list: list[int],
+    end_ms: int,
+    *,
+    luma_overrides: dict[int, int] | None = None,
+) -> _DetectedSpan:
+    """Create a _DetectedSpan whose samples encode their frame_idx in a lossless-safe corner block."""
+    span = _DetectedSpan(
+        start_idx=frame_indices[0],
+        end_idx=frame_indices[-1],
+        start_ms=pts_ms_list[0],
+        end_ms=end_ms,
+        union_rect=_FIXED_BOX,
+    )
+    for fidx, pts in zip(frame_indices, pts_ms_list):
+        base = (luma_overrides or {}).get(fidx, 100)
+        img = np.full((76, 480, 3), (base, base, base), dtype=np.uint8)
+        # Encode fidx across a 16x16 block in channel 0 (scaled by 8) to survive JPEG Q95 losslessly
+        img[0:16, 0:16, 0] = min(248, fidx * 8)
+        span.add_sample(fidx, pts, img)
+    return span
+
+
+def _decode_encoded_fidx(bgr: np.ndarray) -> int:
+    return int(round(float(bgr[4:12, 4:12, 0].mean()) / 8.0))
+
+
+def test_stage2_early_exit_saves_ocr_calls_on_clean_consensus():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
+    frame_pts_ms = [i * 180 for i in range(11)]  # 10 samples spanning 0..1800ms (dur=1800ms)
+    span = _make_encoded_span(list(range(10)), frame_pts_ms[:10], end_ms=1800)
+
+    called_frames: list[int] = []
+
+    class CleanEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            called_frames.append(fidx)
+            # Edge frames 0 and 9 would be noisy if probed; interior frames are clean
+            if fidx in (0, 9):
+                return ("G太好了", 0.72)
+            return ("太好了", 0.98)
+
+    eng = CleanEngine()
+    segs = recognize_spans_with_voting([span], frame_pts_ms, eng, cfg)
+
+    assert len(segs) == 1
+    assert segs[0].text == "太好了"
+    assert segs[0].start_ms == 0
+    assert segs[0].end_ms == 1800
+    assert len(called_frames) == 3
+    assert 0 not in called_frames
+    assert 9 not in called_frames
+
+
+def test_stage2_binary_search_splits_one_char_minimal_pair_to_exact_frame():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=320)
+    # 25fps (40ms/frame), single 24-sample span: frames 0..11 = A, frames 12..23 = B
+    frame_pts_ms = [i * 40 for i in range(25)]
+    span = _make_encoded_span(list(range(24)), frame_pts_ms[:24], end_ms=frame_pts_ms[24])
+
+    called_frames: list[int] = []
+
+    class MinimalPairEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            called_frames.append(fidx)
+            if fidx <= 11:
+                return ("我不会放过你的", 0.98)
+            return ("我不会放过他的", 0.98)
+
+    eng = MinimalPairEngine()
+    segs = recognize_spans_with_voting([span], frame_pts_ms, eng, cfg)
+
+    assert len(segs) == 2
+    assert segs[0].text == "我不会放过你的"
+    assert segs[1].text == "我不会放过他的"
+    assert segs[0].start_ms == 0
+    assert abs(segs[0].end_ms - frame_pts_ms[12]) <= 40
+    assert segs[1].start_ms == segs[0].end_ms
+    assert segs[1].end_ms == frame_pts_ms[24]
+    # Binary search must not brute-force all 24 frames
+    assert len(called_frames) < 16
+
+
+def test_stage2_weighted_consensus_pools_varied_edge_noise_and_symbol_artifacts():
+    cfg = ExtractConfig(conf_threshold=0.85)
+    dummy_engine = OcrEngine(provider="cpu", ocr_callable=lambda _img: (None, None))
+    img1 = _solid_roi(11)
+    img2 = _solid_roi(22)
+
+    # Varied edge-noise prefixes pool weight onto clean vote "我们是救世"
+    votes_varied = [
+        _FrameVote(100, "G我们是救世", 0.78, img1, frame_idx=1),
+        _FrameVote(200, "Y我们是救世", 0.76, img1, frame_idx=2),
+        _FrameVote(300, "我们是救世", 0.99, img2, frame_idx=3),
+    ]
+    txt, conf, _ = _choose_majority_vote(votes_varied, dummy_engine, cfg)
+    assert txt == "我们是救世"
+    assert conf == pytest.approx(0.99)
+
+    # Even 2 identical noisy votes lose to 1 clean vote once pooled
+    votes_2v1 = [
+        _FrameVote(100, "G我们是救世", 0.78, img1, frame_idx=1),
+        _FrameVote(200, "G我们是救世", 0.78, img1, frame_idx=2),
+        _FrameVote(300, "我们是救世", 0.95, img2, frame_idx=3),
+    ]
+    txt_2v1, conf_2v1, _ = _choose_majority_vote(votes_2v1, dummy_engine, cfg)
+    assert txt_2v1 == "我们是救世"
+    assert conf_2v1 == pytest.approx(0.95)
+
+    # Stray symbol artifact "#一人" triggers brightness_filter=True retry (and 2nd frame retry if needed)
+    class SymbolRetryEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+            self.retry_calls = 0
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            if brightness_filter:
+                self.retry_calls += 1
+                if self.retry_calls == 1 and bgr_roi is img1:
+                    return ("#一人", 0.62)
+                return ("一人", 0.95)
+            return ("#一人", 0.62)
+
+    eng_single = SymbolRetryEngine()
+    votes_sym = [_FrameVote(100, "#一人", 0.62, img2, frame_idx=1)]
+    txt_sym, conf_sym, _ = _choose_majority_vote(votes_sym, eng_single, cfg)
+    assert eng_single.retry_calls == 1
+    assert txt_sym == "一人"
+    assert conf_sym == pytest.approx(0.95)
+
+    # 2nd distinct frame retry kicks in when 1st frame retry remains noisy
+    eng_two = SymbolRetryEngine()
+    votes_two = [
+        _FrameVote(100, "#一人", 0.62, img1, frame_idx=1),
+        _FrameVote(200, "#一人", 0.60, img2, frame_idx=2),
+    ]
+    txt_two, conf_two, _ = _choose_majority_vote(votes_two, eng_two, cfg)
+    assert eng_two.retry_calls == 2
+    assert txt_two == "一人"
+    assert conf_two == pytest.approx(0.95)
+
+
+def test_stage2_middle_noise_vote_does_not_shatter_single_cue():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
+    # 5-sample span: [A, A, GARBAGE, A, A] -> must remain 1 single cue A
+    frame_pts_ms = [i * 200 for i in range(6)]
+    span = _make_encoded_span(list(range(5)), frame_pts_ms[:5], end_ms=frame_pts_ms[5])
+
+    class MiddleNoiseEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            if fidx == 2:
+                return ("乱码杂音", 0.65)
+            return ("战斗开始", 0.98)
+
+    segs = recognize_spans_with_voting([span], frame_pts_ms, MiddleNoiseEngine(), cfg)
+
+    assert len(segs) == 1
+    assert segs[0].text == "战斗开始"
+    assert segs[0].start_ms == 0
+    assert segs[0].end_ms == 1000
+
+
+def test_stage2_char_level_consensus_and_clean_fuller_containment_single_support():
+    cfg = ExtractConfig(conf_threshold=0.85)
+    dummy_engine = OcrEngine(provider="cpu", ocr_callable=lambda _img: (None, None))
+    img = _solid_roi(33)
+
+    # 3 differing 1-char-error votes -> character-level alignment consensus reconstructs exact line
+    votes_char = [
+        _FrameVote(100, "你们一起去公园", 0.85, img, frame_idx=1),
+        _FrameVote(200, "我们一起去公院", 0.86, img, frame_idx=2),
+        _FrameVote(300, "我们一七去公园", 0.84, img, frame_idx=3),
+    ]
+    txt_char, _, _ = _choose_majority_vote(votes_char, dummy_engine, cfg)
+    assert txt_char == "我们一起去公园"
+
+    # cnt=1 clean fuller Hanzi containment (>= 0.92) beats 3x truncated votes
+    votes_fuller = [
+        _FrameVote(100, "个蕴藏着神秘力量的", 0.98, img, frame_idx=1),
+        _FrameVote(200, "个蕴藏着神秘力量的", 0.98, img, frame_idx=2),
+        _FrameVote(300, "个蕴藏着神秘力量的", 0.98, img, frame_idx=3),
+        _FrameVote(400, "一个蕴藏着神秘力量的", 0.94, img, frame_idx=4),
+    ]
+    txt_fuller, conf_fuller, _ = _choose_majority_vote(votes_fuller, dummy_engine, cfg)
+    assert txt_fuller == "一个蕴藏着神秘力量的"
+    assert conf_fuller == pytest.approx(0.94)
+
+
+def test_tight_signature_empty_boxes_and_opposite_metric_floor():
+    img = _solid_roi(40)
+    empty_sig = _compute_tight_signature(img, [])
+    assert empty_sig.boxes == []
+    assert empty_sig.union_rect == (0.0, 0.0, 0.0, 0.0)
+    assert not np.any(empty_sig.edge_mask)
+    assert not np.any(empty_sig.luma_patch)
+
+    # Opposite-metric floor (>= 0.30) rejects single-metric fluke
+    edge = np.zeros((16, 64), dtype=np.uint8)
+    edge[4:12, 10:50] = 1
+    la = np.zeros((16, 64), dtype=np.float32)
+    lb = np.zeros((16, 64), dtype=np.float32)
+    la[4:12, 10:30] = 1.0
+    la /= float(np.linalg.norm(la))
+    lb[4:12, 10:30] = -1.0  # Inverted luma -> NCC = -1.0 < 0.30 despite edge_iou == 1.0
+    lb /= float(np.linalg.norm(lb))
+    sig_a = TightSignature(boxes=[_FIXED_BOX], union_rect=_FIXED_BOX, edge_mask=edge, luma_patch=la)
+    sig_b = TightSignature(boxes=[_FIXED_BOX], union_rect=_FIXED_BOX, edge_mask=edge, luma_patch=lb)
+    assert _tight_signatures_same_cue(sig_a, sig_b) is False
+
+
+def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
+    cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120)
+
+    # 1) Glare/white-flash dodge on n >= 8: anchor frame 4 is a white flash (luma=250) -> dodged!
+    frame_pts_ms = [i * 150 for i in range(11)]
+    span_glare = _make_encoded_span(
+        list(range(10)), frame_pts_ms[:10], end_ms=1500, luma_overrides={4: 250}
+    )
+    glare_calls: list[int] = []
+
+    class GlareEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            fidx = _decode_encoded_fidx(bgr_roi)
+            glare_calls.append(fidx)
+            if fidx == 4:
+                return ("G闪光错字", 0.60)
+            return ("清晰字幕", 0.98)
+
+    segs_glare = recognize_spans_with_voting([span_glare], frame_pts_ms, GlareEngine(), cfg)
+    assert len(segs_glare) == 1
+    assert segs_glare[0].text == "清晰字幕"
+    assert len(glare_calls) == 3
+    assert 4 not in glare_calls
+
+    # 2) Empty FP early-exit: 8-sample span (dur=800 <= 1200) returning empty stops after 3 probes
+    empty_pts = [i * 100 for i in range(9)]
+    span_empty = _make_encoded_span(list(range(8)), empty_pts[:8], end_ms=800)
+    empty_calls: list[int] = []
+
+    class EmptyEngine(OcrEngine):
+        def __init__(self):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            empty_calls.append(_decode_encoded_fidx(bgr_roi))
+            return ("", 0.0)
+
+    segs_empty = recognize_spans_with_voting([span_empty], empty_pts, EmptyEngine(), cfg)
+    assert segs_empty == []
+    assert len(empty_calls) == 3
+
+    # 3) Stage 2 short low-conf ghost guard drops <=2-vote <=2-char conf < 0.72, keeps conf >= 0.72
+    ghost_pts = [0, 160, 320]
+    span_ghost = _make_encoded_span([0, 1], [0, 160], end_ms=320)
+    span_real = _make_encoded_span([0, 1], [0, 160], end_ms=320)
+
+    class FixedEngine(OcrEngine):
+        def __init__(self, text: str, conf: float):
+            super().__init__(provider="cpu", ocr_callable=lambda _img: (None, None))
+            self._text = text
+            self._conf = conf
+
+        def recognize_roi(self, bgr_roi: np.ndarray, *, brightness_filter: bool = False):
+            return (self._text, self._conf)
+
+    assert recognize_spans_with_voting([span_ghost], ghost_pts, FixedEngine("生", 0.55), cfg) == []
+    kept = recognize_spans_with_voting([span_real], ghost_pts, FixedEngine("嗯", 0.95), cfg)
+    assert len(kept) == 1 and kept[0].text == "嗯"
