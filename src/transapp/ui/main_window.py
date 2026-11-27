@@ -264,6 +264,7 @@ class MainWindow(QMainWindow):
         self.provider_combo.addItem("CPU (ONNX Runtime)", "cpu")
         if "directml" in OcrEngine.available_providers():
             self.provider_combo.addItem("DirectML (GPU)", "directml")
+            self.provider_combo.setCurrentIndex(1)
         provider_row.addWidget(self.provider_combo)
         provider_row.addStretch(1)
         config_layout.addLayout(provider_row)
@@ -380,6 +381,8 @@ class MainWindow(QMainWindow):
         self.btn_browse_ass_template.setEnabled(not running)
 
         self.btn_test_frame.setEnabled(has_video and not running)
+        self.provider_combo.setEnabled(not running)
+        self.spin_conf.setEnabled(not running)
         self.btn_start.setEnabled(has_video and not running)
         self.btn_stop.setEnabled(running)
         self.btn_export.setEnabled(has_video and has_result and not running)

@@ -156,3 +156,22 @@ def test_postprocess_allows_iteration_marks_and_halfwidth_parens_slash_semicolon
     events = postprocess_segments(segs, cfg)
     assert len(events) == 1
     assert events[0].flagged is False
+
+
+def test_postprocess_drops_low_conf_non_cjk_garbage_keeps_low_conf_cjk_and_high_conf_ascii():
+    segs = [
+        OcrSegment(0, 280, "VNY", 0.654, b"collar"),          # non-CJK low-conf artifact -> dropped
+        OcrSegment(400, 900, "II / -", 0.78, b"noise"),        # non-CJK low-conf artifact -> dropped
+        OcrSegment(1000, 1800, "大家都怎么样了", 0.72, b"cjk"),  # CJK low-conf -> kept & flagged
+        OcrSegment(2000, 2800, "Episode 01", 0.96, b"title"),  # non-CJK high-conf -> kept
+    ]
+
+    filtered = postprocess_segments(segs, ExtractConfig(conf_threshold=0.85, filter_non_cjk_low_conf=True))
+    assert [(e.index, e.text, e.flagged) for e in filtered] == [
+        (1, "大家都怎么样了", True),
+        (2, "Episode 01", False),
+    ]
+
+    unfiltered = postprocess_segments(segs, ExtractConfig(conf_threshold=0.85, filter_non_cjk_low_conf=False))
+    assert [e.text for e in unfiltered] == ["VNY", "II / -", "大家都怎么样了", "Episode 01"]
+    assert unfiltered[0].flagged is True

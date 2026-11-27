@@ -906,3 +906,70 @@ def test_main_window_browse_buttons_screen_clamp_and_corrupt_presets(
     assert window.radio_ass_default.isChecked()
     assert window.btn_browse_ass_template.isEnabled() is True
     window.close()
+
+
+def test_review_table_delete_selected_row_and_reindex_under_filter(qtbot, tmp_path: Path):
+    from transapp.ui.review_table import ReviewTable
+
+    table = ReviewTable()
+    qtbot.addWidget(table)
+    table.resize(900, 420)
+    table.show()
+
+    assert table.btn_delete_row.isEnabled() is False
+
+    ev1 = SubtitleEvent(1, 500, 1200, "第一句", 0.96, False, _make_png_bytes((40, 200, 40)))
+    ev2 = SubtitleEvent(2, 1300, 1600, "VNY", 0.65, True, _make_png_bytes((40, 40, 220)))
+    ev3 = SubtitleEvent(3, 1700, 2400, "第三句", 0.78, True, _make_png_bytes((200, 40, 40)))
+
+    emitted: list[int] = []
+    table.events_changed.connect(lambda: emitted.append(len(table.events())))
+
+    table.set_events([ev1, ev2, ev3])
+    table.set_filter_mode("flagged_only")
+    assert table.table.rowCount() == 2
+    assert table.btn_delete_row.isEnabled() is True
+
+    # Delete first visible flagged row (ev2: "VNY")
+    table.table.selectRow(0)
+    table.btn_delete_row.click()
+
+    remaining = table.events()
+    assert [(e.index, e.text) for e in remaining] == [(1, "第一句"), (2, "第三句")]
+    assert table.radio_all.text() == "Tất cả (2)"
+    assert table.radio_flagged.text() == "Chỉ dòng nghi ngờ (1)"
+    assert table.table.rowCount() == 1
+    assert table.table.item(0, 0).text() == "2 !"
+    assert len(emitted) == 1
+
+    # Delete remaining visible flagged row via Delete key shortcut
+    qtbot.keyClick(table.table, Qt.Key.Key_Delete)
+    assert [(e.index, e.text) for e in table.events()] == [(1, "第一句")]
+    assert table.table.rowCount() == 0
+    assert table.btn_delete_row.isEnabled() is False
+
+    # Export reflects deletion
+    srt_path = tmp_path / "after_delete.srt"
+    export_srt(table.events(), srt_path)
+    srt_text = srt_path.read_text(encoding="utf-8")
+    assert "第一句" in srt_text
+    assert "VNY" not in srt_text
+    assert "第三句" not in srt_text
+
+
+def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monkeypatch):
+    from transapp.ui.main_window import MainWindow
+
+    monkeypatch.setattr(OcrEngine, "available_providers", staticmethod(lambda: ["cpu", "directml"]))
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+
+    assert window.provider_combo.count() == 2
+    assert window.provider_combo.currentData() == "directml"
+    assert window.build_config().provider == "directml"
+
+    cpu_idx = window.provider_combo.findData("cpu")
+    assert cpu_idx >= 0
+    window.provider_combo.setCurrentIndex(cpu_idx)
+    assert window.build_config().provider == "cpu"
+    window.close()

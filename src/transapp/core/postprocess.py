@@ -25,6 +25,7 @@ _CJK_CHARS = (
 _CJK_FULLWIDTH_PUNCT = "，。！？；：「」『』（）【】《》、…—～·“”‘’〈〉〔〕"
 
 _CJK_OR_PUNCT_CLASS = f"{_CJK_CHARS}{re.escape(_CJK_FULLWIDTH_PUNCT)}"
+_HAS_CJK_RE = re.compile(rf"[{_CJK_CHARS}]")
 _CJK_ADJACENT_SPACE_RE = re.compile(
     rf"(?<=[{_CJK_OR_PUNCT_CLASS}]) +| +(?=[{_CJK_OR_PUNCT_CLASS}])"
 )
@@ -132,6 +133,13 @@ def postprocess_segments(
             prev.end_ms = max(prev.end_ms, curr.end_ms)
         else:
             merged.append(curr)
+
+    if config.filter_non_cjk_low_conf:
+        merged = [
+            cue
+            for cue in merged
+            if _HAS_CJK_RE.search(cue.text) or cue.confidence >= config.conf_threshold
+        ]
 
     return [
         SubtitleEvent(

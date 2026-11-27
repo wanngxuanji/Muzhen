@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QColor, QPixmap, QResizeEvent
+from PySide6.QtGui import QColor, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QRadioButton,
     QSizePolicy,
     QSplitter,
@@ -78,9 +79,13 @@ class ReviewTable(QWidget):
         self.radio_all = QRadioButton("Tất cả (0)")
         self.radio_all.setChecked(True)
         self.radio_flagged = QRadioButton("Chỉ dòng nghi ngờ (0)")
+        self.btn_delete_row = QPushButton("Xóa dòng")
+        self.btn_delete_row.setToolTip("Xóa dòng đang chọn khỏi kết quả (Delete)")
+        self.btn_delete_row.setEnabled(False)
         header.addWidget(self.radio_all)
         header.addWidget(self.radio_flagged)
         header.addStretch(1)
+        header.addWidget(self.btn_delete_row)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -126,6 +131,8 @@ class ReviewTable(QWidget):
         root.addWidget(splitter, 1)
 
         self.radio_all.toggled.connect(self._on_filter_radio_toggled)
+        self.btn_delete_row.clicked.connect(self.delete_selected_row)
+        self.table.installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
 
@@ -172,6 +179,39 @@ class ReviewTable(QWidget):
         self.preview_label.clear()
         self.preview_label.setText("Chưa chọn dòng")
         self._update_filter_counts()
+        self._update_delete_button_state()
+
+    def _selected_visible_row(self) -> int:
+        row = self.table.currentRow()
+        if row < 0:
+            selected = self.table.selectionModel().selectedRows()
+            row = selected[0].row() if selected else -1
+        return row
+
+    def _update_delete_button_state(self) -> None:
+        row = self._selected_visible_row()
+        self.btn_delete_row.setEnabled(0 <= row < self.table.rowCount())
+
+    def delete_selected_row(self) -> bool:
+        """Remove the currently selected subtitle event and re-index remaining rows."""
+        row = self._selected_visible_row()
+        if row < 0 or row >= self.table.rowCount():
+            return False
+        stt_item = self.table.item(row, _COL_STT)
+        if stt_item is None:
+            return False
+        master_idx = stt_item.data(Qt.ItemDataRole.UserRole)
+        if master_idx is None or not (0 <= master_idx < len(self._events)):
+            return False
+
+        del self._events[master_idx]
+        for idx, ev in enumerate(self._events, start=1):
+            ev.index = idx
+
+        self._update_filter_counts()
+        self._rebuild_rows(preferred_row=row)
+        self.events_changed.emit()
+        return True
 
     def _update_filter_counts(self) -> None:
         total = len(self._events)
@@ -185,7 +225,7 @@ class ReviewTable(QWidget):
             self._filter_mode = new_mode
             self._rebuild_rows()
 
-    def _rebuild_rows(self) -> None:
+    def _rebuild_rows(self, preferred_row: int = 0) -> None:
         visible_pairs = [
             (master_idx, ev)
             for master_idx, ev in enumerate(self._events)
@@ -219,19 +259,19 @@ class ReviewTable(QWidget):
             self._populating = False
 
         if visible_pairs:
-            self.table.selectRow(0)
-            self._render_preview_for_row(0)
+            target_row = max(0, min(preferred_row, len(visible_pairs) - 1))
+            self.table.selectRow(target_row)
+            self._render_preview_for_row(target_row)
         else:
             self._raw_pixmap = None
             self.preview_label.clear()
             self.preview_label.setText("Không có dòng phù hợp")
+        self._update_delete_button_state()
 
     def _on_selection_changed(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            selected = self.table.selectionModel().selectedRows()
-            row = selected[0].row() if selected else -1
+        row = self._selected_visible_row()
         self._render_preview_for_row(row)
+        self._update_delete_button_state()
 
     def _update_preview_pixmap(self) -> None:
         if self._raw_pixmap is None or self._raw_pixmap.isNull():
@@ -255,6 +295,15 @@ class ReviewTable(QWidget):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.preview_label and event.type() == QEvent.Type.Resize:
             self._update_preview_pixmap()
+        elif (
+            watched is self.table
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Delete
+            and self.table.state() != QAbstractItemView.State.EditingState
+        ):
+            self.delete_selected_row()
+            return True
         return super().eventFilter(watched, event)
 
     def _render_preview_for_row(self, row: int) -> None:
