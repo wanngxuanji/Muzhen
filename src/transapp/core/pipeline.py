@@ -129,7 +129,7 @@ class ExtractionPipeline:
                 if progress_cb is not None
                 else None
             )
-            detected_spans, step_ms = detect_subtitle_spans(
+            detected_spans, frame_pts_ms = detect_subtitle_spans(
                 reader.iter_roi_frames(roi),
                 meta.fps,
                 start_pts_ms,
@@ -148,7 +148,7 @@ class ExtractionPipeline:
         )
         ocr_segments = recognize_spans_with_voting(
             detected_spans,
-            step_ms,
+            frame_pts_ms,
             ocr,
             config,
             ocr_progress_cb=ocr_progress,
@@ -169,4 +169,5 @@ class ExtractionPipeline:
             duration_ms=meta.duration_ms,
             events=events,
             elapsed_sec=elapsed_sec,
+            frame_pts_ms=frame_pts_ms,
         )

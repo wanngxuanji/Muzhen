@@ -187,6 +187,9 @@ def test_pipeline_end_to_end_synthetic_mp4_and_exporters(tmp_path: Path):
     assert result.height == 360
     assert result.duration_ms >= 2900
     assert result.elapsed_sec > 0.0
+    assert len(result.frame_pts_ms) >= 70
+    assert result.frame_pts_ms[0] == 0
+    assert result.frame_pts_ms == sorted(result.frame_pts_ms)
 
     assert len(result.events) == 2
     assert all(isinstance(ev, SubtitleEvent) for ev in result.events)
