@@ -62,6 +62,8 @@ class ExtractConfig:
     ocr_model: str = "accurate"
     filter_non_cjk_low_conf: bool = True
     suppress_border_blobs: bool = True
+    trim_start_ms: int | None = None
+    trim_end_ms: int | None = None
 
 
 @dataclass(slots=True)

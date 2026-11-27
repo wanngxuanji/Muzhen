@@ -56,6 +56,20 @@ _SVG_PATHS: dict[str, str] = {
         '<polyline points="7 10 12 15 17 10"/>'
         '<line x1="12" y1="15" x2="12" y2="3"/>'
     ),
+    "trim_in": (
+        '<path d="M9 4H5v16h4"/>'
+        '<polyline points="14 8 10 12 14 16"/>'
+        '<line x1="10" y1="12" x2="20" y2="12"/>'
+    ),
+    "trim_out": (
+        '<path d="M15 4h4v16h-4"/>'
+        '<polyline points="10 8 14 12 10 16"/>'
+        '<line x1="4" y1="12" x2="14" y2="12"/>'
+    ),
+    "x_mark": (
+        '<line x1="18" y1="6" x2="6" y2="18"/>'
+        '<line x1="6" y1="6" x2="18" y2="18"/>'
+    ),
 }
 
 ICON_NAMES: tuple[str, ...] = tuple(_SVG_PATHS.keys())

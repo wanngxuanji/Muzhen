@@ -112,25 +112,32 @@ class ExtractionPipeline:
         t0 = time.perf_counter()
         _check_cancelled(cancel_check)
 
+        trim_start = max(0, int(config.trim_start_ms)) if config.trim_start_ms is not None else None
+        trim_end = max(0, int(config.trim_end_ms)) if config.trim_end_ms is not None else None
+        if trim_end is not None and trim_end <= (trim_start or 0):
+            raise ValueError("trim_start_ms must be smaller than trim_end_ms")
+
         ocr = self._resolve_ocr_engine(config)
         source_path = Path(video_path)
         with VideoReader(source_path) as reader:
             meta = reader.metadata
-            total_ms = max(1, meta.duration_ms)
             start_pts_ms = meta.start_pts_ms
+            eff_start = trim_start or 0
+            eff_end = trim_end if trim_end is not None else max(1, meta.duration_ms)
+            eff_span = max(1, eff_end - eff_start)
             scan_progress = (
                 (
                     lambda _frame_idx, pts_ms: progress_cb(
                         "scan",
-                        max(0, min(pts_ms - start_pts_ms, total_ms)),
-                        total_ms,
+                        max(0, min(max(0, pts_ms - start_pts_ms) - eff_start, eff_span)),
+                        eff_span,
                     )
                 )
                 if progress_cb is not None
                 else None
             )
             detected_spans, frame_pts_ms = detect_subtitle_spans(
-                reader.iter_roi_frames(roi),
+                reader.iter_roi_frames(roi, start_ms=trim_start, end_ms=trim_end),
                 meta.fps,
                 start_pts_ms,
                 ocr,
@@ -157,7 +164,11 @@ class ExtractionPipeline:
 
         _check_cancelled(cancel_check)
 
-        events = postprocess_segments(ocr_segments, config, duration_ms=meta.duration_ms)
+        if trim_end is not None:
+            effective_end_ms = min(meta.duration_ms, trim_end) if meta.duration_ms > 0 else trim_end
+        else:
+            effective_end_ms = meta.duration_ms
+        events = postprocess_segments(ocr_segments, config, duration_ms=effective_end_ms)
         elapsed_sec = time.perf_counter() - t0
         if progress_cb is not None:
             progress_cb("done", len(events), len(events))

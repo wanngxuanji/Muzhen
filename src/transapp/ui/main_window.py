@@ -7,9 +7,12 @@ from pathlib import Path
 import threading
 
 import numpy as np
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QColor, QKeyEvent, QLinearGradient, QPainter, QPaintEvent, QPen, QRegion
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QAbstractSpinBox,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -23,12 +26,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSlider,
     QSplitter,
+    QStyle,
+    QStyleOptionSlider,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -60,6 +67,87 @@ def _make_section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setProperty("role", "sectionTitle")
     return lbl
+
+
+class TrimRangeSlider(QSlider):
+    """QSlider subclass that highlights the active [In, Out] trim range on the groove."""
+
+    def __init__(
+        self,
+        orientation: Qt.Orientation = Qt.Orientation.Horizontal,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(orientation, parent)
+        self._trim_in_ms: int | None = None
+        self._trim_out_ms: int | None = None
+
+    def set_trim_range(self, in_ms: int | None, out_ms: int | None) -> None:
+        """Update highlighted [in_ms, out_ms] bounds (0-based ms) and repaint."""
+        self._trim_in_ms = int(in_ms) if in_ms is not None else None
+        self._trim_out_ms = int(out_ms) if out_ms is not None else None
+        self.update()
+
+    def trim_range(self) -> tuple[int | None, int | None]:
+        """Return the current (in_ms, out_ms) trim bounds."""
+        return (self._trim_in_ms, self._trim_out_ms)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self._trim_in_ms is None and self._trim_out_ms is None:
+            return
+        min_v = self.minimum()
+        max_v = self.maximum()
+        if max_v <= min_v:
+            return
+
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            opt,
+            QStyle.SubControl.SC_SliderGroove,
+            self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            opt,
+            QStyle.SubControl.SC_SliderHandle,
+            self,
+        )
+        if groove.width() <= 0:
+            return
+
+        in_val = max(min_v, min(max_v, self._trim_in_ms if self._trim_in_ms is not None else min_v))
+        out_val = max(min_v, min(max_v, self._trim_out_ms if self._trim_out_ms is not None else max_v))
+        if out_val < in_val:
+            return
+
+        span_w = max(1, groove.width())
+        x_in = groove.left() + QStyle.sliderPositionFromValue(min_v, max_v, in_val, span_w)
+        x_out = groove.left() + QStyle.sliderPositionFromValue(min_v, max_v, out_val, span_w)
+        cy = groove.center().y()
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        clip = QRegion(self.rect()).subtracted(QRegion(handle.adjusted(-1, -1, 1, 1)))
+        painter.setClipRegion(clip)
+
+        bar_x = float(min(x_in, x_out))
+        bar_w = max(2.0, float(abs(x_out - x_in)))
+        grad = QLinearGradient(bar_x, float(cy), bar_x + bar_w, float(cy))
+        grad.setColorAt(0.0, QColor("#10B981"))
+        grad.setColorAt(1.0, QColor("#2563EB"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(grad)
+        painter.drawRoundedRect(QRectF(bar_x, float(cy) - 2.0, bar_w, 4.0), 2.0, 2.0)
+
+        if self._trim_in_ms is not None:
+            painter.setPen(QPen(QColor("#10B981"), 2.0))
+            painter.drawLine(x_in, cy - 5, x_in, cy + 5)
+        if self._trim_out_ms is not None:
+            painter.setPen(QPen(QColor("#3B82F6"), 2.0))
+            painter.drawLine(x_out, cy - 5, x_out, cy + 5)
+        painter.end()
 
 
 class _ExtractionWorker(QObject):
@@ -127,6 +215,8 @@ class MainWindow(QMainWindow):
         self._current_frame_index: int = 0
         self._current_frame_bgr: np.ndarray | None = None
         self._extract_result: ExtractResult | None = None
+        self._trim_start_ms: int | None = None
+        self._trim_end_ms: int | None = None
 
         self._worker_thread: QThread | None = None
         self._worker: _ExtractionWorker | None = None
@@ -233,7 +323,7 @@ class MainWindow(QMainWindow):
         preview_card.setProperty("card", True)
         preview_layout = QVBoxLayout(preview_card)
         preview_layout.setContentsMargins(10, 10, 10, 10)
-        preview_layout.setSpacing(8)
+        preview_layout.setSpacing(6)
 
         self.roi_canvas = RoiCanvas()
         preview_layout.addWidget(self.roi_canvas, 1)
@@ -246,7 +336,7 @@ class MainWindow(QMainWindow):
         self.btn_step_back = QPushButton()
         self.btn_step_back.setIcon(make_icon("step_back", size=14))
         self.btn_step_back.setToolTip("Lùi 1 frame")
-        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_slider = TrimRangeSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
         self.frame_slider.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -270,6 +360,46 @@ class MainWindow(QMainWindow):
         scrub_row.addWidget(self.btn_seek_end)
         scrub_row.addWidget(self.time_label)
         preview_layout.addLayout(scrub_row)
+
+        trim_row = QHBoxLayout()
+        trim_row.setContentsMargins(0, 0, 0, 0)
+        trim_row.setSpacing(6)
+        self.btn_set_in = QPushButton("In")
+        self.btn_set_in.setProperty("variant", "trim")
+        self.btn_set_in.setIcon(make_icon("trim_in", color="#10B981", size=12))
+        self.btn_set_in.setIconSize(QSize(12, 12))
+        self.btn_set_in.setFixedHeight(24)
+        self.btn_set_in.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_set_in.setToolTip("Đặt điểm bắt đầu In tại frame hiện tại (I)")
+
+        self.lbl_trim_range = QLabel("Toàn tập")
+        self.lbl_trim_range.setObjectName("trimRangeBadge")
+        self.lbl_trim_range.setProperty("active", False)
+        self.lbl_trim_range.setFixedHeight(24)
+        self.lbl_trim_range.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+
+        self.btn_set_out = QPushButton("Out")
+        self.btn_set_out.setProperty("variant", "trim")
+        self.btn_set_out.setIcon(make_icon("trim_out", color="#60A5FA", size=12))
+        self.btn_set_out.setIconSize(QSize(12, 12))
+        self.btn_set_out.setFixedHeight(24)
+        self.btn_set_out.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_set_out.setToolTip("Đặt điểm kết thúc Out tại frame hiện tại (O)")
+
+        self.btn_clear_trim = QPushButton("Xóa trim")
+        self.btn_clear_trim.setProperty("variant", "trim")
+        self.btn_clear_trim.setIcon(make_icon("x_mark", color="#9BA4B5", size=11))
+        self.btn_clear_trim.setIconSize(QSize(11, 11))
+        self.btn_clear_trim.setFixedHeight(24)
+        self.btn_clear_trim.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_trim.setToolTip("Xóa giới hạn In/Out để quét toàn tập")
+
+        trim_row.addWidget(self.btn_set_in)
+        trim_row.addWidget(self.lbl_trim_range)
+        trim_row.addWidget(self.btn_set_out)
+        trim_row.addWidget(self.btn_clear_trim)
+        trim_row.addStretch(1)
+        preview_layout.addLayout(trim_row)
 
         roi_bar = QHBoxLayout()
         roi_bar.setSpacing(8)
@@ -511,6 +641,9 @@ class MainWindow(QMainWindow):
         self.btn_step_fwd.clicked.connect(lambda: self._step_frame(1))
         self.frame_slider.sliderMoved.connect(self._on_slider_moved)
         self.frame_slider.valueChanged.connect(self._on_slider_value_changed)
+        self.btn_set_in.clicked.connect(lambda: self.set_trim_in())
+        self.btn_set_out.clicked.connect(lambda: self.set_trim_out())
+        self.btn_clear_trim.clicked.connect(self.clear_trim)
 
         self.radio_dir_same.toggled.connect(lambda _: self._update_controls_state())
         self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
@@ -526,15 +659,114 @@ class MainWindow(QMainWindow):
         return self._worker_thread is not None and self._worker_thread.isRunning()
 
     def _update_roi_label(self, roi: RoiRect) -> None:
+        if self._video_meta is not None:
+            x1, y1, x2, y2 = roi.to_pixels(self._video_meta.width, self._video_meta.height)
+            self.roi_label.setText(
+                f"ROI: {x2 - x1}×{y2 - y1} px ({roi.x * 100:.1f}%, {roi.y * 100:.1f}%)"
+            )
+            return
         self.roi_label.setText(
             f"ROI {roi.x * 100:.1f}%, {roi.y * 100:.1f}% · "
             f"{roi.w * 100:.1f}×{roi.h * 100:.1f}%"
         )
 
+    def _current_rel_ms(self) -> int:
+        return max(0, int(self._current_frame_ms - self._start_pts_ms))
+
+    def _update_trim_display(self) -> None:
+        self.frame_slider.set_trim_range(self._trim_start_ms, self._trim_end_ms)
+        has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
+        if not has_trim:
+            self.lbl_trim_range.setText("Toàn tập")
+        else:
+            in_disp = self._trim_start_ms if self._trim_start_ms is not None else 0
+            out_disp = self._trim_end_ms if self._trim_end_ms is not None else self._duration_ms
+            self.lbl_trim_range.setText(
+                f"{format_ass_time(in_disp)} → {format_ass_time(out_disp)}"
+            )
+        if bool(self.lbl_trim_range.property("active")) != has_trim:
+            self.lbl_trim_range.setProperty("active", has_trim)
+            style = self.lbl_trim_range.style()
+            if style is not None:
+                style.unpolish(self.lbl_trim_range)
+                style.polish(self.lbl_trim_range)
+
+    def set_trim_in(self, rel_ms: int | None = None) -> None:
+        """Set 0-based In trim mark (defaults to current preview position)."""
+        if self._video_meta is None or self._is_running():
+            return
+        val = (
+            self._current_rel_ms()
+            if rel_ms is None
+            else max(0, min(int(rel_ms), self._duration_ms))
+        )
+        self._trim_start_ms = val
+        if self._trim_end_ms is not None and self._trim_start_ms >= self._trim_end_ms:
+            self._trim_end_ms = None
+            self.status_label.setText("Đã đặt In (tự xóa Out vì In ≥ Out)")
+        self._update_trim_display()
+        self._update_controls_state()
+
+    def set_trim_out(self, rel_ms: int | None = None) -> None:
+        """Set 0-based Out trim mark (defaults to current preview position)."""
+        if self._video_meta is None or self._is_running():
+            return
+        val = (
+            self._current_rel_ms()
+            if rel_ms is None
+            else max(0, min(int(rel_ms), self._duration_ms))
+        )
+        if val <= 0:
+            self.status_label.setText("Điểm Out phải lớn hơn 0:00:00.00")
+            return
+        self._trim_end_ms = val
+        if self._trim_start_ms is not None and self._trim_start_ms >= self._trim_end_ms:
+            self._trim_start_ms = None
+            self.status_label.setText("Đã đặt Out (tự xóa In vì In ≥ Out)")
+        self._update_trim_display()
+        self._update_controls_state()
+
+    def clear_trim(self) -> None:
+        """Reset OP/ED trim marks back to full video range."""
+        self._trim_start_ms = None
+        self._trim_end_ms = None
+        self._update_trim_display()
+        self._update_controls_state()
+
+    @staticmethod
+    def _is_text_input_focused() -> bool:
+        focus = QApplication.focusWidget()
+        if focus is None:
+            return False
+        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
+            return True
+        if (
+            isinstance(focus, QAbstractItemView)
+            and focus.state() == QAbstractItemView.State.EditingState
+        ):
+            return True
+        return False
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and not self._is_text_input_focused()
+        ):
+            if event.key() == Qt.Key.Key_I:
+                self.set_trim_in()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_O:
+                self.set_trim_out()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def _update_controls_state(self) -> None:
         running = self._is_running()
         has_video = self._video_path is not None and self._video_meta is not None
         has_result = self._extract_result is not None
+        has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
 
         self.btn_browse_video.setEnabled(not running)
         self.preset_combo.setEnabled(not running)
@@ -546,6 +778,9 @@ class MainWindow(QMainWindow):
         self.frame_slider.setEnabled(has_video and not running)
         self.btn_step_fwd.setEnabled(has_video and not running)
         self.btn_seek_end.setEnabled(has_video and not running)
+        self.btn_set_in.setEnabled(has_video and not running)
+        self.btn_set_out.setEnabled(has_video and not running)
+        self.btn_clear_trim.setEnabled(has_video and has_trim and not running)
 
         custom_dir = self.radio_dir_custom.isChecked()
         self.custom_dir_edit.setEnabled(custom_dir and not running)
@@ -662,6 +897,9 @@ class MainWindow(QMainWindow):
         self._stop_and_wait_worker()
 
         self._clear_session_results()
+        self._trim_start_ms = None
+        self._trim_end_ms = None
+        self._update_trim_display()
         self._current_frame_bgr = None
         self._current_frame_index = 0
         self.roi_canvas.set_frame(None)
@@ -682,6 +920,7 @@ class MainWindow(QMainWindow):
             self.frame_slider.setRange(0, 0)
             self.time_label.setText("0:00:00.00 / 0:00:00.00")
             self.status_label.setText("Lỗi mở video")
+            self._update_roi_label(self.roi_canvas.roi())
             self._update_controls_state()
             QMessageBox.warning(self, "Không thể mở video", str(exc))
             return
@@ -710,6 +949,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.setValue(0)
         self.status_label.setText("Sẵn sàng")
+        self._update_roi_label(self.roi_canvas.roi())
         self.seek_to_ms(self._start_pts_ms)
         self._update_controls_state()
 
@@ -820,6 +1060,8 @@ class MainWindow(QMainWindow):
             conf_threshold=float(self.spin_conf.value()),
             provider=str(provider),
             ocr_model=str(ocr_model),
+            trim_start_ms=self._trim_start_ms,
+            trim_end_ms=self._trim_end_ms,
         )
 
     def test_current_frame(self) -> FrameTestResult | None:
@@ -1087,6 +1329,7 @@ class MainWindow(QMainWindow):
                     video_width=self._extract_result.width,
                     video_height=self._extract_result.height,
                     template_path=template_path,
+                    frame_pts_ms=self._extract_result.frame_pts_ms,
                 )
             if want_srt:
                 export_srt(events, srt_path)

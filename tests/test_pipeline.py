@@ -520,3 +520,68 @@ def test_pipeline_run_clamps_event_end_ms_to_video_duration(tmp_path: Path, monk
     assert result.events[0].end_ms == result.duration_ms
 
 
+def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_path: Path):
+    from transapp.core.pipeline import ExtractionPipeline
+
+    video_path = tmp_path / "trim_op_ed.mp4"
+    _make_synthetic_subtitle_mp4(
+        video_path,
+        width=640,
+        height=360,
+        fps=25,
+        duration_sec=3.2,
+        cues=(
+            (160, 760, "片头字幕"),
+            (1200, 1800, "正文台词"),
+            (2320, 3000, "片尾字幕"),
+        ),
+    )
+
+    roi = RoiRect(0.10, 0.74, 0.80, 0.20)
+    pipeline = ExtractionPipeline()
+
+    # Invalid trim bounds must raise ValueError before scanning
+    with pytest.raises(ValueError, match="trim_start_ms"):
+        pipeline.run(video_path, roi, ExtractConfig(provider="cpu", trim_start_ms=2000, trim_end_ms=2000))
+    with pytest.raises(ValueError, match="trim_start_ms"):
+        pipeline.run(video_path, roi, ExtractConfig(provider="cpu", trim_start_ms=2400, trim_end_ms=1000))
+    with pytest.raises(ValueError, match="trim_start_ms"):
+        pipeline.run(video_path, roi, ExtractConfig(provider="cpu", trim_start_ms=None, trim_end_ms=0))
+
+    # Case 1: Trim [900ms, 2000ms] skips OP & ED, keeps ONLY middle cue with absolute ~1200ms start
+    progress_calls: list[tuple[str, int, int]] = []
+    result = pipeline.run(
+        video_path,
+        roi,
+        ExtractConfig(provider="cpu", coarse_step=1, trim_start_ms=900, trim_end_ms=2000),
+        progress_cb=lambda stage, cur, tot: progress_calls.append((stage, cur, tot)),
+    )
+
+    assert len(result.events) == 1
+    ev = result.events[0]
+    assert "正文" in ev.text or "台词" in ev.text
+    assert 1120 <= ev.start_ms <= 1280  # absolute video-relative ms, NOT shifted to ~300ms
+    assert 1720 <= ev.end_ms <= 1920
+    assert result.frame_pts_ms[0] >= 900
+    assert result.frame_pts_ms[-1] <= 2000
+
+    scan_calls = [c for c in progress_calls if c[0] == "scan"]
+    assert len(scan_calls) >= 2
+    assert all(tot == 1100 and 0 <= cur <= 1100 for _, cur, tot in scan_calls)
+    assert scan_calls[0][1] <= 80
+    assert scan_calls[-1][1] >= 1000
+
+    # Case 2: Cue still active at trim_end_ms=1600 must be clamped so end_ms <= 1600
+    clamped_result = pipeline.run(
+        video_path,
+        roi,
+        ExtractConfig(provider="cpu", coarse_step=1, trim_start_ms=900, trim_end_ms=1600),
+    )
+    assert len(clamped_result.events) == 1
+    clamped_ev = clamped_result.events[0]
+    assert 1120 <= clamped_ev.start_ms <= 1280
+    assert clamped_ev.end_ms <= 1600
+    assert clamped_ev.end_ms >= 1520
+
+
+

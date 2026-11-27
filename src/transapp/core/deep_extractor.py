@@ -879,19 +879,22 @@ def detect_subtitle_spans(
 
     median_frame_ms = _compute_median_frame_ms(frame_pts_ms, safe_fps)
     total_frames = len(frame_pts_ms)
+    trim_end_ms = max(0, int(config.trim_end_ms)) if config.trim_end_ms is not None else None
     for sp in spans:
         sp.start_ms = frame_pts_ms[sp.start_idx]
         if sp.end_idx + 1 < total_frames:
             sp.end_ms = max(sp.start_ms + 1, frame_pts_ms[sp.end_idx + 1])
         else:
             sp.end_ms = max(sp.start_ms + 1, frame_pts_ms[sp.end_idx] + median_frame_ms)
+        if trim_end_ms is not None:
+            sp.end_ms = min(sp.end_ms, trim_end_ms)
         sp.last_sig = None
 
     neighbor_gap = max(config.merge_gap_ms, config.flash_bridge_max_ms)
     eligible: list[_DetectedSpan] = []
     for idx, sp in enumerate(spans):
         dur = sp.end_ms - sp.start_ms
-        if not sp.samples:
+        if not sp.samples or dur <= 0:
             continue
         if dur >= config.min_duration_ms:
             eligible.append(sp)

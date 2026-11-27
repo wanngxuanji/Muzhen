@@ -142,6 +142,22 @@ QLabel#roiPill {
     padding: 2px 8px;
 }
 
+QLabel#trimRangeBadge {
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px;
+    color: #8A94A6;
+    background-color: #11141A;
+    border: 1px solid #252A34;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+QLabel#trimRangeBadge[active="true"] {
+    color: #6EE7B7;
+    background-color: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
 QLabel#testResultLabel {
     color: #CBD5E1;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
@@ -323,6 +339,28 @@ QPushButton[variant="tool"]:hover {
 
 QPushButton[variant="tool"]:disabled {
     background-color: #14171D;
+    border-color: #1E222B;
+}
+
+QPushButton[variant="trim"] {
+    background-color: #1B1F28;
+    color: #DCE3EE;
+    border: 1px solid #2A303C;
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton[variant="trim"]:hover {
+    background-color: #252B37;
+    border-color: #3D4657;
+}
+
+QPushButton[variant="trim"]:disabled {
+    background-color: #14171D;
+    color: #525B6D;
     border-color: #1E222B;
 }
 

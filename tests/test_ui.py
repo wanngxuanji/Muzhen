@@ -1018,3 +1018,139 @@ def test_studio_theme_icons_and_video_meta_badge(qtbot, tmp_path: Path):
     assert "360" in window.video_meta_badge.text()
     assert "25" in window.video_meta_badge.text()
     window.close()
+
+
+def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QSlider
+    import transapp.ui.main_window as mw_mod
+    from transapp.ui.main_window import MainWindow, TrimRangeSlider
+
+    ep1 = tmp_path / "trim_ep1.mp4"
+    ep2 = tmp_path / "trim_ep2.mp4"
+    _make_synthetic_subtitle_mp4(ep1, width=640, height=360, fps=25, duration_sec=2.0, cues=((200, 1600, "测试字幕"),))
+    _make_synthetic_subtitle_mp4(ep2, width=640, height=360, fps=25, duration_sec=1.2, cues=((200, 800, "下集字幕"),))
+
+    fake_ocr = OcrEngine(
+        ocr_callable=lambda _img: (
+            [[[[0, 0], [80, 0], [80, 24], [0, 24]], "测试字幕", 0.95]],
+            [0.01],
+        )
+    )
+    pipeline = ExtractionPipeline(ocr_engine=fake_ocr)
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"), pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+
+    assert isinstance(window.frame_slider, QSlider)
+    assert isinstance(window.frame_slider, TrimRangeSlider)
+    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.btn_set_in.isEnabled() is False
+    assert window.btn_set_out.isEnabled() is False
+    assert window.btn_clear_trim.isEnabled() is False
+
+    window.load_video(ep1)
+    assert window.btn_set_in.isEnabled() is True
+    assert window.btn_set_out.isEnabled() is True
+    assert window.btn_clear_trim.isEnabled() is False
+    # ROI pill displays pixel dimensions when video metadata is loaded
+    assert "px" in window.roi_label.text()
+    assert "×" in window.roi_label.text()
+
+    # Set In at 400ms and Out at 1400ms via buttons
+    window.seek_to_ms(400)
+    window.btn_set_in.click()
+    cfg = window.build_config()
+    assert cfg.trim_start_ms is not None and abs(cfg.trim_start_ms - 400) <= 60
+    assert cfg.trim_end_ms is None
+    assert window.btn_clear_trim.isEnabled() is True
+    assert "→" in window.lbl_trim_range.text()
+
+    window.seek_to_ms(1400)
+    window.btn_set_out.click()
+    cfg = window.build_config()
+    assert cfg.trim_start_ms is not None and abs(cfg.trim_start_ms - 400) <= 60
+    assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 1400) <= 60
+    assert window.frame_slider.trim_range() == (cfg.trim_start_ms, cfg.trim_end_ms)
+    window.frame_slider.repaint()
+
+    # Auto-guard: setting In >= Out clears Out so In < Out always holds
+    window.seek_to_ms(1600)
+    window.btn_set_in.click()
+    cfg = window.build_config()
+    assert cfg.trim_start_ms is not None and abs(cfg.trim_start_ms - 1600) <= 60
+    assert cfg.trim_end_ms is None
+
+    # Auto-guard: setting Out <= In clears In so In < Out always holds
+    window.seek_to_ms(800)
+    window.btn_set_out.click()
+    cfg = window.build_config()
+    assert cfg.trim_start_ms is None
+    assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 800) <= 60
+
+    # Keyboard shortcuts I / O work when focus is outside text inputs
+    window.roi_canvas.setFocus()
+    window.seek_to_ms(320)
+    qtbot.keyClick(window.roi_canvas, Qt.Key.Key_I)
+    cfg = window.build_config()
+    assert cfg.trim_start_ms is not None and abs(cfg.trim_start_ms - 320) <= 60
+
+    window.seek_to_ms(1200)
+    qtbot.keyClick(window.roi_canvas, Qt.Key.Key_O)
+    cfg = window.build_config()
+    assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 1200) <= 60
+
+    # Typing I / O in a QLineEdit must NOT trigger trim shortcuts
+    prev_in, prev_out = cfg.trim_start_ms, cfg.trim_end_ms
+    window.radio_dir_custom.setChecked(True)
+    window.custom_dir_edit.setFocus()
+    window.seek_to_ms(600)
+    qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_I)
+    qtbot.keyClick(window.custom_dir_edit, Qt.Key.Key_O)
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+    assert "i" in window.custom_dir_edit.text().lower()
+    window.radio_dir_same.setChecked(True)
+    window.custom_dir_edit.clear()
+
+    # Clear trim resets state
+    window.btn_clear_trim.click()
+    assert window.build_config().trim_start_ms is None
+    assert window.build_config().trim_end_ms is None
+    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.btn_clear_trim.isEnabled() is False
+
+    # Re-set trim, extract, and verify export_ass receives frame_pts_ms from ExtractResult
+    window.seek_to_ms(320)
+    window.btn_set_in.click()
+    window.seek_to_ms(1400)
+    window.btn_set_out.click()
+    window.roi_canvas.set_roi(RoiRect(0.10, 0.72, 0.80, 0.22))
+
+    window.btn_start.click()
+    qtbot.waitUntil(lambda: window.btn_export.isEnabled(), timeout=10000)
+    assert window.current_result is not None
+    assert len(window.current_result.frame_pts_ms) > 0
+
+    captured_ass_kwargs: list[dict[str, object]] = []
+    real_export_ass = mw_mod.export_ass
+
+    def spy_export_ass(*args, **kwargs):
+        captured_ass_kwargs.append(dict(kwargs))
+        return real_export_ass(*args, **kwargs)
+
+    monkeypatch.setattr(mw_mod, "export_ass", spy_export_ass)
+    assert window.export_subtitles() is True
+    assert len(captured_ass_kwargs) == 1
+    assert captured_ass_kwargs[0].get("frame_pts_ms") == window.current_result.frame_pts_ms
+
+    # Switching video resets trim back to full video
+    window.load_video(ep2)
+    assert window.build_config().trim_start_ms is None
+    assert window.build_config().trim_end_ms is None
+    assert window.lbl_trim_range.text() == "Toàn tập"
+    assert window.btn_clear_trim.isEnabled() is False
+    assert window.frame_slider.trim_range() == (None, None)
+    window.close()
+
