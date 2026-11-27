@@ -122,8 +122,12 @@ class ExtractionPipeline:
         with VideoReader(source_path) as reader:
             meta = reader.metadata
             start_pts_ms = meta.start_pts_ms
+            if trim_end is not None:
+                effective_end_ms = min(meta.duration_ms, trim_end) if meta.duration_ms > 0 else trim_end
+            else:
+                effective_end_ms = meta.duration_ms
             eff_start = trim_start or 0
-            eff_end = trim_end if trim_end is not None else max(1, meta.duration_ms)
+            eff_end = max(1, effective_end_ms)
             eff_span = max(1, eff_end - eff_start)
             scan_progress = (
                 (
@@ -164,10 +168,6 @@ class ExtractionPipeline:
 
         _check_cancelled(cancel_check)
 
-        if trim_end is not None:
-            effective_end_ms = min(meta.duration_ms, trim_end) if meta.duration_ms > 0 else trim_end
-        else:
-            effective_end_ms = meta.duration_ms
         events = postprocess_segments(ocr_segments, config, duration_ms=effective_end_ms)
         elapsed_sec = time.perf_counter() - t0
         if progress_cb is not None:

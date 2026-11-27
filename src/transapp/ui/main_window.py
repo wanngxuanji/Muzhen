@@ -122,9 +122,10 @@ class TrimRangeSlider(QSlider):
         if out_val < in_val:
             return
 
-        span_w = max(1, groove.width())
-        x_in = groove.left() + QStyle.sliderPositionFromValue(min_v, max_v, in_val, span_w)
-        x_out = groove.left() + QStyle.sliderPositionFromValue(min_v, max_v, out_val, span_w)
+        span_w = max(1, groove.width() - handle.width())
+        origin_x = groove.left() + handle.width() // 2
+        x_in = origin_x + QStyle.sliderPositionFromValue(min_v, max_v, in_val, span_w)
+        x_out = origin_x + QStyle.sliderPositionFromValue(min_v, max_v, out_val, span_w)
         cy = groove.center().y()
 
         painter = QPainter(self)
@@ -738,7 +739,7 @@ class MainWindow(QMainWindow):
         focus = QApplication.focusWidget()
         if focus is None:
             return False
-        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
+        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox)):
             return True
         if (
             isinstance(focus, QAbstractItemView)
@@ -928,7 +929,7 @@ class MainWindow(QMainWindow):
         self._video_path = path
         self._video_meta = reader.metadata
         self._preview_reader = reader
-        self._start_pts_ms = max(0, reader.metadata.start_pts_ms)
+        self._start_pts_ms = int(reader.metadata.start_pts_ms)
         self._duration_ms = max(0, reader.metadata.duration_ms)
         self._current_frame_ms = self._start_pts_ms
         self._current_frame_index = 0

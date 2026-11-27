@@ -583,5 +583,19 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
     assert clamped_ev.end_ms <= 1600
     assert clamped_ev.end_ms >= 1520
 
+    # Case 3: trim_end_ms > duration_ms still clamps scan progress total to duration_ms (~100%)
+    overshoot_progress: list[tuple[str, int, int]] = []
+    overshoot_result = pipeline.run(
+        video_path,
+        roi,
+        ExtractConfig(provider="cpu", coarse_step=1, trim_start_ms=900, trim_end_ms=99_999),
+        progress_cb=lambda stage, cur, tot: overshoot_progress.append((stage, cur, tot)),
+    )
+    overshoot_scans = [c for c in overshoot_progress if c[0] == "scan"]
+    assert len(overshoot_scans) >= 2
+    expected_span = max(1, overshoot_result.duration_ms - 900)
+    assert all(tot == expected_span and 0 <= cur <= expected_span for _, cur, tot in overshoot_scans)
+    assert overshoot_scans[-1][1] >= expected_span - 80
+
 
 

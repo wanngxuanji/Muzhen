@@ -1045,6 +1045,10 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
 
     assert isinstance(window.frame_slider, QSlider)
     assert isinstance(window.frame_slider, TrimRangeSlider)
+    assert window.frame_slider.maximum() == 0
+    window.frame_slider.set_trim_range(100, 500)
+    window.frame_slider.repaint()
+    window.frame_slider.set_trim_range(None, None)
     assert window.lbl_trim_range.text() == "Toàn tập"
     assert window.btn_set_in.isEnabled() is False
     assert window.btn_set_out.isEnabled() is False
@@ -1058,7 +1062,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert "px" in window.roi_label.text()
     assert "×" in window.roi_label.text()
 
-    # Set In at 400ms and Out at 1400ms via buttons
+    # Set In at 400ms (In-only repaint) and Out at 1400ms via buttons
     window.seek_to_ms(400)
     window.btn_set_in.click()
     cfg = window.build_config()
@@ -1066,6 +1070,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert cfg.trim_end_ms is None
     assert window.btn_clear_trim.isEnabled() is True
     assert "→" in window.lbl_trim_range.text()
+    window.frame_slider.repaint()
 
     window.seek_to_ms(1400)
     window.btn_set_out.click()
@@ -1082,12 +1087,13 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert cfg.trim_start_ms is not None and abs(cfg.trim_start_ms - 1600) <= 60
     assert cfg.trim_end_ms is None
 
-    # Auto-guard: setting Out <= In clears In so In < Out always holds
+    # Auto-guard: setting Out <= In clears In so In < Out always holds (Out-only repaint)
     window.seek_to_ms(800)
     window.btn_set_out.click()
     cfg = window.build_config()
     assert cfg.trim_start_ms is None
     assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 800) <= 60
+    window.frame_slider.repaint()
 
     # Keyboard shortcuts I / O work when focus is outside text inputs
     window.roi_canvas.setFocus()
@@ -1101,7 +1107,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     cfg = window.build_config()
     assert cfg.trim_end_ms is not None and abs(cfg.trim_end_ms - 1200) <= 60
 
-    # Typing I / O in a QLineEdit must NOT trigger trim shortcuts
+    # Typing I / O in QLineEdit, QComboBox, QDoubleSpinBox, or editing table cell must NOT trigger trim
     prev_in, prev_out = cfg.trim_start_ms, cfg.trim_end_ms
     window.radio_dir_custom.setChecked(True)
     window.custom_dir_edit.setFocus()
@@ -1113,6 +1119,34 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     assert "i" in window.custom_dir_edit.text().lower()
     window.radio_dir_same.setChecked(True)
     window.custom_dir_edit.clear()
+
+    window.provider_combo.setFocus()
+    qtbot.keyClick(window.provider_combo, Qt.Key.Key_I)
+    qtbot.keyClick(window.provider_combo, Qt.Key.Key_O)
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+
+    window.spin_conf.setFocus()
+    qtbot.keyClick(window.spin_conf, Qt.Key.Key_I)
+    qtbot.keyClick(window.spin_conf, Qt.Key.Key_O)
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+
+    window.review_table.set_events(
+        [SubtitleEvent(1, 200, 800, "测试", 0.95, False, _make_png_bytes())]
+    )
+    edit_item = window.review_table.table.item(0, 4)
+    assert edit_item is not None
+    window.review_table.table.setCurrentCell(0, 4)
+    window.review_table.table.editItem(edit_item)
+    editor = window.focusWidget()
+    assert editor is not None
+    qtbot.keyClick(editor, Qt.Key.Key_I)
+    qtbot.keyClick(editor, Qt.Key.Key_O)
+    assert window.build_config().trim_start_ms == prev_in
+    assert window.build_config().trim_end_ms == prev_out
+    qtbot.keyClick(editor, Qt.Key.Key_Escape)
+    window.review_table.clear()
 
     # Clear trim resets state
     window.btn_clear_trim.click()
