@@ -325,11 +325,12 @@ def test_main_window_presets_test_frame_and_worker_cancel(qtbot, tmp_path: Path)
     assert window.roi_canvas.roi().y == pytest.approx(0.72)
     assert window.spin_conf.value() == pytest.approx(0.80)
 
-    # Test 1 frame updates diagnostic label cleanly
+    # Test 1 frame updates diagnostic label cleanly (asynchronously)
     window.seek_to_ms(500)
     release_ocr.set()
     window.btn_test_frame.click()
-    assert "第一句" in window.test_result_label.text()
+    qtbot.waitUntil(lambda: "第一句" in window.test_result_label.text(), timeout=5000)
+    qtbot.waitUntil(lambda: window.btn_start.isEnabled(), timeout=5000)
 
     # Reset release flag so extraction pauses inside OCR for cancel verification
     release_ocr.clear()
@@ -777,17 +778,18 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
     # test_current_frame uses cached frame / at most 1 decode without double VideoReader open
     init_calls.clear()
     read_calls.clear()
-    res = window.test_current_frame()
-    assert res is not None
-    assert "偏移测试" in window.test_result_label.text()
+    assert window.test_current_frame() is True
+    qtbot.waitUntil(lambda: "偏移测试" in window.test_result_label.text(), timeout=5000)
+    qtbot.waitUntil(lambda: not window._is_frame_testing(), timeout=5000)
     assert len(init_calls) == 0
     assert len(read_calls) == 0
 
     # Even if preview reader & cached frame are cleared, test_current_frame opens/reads at most once
     window._close_preview_reader()
     window._current_frame_bgr = None
-    res2 = window.test_current_frame()
-    assert res2 is not None
+    assert window.test_current_frame() is True
+    qtbot.waitUntil(lambda: "偏移测试" in window.test_result_label.text(), timeout=5000)
+    qtbot.waitUntil(lambda: not window._is_frame_testing(), timeout=5000)
     assert len(init_calls) == 1
     assert len(read_calls) == 1
 
@@ -2472,6 +2474,326 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
     assert "Trùng giờ" not in table.lbl_cue_meta.text()
     table.table.selectRow(2)
     assert "Trùng giờ" in table.lbl_cue_meta.text()
+
+
+def test_playback_and_step_handle_missing_video_file_gracefully(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "missing_ep.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.8)
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    window._close_preview_reader()
+
+    def raise_missing():
+        raise FileNotFoundError("video moved away")
+
+    monkeypatch.setattr(window, "_ensure_preview_reader", raise_missing)
+
+    # start_playback must not raise; stops playback and reports error to status_label
+    window.start_playback()
+    assert window._is_playing is False
+    assert "video moved away" in window.status_label.text()
+
+    # _step_frame(1) must not raise and reports error to status_label
+    window.status_label.setText("Sẵn sàng")
+    window._step_frame(1)
+    assert window._is_playing is False
+    assert "video moved away" in window.status_label.text()
+
+    # _step_frame(-1) must not raise and reports error to status_label
+    window.status_label.setText("Sẵn sàng")
+    window._step_frame(-1)
+    assert window._is_playing is False
+    assert "video moved away" in window.status_label.text()
+    window.close()
+
+
+def test_step_back_uses_read_prev_frame_before_ms_and_eof_step_fwd_does_not_double_decode(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from transapp.core.video_reader import VideoReader
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "vfr_eof_ep.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.4)
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    # Advance 2 frames forward
+    window._step_frame(1)
+    window._step_frame(1)
+    before_back_ms = window._current_frame_ms
+    assert before_back_ms > window._start_pts_ms
+
+    prev_calls: list[int] = []
+    seek_calls: list[int] = []
+    iter_calls: list[int] = []
+    real_prev = VideoReader.read_prev_frame_before_ms
+    real_seek = window.seek_to_ms
+    real_iter = VideoReader.iter_full_frames_from_ms
+
+    def spy_prev(self, current_pts_ms: int):
+        prev_calls.append(current_pts_ms)
+        return real_prev(self, current_pts_ms)
+
+    def spy_seek(target_ms: int):
+        seek_calls.append(target_ms)
+        return real_seek(target_ms)
+
+    def spy_iter(self, start_raw_ms: int):
+        iter_calls.append(start_raw_ms)
+        return real_iter(self, start_raw_ms)
+
+    monkeypatch.setattr(VideoReader, "read_prev_frame_before_ms", spy_prev)
+    monkeypatch.setattr(window, "seek_to_ms", spy_seek)
+    monkeypatch.setattr(VideoReader, "iter_full_frames_from_ms", spy_iter)
+
+    # _step_frame(-1) uses read_prev_frame_before_ms without calling seek_to_ms
+    window._step_frame(-1)
+    assert prev_calls == [before_back_ms]
+    assert seek_calls == []
+    assert window._current_frame_ms < before_back_ms
+    assert window._at_eof is False
+
+    # Stepping forward through EOF must set _at_eof=True and NEVER fall through to seek_to_ms
+    for _ in range(30):
+        window._step_frame(1)
+        if window._at_eof:
+            break
+    assert window._at_eof is True
+    assert seek_calls == []
+
+    # Pressing +1f again at EOF must do zero extra decodes / seeks
+    iter_count_at_eof = len(iter_calls)
+    window._step_frame(1)
+    assert seek_calls == []
+    assert len(iter_calls) == iter_count_at_eof
+
+    # Even when container duration exceeds last video frame PTS (longer audio track),
+    # start_playback() while _at_eof=True wraps cleanly back to _start_pts_ms
+    window._duration_ms = (window._current_frame_ms - window._start_pts_ms) + 5000
+    window.start_playback()
+    assert window._is_playing is True
+    assert window._at_eof is False
+    assert iter_calls[-1] == window._start_pts_ms
+    window.stop_playback()
+    window.close()
+
+
+def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_radio_toggle(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from transapp.ui.main_window import MainWindow
+
+    ep = tmp_path / "lock_style_ep.mp4"
+    _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.0)
+
+    multi_tpl = tmp_path / "multi_toggle.ass"
+    multi_tpl.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        "Style: OP_Kara,Microsoft YaHei,48\n"
+        "Style: Default,Microsoft YaHei,54\n"
+        "Style: SignTop,Microsoft YaHei,44\n\n[Events]\n",
+        encoding="utf-8",
+    )
+
+    ocr_entered = threading.Event()
+    release_ocr = threading.Event()
+
+    def slow_ocr(_img: np.ndarray):
+        ocr_entered.set()
+        release_ocr.wait(timeout=5.0)
+        return ([[[[0, 0], [80, 0], [80, 24], [0, 24]], "锁定画布", 0.95]], [0.01])
+
+    window = MainWindow(
+        preset_store=PresetStore(config_dir=tmp_path / "cfg"),
+        pipeline=ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=slow_ocr)),
+    )
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+
+    assert window.roi_canvas.isEnabled() is True
+
+    # Start extraction -> RoiCanvas must be disabled while worker is running
+    try:
+        window.btn_start.click()
+        assert ocr_entered.wait(timeout=5.0)
+        assert window.roi_canvas.isEnabled() is False
+        assert window.btn_start.isEnabled() is False
+        assert window.btn_test_frame.isEnabled() is False
+    finally:
+        release_ocr.set()
+    qtbot.waitUntil(lambda: window.btn_start.isEnabled(), timeout=8000)
+    assert window.roi_canvas.isEnabled() is True
+
+    # Retiring threads gate btn_start / btn_test_frame / roi_canvas until cleaned up,
+    # even if QThread.finished fires while isRunning() is still momentarily True (Qt6 race)
+    from PySide6.QtCore import QThread
+
+    dummy_retiring = QThread(window)
+    running_checks = {"remaining": 2}
+    monkeypatch.setattr(
+        dummy_retiring,
+        "isRunning",
+        lambda: (
+            running_checks.__setitem__("remaining", running_checks["remaining"] - 1) or True
+            if running_checks["remaining"] > 0
+            else False
+        ),
+    )
+    monkeypatch.setattr(dummy_retiring, "wait", lambda *_args: False)
+    window._retiring_threads.append(dummy_retiring)
+    window.status_label.setText("Đang dọn luồng cũ...")
+    window._update_controls_state()
+    assert window.btn_start.isEnabled() is False
+    assert window.btn_test_frame.isEnabled() is False
+    assert window.roi_canvas.isEnabled() is False
+
+    dummy_retiring.finished.connect(window._on_retiring_thread_finished)
+    dummy_retiring.finished.emit()
+    assert dummy_retiring in window._retiring_threads
+    qtbot.waitUntil(lambda: dummy_retiring not in window._retiring_threads, timeout=2000)
+    assert window.status_label.text() == "Sẵn sàng"
+    assert window.btn_start.isEnabled() is True
+    assert window.btn_test_frame.isEnabled() is True
+    assert window.roi_canvas.isEnabled() is True
+
+    # M4: Switching File mẫu -> Mặc định -> File mẫu restores previously selected style
+    window.radio_ass_template.setChecked(True)
+    window.ass_template_edit.setText(str(multi_tpl))
+    assert window.ass_style_combo.currentText() == "Default"
+    window.ass_style_combo.setCurrentText("SignTop")
+    assert window.ass_style_combo.currentText() == "SignTop"
+
+    window.radio_ass_default.setChecked(True)
+    assert window.ass_style_row_widget.isVisible() is False
+
+    window.radio_ass_template.setChecked(True)
+    assert window.ass_style_row_widget.isVisible() is True
+    assert window.ass_style_combo.currentText() == "SignTop"
+    window.close()
+
+
+def test_test_current_frame_runs_asynchronously_and_preset_oserror_warns(
+    qtbot, tmp_path: Path, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+    from transapp.ui.main_window import FrameTestWorker, MainWindow
+
+    ep = tmp_path / "async_frame_ep.mp4"
+    _make_synthetic_subtitle_mp4(
+        ep,
+        width=640,
+        height=360,
+        fps=25,
+        duration_sec=1.0,
+        cues=((100, 900, "异步测试"),),
+    )
+
+    ocr_started = threading.Event()
+    release_ocr = threading.Event()
+    ocr_thread_ids: list[int] = []
+
+    def blocking_ocr(_img: np.ndarray):
+        ocr_thread_ids.append(threading.get_ident())
+        ocr_started.set()
+        release_ocr.wait(timeout=5.0)
+        return ([[[[0, 0], [80, 0], [80, 24], [0, 24]], "异步测试", 0.96]], [0.01])
+
+    store = PresetStore(config_dir=tmp_path / "cfg")
+    pipeline = ExtractionPipeline(ocr_engine=OcrEngine(ocr_callable=blocking_ocr))
+    window = MainWindow(preset_store=store, pipeline=pipeline)
+    qtbot.addWidget(window)
+    window.show()
+    window.load_video(ep)
+    window.seek_to_ms(400)
+
+    main_tid = threading.get_ident()
+    try:
+        t0 = time.perf_counter()
+        started = window.test_current_frame()
+        call_elapsed = time.perf_counter() - t0
+
+        # Must return immediately without blocking UI thread while OCR is paused
+        assert started is True
+        assert call_elapsed < 0.5
+        assert ocr_started.wait(timeout=5.0)
+        assert len(ocr_thread_ids) == 1
+        assert ocr_thread_ids[0] != main_tid
+        assert window.btn_test_frame.isEnabled() is False
+        assert window.btn_start.isEnabled() is False
+        assert window.roi_canvas.isEnabled() is False
+    finally:
+        release_ocr.set()
+    qtbot.waitUntil(lambda: window.btn_test_frame.isEnabled(), timeout=5000)
+    assert "异步测试" in window.test_result_label.text()
+    assert "异步测试" in window.status_label.text()
+    assert window.roi_canvas._mask_pixmap is not None
+    assert window.roi_canvas.isEnabled() is True
+
+    # Verify FrameTestWorker class is QObject-based and stale-sender signals are ignored
+    stale = FrameTestWorker(
+        pipeline=pipeline,
+        frame_bgr=np.zeros((360, 640, 3), dtype=np.uint8),
+        frame_index=0,
+        pts_ms=0,
+        roi=window.roi_canvas.roi(),
+        config=window.build_config(),
+    )
+    stale.failed.connect(window._on_frame_test_failed)
+    stale.failed.emit("stale frame error")
+    assert "stale frame error" not in window.test_result_label.text()
+
+    # Real FrameTestWorker exception routes to _on_frame_test_failed, reports status, and re-enables UI
+    real_test_frame_bgr = pipeline.test_frame_bgr
+    monkeypatch.setattr(
+        pipeline,
+        "test_frame_bgr",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ocr exploded")),
+    )
+    assert window.test_current_frame() is True
+    qtbot.waitUntil(lambda: window.btn_test_frame.isEnabled(), timeout=5000)
+    assert "ocr exploded" in window.status_label.text()
+    assert "ocr exploded" in window.test_result_label.text()
+    assert window.btn_start.isEnabled() is True
+    assert window.roi_canvas.isEnabled() is True
+    monkeypatch.setattr(pipeline, "test_frame_bgr", real_test_frame_bgr)
+
+    # M8: PresetStore save/delete OSError shows QMessageBox.warning instead of raising
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, text: warnings.append((title, text)),
+    )
+
+    real_save = store.save
+    monkeypatch.setattr(store, "save", lambda _preset: (_ for _ in ()).throw(PermissionError("disk full")))
+    assert window.save_preset("FailPreset") is False
+    assert len(warnings) == 1
+    assert "disk full" in warnings[0][1]
+
+    monkeypatch.setattr(store, "save", real_save)
+    assert window.save_preset("RealPreset") is True
+    monkeypatch.setattr(store, "delete", lambda _name: (_ for _ in ()).throw(OSError("read-only")))
+    assert window.delete_current_preset() is False
+    assert len(warnings) == 2
+    assert "read-only" in warnings[1][1]
+
+    window.close()
+
 
 
 

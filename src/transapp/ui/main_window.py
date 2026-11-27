@@ -210,6 +210,45 @@ class _ExtractionWorker(QObject):
             self.finished.emit(result)
 
 
+class FrameTestWorker(QObject):
+    """Runs single-frame stroke-mask + OCR preview inside a dedicated QThread."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        pipeline: ExtractionPipeline,
+        frame_bgr: np.ndarray,
+        frame_index: int,
+        pts_ms: int,
+        roi: RoiRect,
+        config: ExtractConfig,
+    ) -> None:
+        super().__init__()
+        self._pipeline = pipeline
+        self._frame_bgr = frame_bgr
+        self._frame_index = frame_index
+        self._pts_ms = pts_ms
+        self._roi = roi
+        self._config = config
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._pipeline.test_frame_bgr(
+                self._frame_bgr,
+                self._frame_index,
+                self._pts_ms,
+                self._roi,
+                self._config,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(result)
+
+
 class MainWindow(QMainWindow):
     """Main desktop window coordinating ROI selection, extraction, review, and export."""
 
@@ -241,7 +280,10 @@ class MainWindow(QMainWindow):
         self._has_unexported_edits: bool = False
         self._last_export_dir: Path | None = None
         self._last_ass_template_path: str = ""
+        self._last_ass_style_by_template: dict[str, str] = {}
         self._is_playing: bool = False
+        self._at_eof: bool = False
+        self._last_advance_error: bool = False
         self._play_iter: Iterator[tuple[int, int, np.ndarray]] | None = None
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._on_playback_tick)
@@ -249,8 +291,12 @@ class MainWindow(QMainWindow):
         self._worker_thread: QThread | None = None
         self._worker: _ExtractionWorker | None = None
         self._cancel_event: threading.Event | None = None
+        self._frame_test_thread: QThread | None = None
+        self._frame_test_worker: FrameTestWorker | None = None
+        self._frame_test_bgr: np.ndarray | None = None
+        self._last_frame_test_result: FrameTestResult | None = None
         self._retiring_threads: list[QThread] = []
-        self._retiring_workers: dict[QThread, _ExtractionWorker | None] = {}
+        self._retiring_workers: dict[QThread, QObject | None] = {}
 
         self.setAcceptDrops(True)
         self.setWindowTitle("TransApp - Tách Sub Raw Tiếng Trung")
@@ -728,6 +774,7 @@ class MainWindow(QMainWindow):
         self.radio_ass_default.toggled.connect(lambda _: self._update_controls_state())
         self.radio_ass_template.toggled.connect(lambda _: self._refresh_ass_template_styles())
         self.ass_template_edit.textChanged.connect(lambda _: self._refresh_ass_template_styles())
+        self.ass_style_combo.currentTextChanged.connect(self._on_ass_style_changed)
         self.btn_browse_out_dir.clicked.connect(self._browse_output_dir)
         self.btn_browse_ass_template.clicked.connect(self._browse_ass_template)
 
@@ -744,8 +791,21 @@ class MainWindow(QMainWindow):
         self.review_table.dirty_changed.connect(self._on_review_dirty_changed)
         self.review_table.transport_key_forwarded.connect(self._on_review_transport_key)
 
+    def _is_extracting(self) -> bool:
+        return self._worker_thread is not None
+
+    def _is_frame_testing(self) -> bool:
+        return self._frame_test_thread is not None
+
+    def _has_retiring_threads(self) -> bool:
+        return bool(self._retiring_threads)
+
     def _is_running(self) -> bool:
-        return self._worker_thread is not None and self._worker_thread.isRunning()
+        return (
+            self._is_extracting()
+            or self._is_frame_testing()
+            or self._has_retiring_threads()
+        )
 
     def _update_roi_label(self, roi: RoiRect) -> None:
         if self._video_meta is not None:
@@ -884,10 +944,19 @@ class MainWindow(QMainWindow):
         playhead = self._current_rel_ms() if self._video_meta is not None else None
         self.review_table.split_selected_row(playhead)
 
-    def _refresh_ass_template_styles(self) -> None:
+    def _on_ass_style_changed(self, style_name: str) -> None:
         tpl_text = self.ass_template_edit.text().strip()
-        same_template = tpl_text == self._last_ass_template_path
-        prev_style = self.ass_style_combo.currentText() if same_template else ""
+        if tpl_text and style_name and self.radio_ass_template.isChecked():
+            self._last_ass_style_by_template[tpl_text] = style_name
+
+    def _refresh_ass_template_styles(self) -> None:
+        prev_tpl = self._last_ass_template_path
+        current_combo_style = self.ass_style_combo.currentText()
+        if prev_tpl and current_combo_style:
+            self._last_ass_style_by_template[prev_tpl] = current_combo_style
+
+        tpl_text = self.ass_template_edit.text().strip()
+        prev_style = self._last_ass_style_by_template.get(tpl_text, "")
 
         styles: list[str] = []
         if self.radio_ass_template.isChecked() and tpl_text:
@@ -911,6 +980,9 @@ class MainWindow(QMainWindow):
                     self.ass_style_combo.setCurrentText("Default")
                 else:
                     self.ass_style_combo.setCurrentIndex(0)
+                chosen = self.ass_style_combo.currentText()
+                if tpl_text and chosen:
+                    self._last_ass_style_by_template[tpl_text] = chosen
                 self.ass_style_row_widget.setVisible(True)
             else:
                 self.ass_style_row_widget.setVisible(False)
@@ -1076,9 +1148,11 @@ class MainWindow(QMainWindow):
 
     def _update_controls_state(self) -> None:
         running = self._is_running()
+        extracting = self._is_extracting()
         has_video = self._video_path is not None and self._video_meta is not None
         has_trim = self._trim_start_ms is not None or self._trim_end_ms is not None
 
+        self.roi_canvas.setEnabled(not running)
         self.btn_browse_video.setEnabled(not running)
         self.preset_combo.setEnabled(not running)
         self.btn_save_preset.setEnabled(not running)
@@ -1110,7 +1184,7 @@ class MainWindow(QMainWindow):
         self.ocr_model_combo.setEnabled(not running)
         self.spin_conf.setEnabled(not running)
         self.btn_start.setEnabled(has_video and not running)
-        self.btn_stop.setEnabled(running)
+        self.btn_stop.setEnabled(extracting)
         self._update_export_button()
 
     def _refresh_presets(self, select_name: str | None = None) -> None:
@@ -1181,7 +1255,12 @@ class MainWindow(QMainWindow):
             ass_template_path=tpl_path,
             conf_threshold=float(self.spin_conf.value()),
         )
-        self._preset_store.save(preset)
+        try:
+            self._preset_store.save(preset)
+        except OSError as exc:
+            self.status_label.setText(f"Lỗi lưu preset: {exc}")
+            QMessageBox.warning(self, "Lỗi lưu preset", str(exc))
+            return False
         self._refresh_presets(select_name=clean_name)
         return True
 
@@ -1190,7 +1269,12 @@ class MainWindow(QMainWindow):
         if self.preset_combo.currentIndex() <= 0:
             return False
         name = self.preset_combo.currentText()
-        deleted = self._preset_store.delete(name)
+        try:
+            deleted = self._preset_store.delete(name)
+        except OSError as exc:
+            self.status_label.setText(f"Lỗi xóa preset: {exc}")
+            QMessageBox.warning(self, "Lỗi xóa preset", str(exc))
+            return False
         self._refresh_presets()
         return deleted
 
@@ -1226,6 +1310,8 @@ class MainWindow(QMainWindow):
         self._update_trim_display()
         self._current_frame_bgr = None
         self._current_frame_index = 0
+        self._at_eof = False
+        self._last_advance_error = False
         self.roi_canvas.set_frame(None)
         self._close_preview_reader()
 
@@ -1275,7 +1361,9 @@ class MainWindow(QMainWindow):
             self.frame_slider.blockSignals(False)
 
         self.progress_bar.setValue(0)
-        self.status_label.setText("Sẵn sàng")
+        self.status_label.setText(
+            "Đang dọn luồng cũ..." if self._has_retiring_threads() else "Sẵn sàng"
+        )
         self._update_roi_label(self.roi_canvas.roi())
         self.seek_to_ms(self._start_pts_ms)
         self._update_controls_state()
@@ -1313,7 +1401,7 @@ class MainWindow(QMainWindow):
             self.ass_template_edit.setText(chosen)
 
     def _ensure_preview_reader(self) -> VideoReader | None:
-        if self._video_path is None or self._is_running():
+        if self._video_path is None or self._is_extracting():
             return None
         if self._preview_reader is None:
             self._preview_reader = VideoReader(self._video_path)
@@ -1351,25 +1439,32 @@ class MainWindow(QMainWindow):
             return
         if self._is_playing:
             return
-        reader = self._ensure_preview_reader()
-        if reader is None:
-            return
 
         fps = max(1.0, float(self._video_meta.fps))
         frame_ms = max(1, round(1000.0 / fps))
         max_raw_ms = self._start_pts_ms + self._duration_ms
-        if self._duration_ms > 0 and self._current_frame_ms >= max_raw_ms - frame_ms:
+        wrapped = False
+        if self._at_eof or (
+            self._duration_ms > 0 and self._current_frame_ms >= max_raw_ms - frame_ms
+        ):
             start_raw = self._start_pts_ms
+            wrapped = True
         else:
             start_raw = self._current_frame_ms + 1
 
         try:
+            reader = self._ensure_preview_reader()
+            if reader is None:
+                return
             self._play_iter = reader.iter_full_frames_from_ms(start_raw)
         except Exception as exc:
-            self.status_label.setText(f"Lỗi phát video: {exc}")
+            self.stop_playback()
             self._play_iter = None
+            self.status_label.setText(f"Lỗi phát video: {exc}")
             return
 
+        if wrapped:
+            self._at_eof = False
         self._is_playing = True
         self._update_play_button_icon()
         interval_ms = max(16, int(round(1000.0 / fps)))
@@ -1394,23 +1489,32 @@ class MainWindow(QMainWindow):
         """Decode and display the next sequential frame without re-seeking; returns False at EOF."""
         if self._video_meta is None or self._is_running():
             return False
-        reader = self._ensure_preview_reader()
-        if reader is None:
-            return False
-        if self._play_iter is None:
-            try:
-                self._play_iter = reader.iter_full_frames_from_ms(self._current_frame_ms + 1)
-            except Exception:
+        self._last_advance_error = False
+        try:
+            reader = self._ensure_preview_reader()
+            if reader is None:
                 return False
+            if self._play_iter is None:
+                self._play_iter = reader.iter_full_frames_from_ms(self._current_frame_ms + 1)
+        except Exception as exc:
+            self._play_iter = None
+            self._last_advance_error = True
+            self.stop_playback()
+            self.status_label.setText(f"Lỗi đọc frame: {exc}")
+            return False
         try:
             frame_idx, pts_ms, full_bgr = next(self._play_iter)
         except StopIteration:
             self._play_iter = None
+            self._at_eof = True
             return False
         except Exception as exc:
             self._play_iter = None
+            self._last_advance_error = True
+            self.stop_playback()
             self.status_label.setText(f"Lỗi đọc frame: {exc}")
             return False
+        self._at_eof = False
         self._display_preview_frame(frame_idx, pts_ms, full_bgr)
         return True
 
@@ -1428,6 +1532,7 @@ class MainWindow(QMainWindow):
             return
         self.stop_playback()
         self._play_iter = None
+        self._at_eof = False
         min_ms = self._start_pts_ms
         max_ms = self._start_pts_ms + self._duration_ms
         clamped = max(min_ms, min(int(target_ms), max_ms))
@@ -1460,7 +1565,28 @@ class MainWindow(QMainWindow):
             return
         self.stop_playback()
         if delta == 1:
+            if self._at_eof:
+                return
             if self._advance_one_sequential_frame():
+                return
+            if self._at_eof or self._last_advance_error:
+                return
+        elif delta == -1:
+            self._play_iter = None
+            try:
+                reader = self._ensure_preview_reader()
+                if reader is None:
+                    return
+                if hasattr(reader, "read_prev_frame_before_ms"):
+                    full_bgr, pts_ms = reader.read_prev_frame_before_ms(self._current_frame_ms)
+                    self._at_eof = False
+                    fps = max(1.0, float(self._video_meta.fps))
+                    rel_ms = max(0, pts_ms - self._start_pts_ms)
+                    frame_idx = int(round(rel_ms * fps / 1000.0))
+                    self._display_preview_frame(frame_idx, pts_ms, full_bgr)
+                    return
+            except Exception as exc:
+                self.status_label.setText(f"Lỗi lùi frame: {exc}")
                 return
         step_ms = max(1, round(1000.0 / max(1.0, self._video_meta.fps)))
         self.seek_to_ms(self._current_frame_ms + delta * step_ms)
@@ -1492,10 +1618,10 @@ class MainWindow(QMainWindow):
             trim_end_ms=self._trim_end_ms,
         )
 
-    def test_current_frame(self) -> FrameTestResult | None:
-        """Run stroke-mask + OCR on the currently previewed frame and display overlay."""
+    def test_current_frame(self) -> bool:
+        """Run stroke-mask + OCR on the currently previewed frame asynchronously."""
         if self._video_path is None or self._is_running():
-            return None
+            return False
         self.stop_playback()
 
         config = self.build_config()
@@ -1506,30 +1632,74 @@ class MainWindow(QMainWindow):
             if full_bgr is None:
                 reader = self._ensure_preview_reader()
                 if reader is None:
-                    return None
+                    return False
                 frame_idx, pts_ms, full_bgr = reader.read_frame_at_ms(self._current_frame_ms)
                 self._current_frame_index = frame_idx
                 self._current_frame_ms = pts_ms
                 self._current_frame_bgr = full_bgr
-            result = self._pipeline.test_frame_bgr(
-                full_bgr,
-                self._current_frame_index,
-                self._current_frame_ms,
-                roi,
-                config,
-            )
+            frame_copy = full_bgr.copy()
         except Exception as exc:
             self.test_result_label.setText(f"Lỗi test frame: {exc}")
-            return None
+            self.status_label.setText(f"Lỗi test frame: {exc}")
+            return False
 
-        self.roi_canvas.set_frame(full_bgr, mask=result.mask)
+        self.test_result_label.setText("Đang test frame...")
+        self.status_label.setText("Đang test 1 frame...")
+
+        thread = QThread(self)
+        worker = FrameTestWorker(
+            pipeline=self._pipeline,
+            frame_bgr=frame_copy,
+            frame_index=self._current_frame_index,
+            pts_ms=self._current_frame_ms,
+            roi=roi,
+            config=config,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_frame_test_finished)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(self._on_frame_test_failed)
+        worker.failed.connect(thread.quit)
+
+        self._frame_test_thread = thread
+        self._frame_test_worker = worker
+        self._frame_test_bgr = frame_copy
+        self._last_frame_test_result = None
+        thread.start()
+        self._update_controls_state()
+        return True
+
+    @Slot(object)
+    def _on_frame_test_finished(self, result: FrameTestResult) -> None:
+        if self.sender() is not self._frame_test_worker:
+            return
+        frame_bgr = self._frame_test_bgr
+        self._cleanup_frame_test_worker()
+        self._last_frame_test_result = result
+        if frame_bgr is not None and self._current_frame_ms == result.pts_ms:
+            self.roi_canvas.set_frame(frame_bgr, mask=result.mask)
         if result.text:
             self.test_result_label.setText(
                 f'Frame test: "{result.text}" (conf: {result.confidence:.2f})'
             )
+            self.status_label.setText(
+                f'Test frame xong: "{result.text}" ({result.confidence:.2f})'
+            )
         else:
             self.test_result_label.setText("Frame test: (không phát hiện chữ)")
-        return result
+            self.status_label.setText("Test frame xong: không phát hiện chữ")
+        self._update_controls_state()
+
+    @Slot(str)
+    def _on_frame_test_failed(self, message: str) -> None:
+        if self.sender() is not self._frame_test_worker:
+            return
+        self._cleanup_frame_test_worker()
+        self.test_result_label.setText(f"Lỗi test frame: {message}")
+        self.status_label.setText(f"Lỗi test frame: {message}")
+        self._update_controls_state()
 
     def start_extraction(self) -> None:
         """Launch single-episode extraction on a background QThread."""
@@ -1568,8 +1738,8 @@ class MainWindow(QMainWindow):
         self._cancel_event = cancel_event
         self._worker_thread = thread
         self._worker = worker
-        self._update_controls_state()
         thread.start()
+        self._update_controls_state()
 
     def stop_extraction(self) -> None:
         """Request cooperative cancellation of the active worker."""
@@ -1636,6 +1806,7 @@ class MainWindow(QMainWindow):
         if self._cancel_event is not None:
             self._cancel_event.set()
         self._cleanup_worker()
+        self._cleanup_frame_test_worker()
 
     def _disconnect_worker_slots(self, worker: _ExtractionWorker) -> None:
         for sig, slot in (
@@ -1643,6 +1814,16 @@ class MainWindow(QMainWindow):
             (worker.finished, self._on_worker_finished),
             (worker.cancelled, self._on_worker_cancelled),
             (worker.failed, self._on_worker_failed),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _disconnect_frame_test_slots(self, worker: FrameTestWorker) -> None:
+        for sig, slot in (
+            (worker.finished, self._on_frame_test_finished),
+            (worker.failed, self._on_frame_test_failed),
         ):
             try:
                 sig.disconnect(slot)
@@ -1657,12 +1838,55 @@ class MainWindow(QMainWindow):
         if worker is not None:
             worker.deleteLater()
         thread.deleteLater()
+        if not self._retiring_threads and not self._is_running():
+            if self.status_label.text() == "Đang dọn luồng cũ...":
+                self.status_label.setText("Sẵn sàng")
+        self._update_controls_state()
+
+    def _finalize_retiring_thread(self, thread: QThread) -> None:
+        if thread not in self._retiring_threads:
+            return
+        if thread.isRunning():
+            thread.wait(200)
+        if thread.isRunning():
+            QTimer.singleShot(50, self, lambda t=thread: self._finalize_retiring_thread(t))
+            return
+        self._retire_thread(thread)
 
     @Slot()
     def _on_retiring_thread_finished(self) -> None:
         sender = self.sender()
         if isinstance(sender, QThread):
-            self._retire_thread(sender)
+            self._finalize_retiring_thread(sender)
+
+    def _cleanup_frame_test_worker(self) -> None:
+        thread = self._frame_test_thread
+        worker = self._frame_test_worker
+        self._frame_test_thread = None
+        self._frame_test_worker = None
+        self._frame_test_bgr = None
+
+        if worker is not None:
+            self._disconnect_frame_test_slots(worker)
+
+        if thread is not None:
+            thread.quit()
+            finished = thread.wait(5000)
+            if finished and not thread.isRunning():
+                if worker is not None:
+                    worker.deleteLater()
+                thread.deleteLater()
+            else:
+                self._retiring_threads.append(thread)
+                self._retiring_workers[thread] = worker
+                thread.finished.connect(self._on_retiring_thread_finished)
+                if thread.isFinished() and not thread.isRunning():
+                    self._retire_thread(thread)
+                else:
+                    self.status_label.setText("Đang dọn luồng cũ...")
+                    self._update_controls_state()
+        elif worker is not None:
+            worker.deleteLater()
 
     def _cleanup_worker(self) -> None:
         thread = self._worker_thread
@@ -1687,6 +1911,9 @@ class MainWindow(QMainWindow):
                 thread.finished.connect(self._on_retiring_thread_finished)
                 if thread.isFinished() and not thread.isRunning():
                     self._retire_thread(thread)
+                else:
+                    self.status_label.setText("Đang dọn luồng cũ...")
+                    self._update_controls_state()
         elif worker is not None:
             worker.deleteLater()
 
