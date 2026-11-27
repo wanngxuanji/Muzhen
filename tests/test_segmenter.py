@@ -373,3 +373,78 @@ def test_segmenter_back_to_back_two_line_to_one_line_splits_without_delay():
     assert len(segs_odd) == 2
     assert (segs_odd[0].start_ms, segs_odd[0].end_ms) == (0, 360)
     assert (segs_odd[1].start_ms, segs_odd[1].end_ms) == (360, 680)
+
+
+def test_segmenter_bridges_240ms_flash_gap_but_keeps_quiet_repeated_dialogue_separate():
+    cfg = ExtractConfig(coarse_step=2, merge_gap_ms=160, flash_bridge_max_ms=320)
+    h, w = 96, 640
+    dark_bg = _make_blank_roi(h, w, (24, 28, 32))
+    flash_bg = _make_blank_roi(h, w, (245, 245, 245))
+    cue = _draw_outlined_cue(dark_bg, "FLASH BRIDGE", org_x=80)
+
+    # Case 1: 240ms bright flash whiteout (frames 10..15) inside a single cue -> bridged into 1 segment
+    flash_stream = [
+        FrameSlice(i, i * 40, flash_bg if 10 <= i < 16 else cue)
+        for i in range(26)
+    ]
+    flash_segs = segment_roi_frames(flash_stream, cfg)
+    assert len(flash_segs) == 1
+    assert flash_segs[0].start_ms == 0
+    assert flash_segs[0].end_ms == 1040
+    assert flash_segs[0].stable_mask is not None
+    assert int(np.count_nonzero(flash_segs[0].stable_mask)) > 0
+
+    # Case 2: 240ms clean dark quiet gap between genuine repeated dialogue -> stays 2 separate segments
+    repeat_stream = [
+        FrameSlice(i, i * 40, dark_bg if 10 <= i < 16 else cue)
+        for i in range(26)
+    ]
+    repeat_segs = segment_roi_frames(repeat_stream, cfg)
+    assert len(repeat_segs) == 2
+    assert (repeat_segs[0].start_ms, repeat_segs[0].end_ms) == (0, 400)
+    assert (repeat_segs[1].start_ms, repeat_segs[1].end_ms) == (640, 1040)
+
+
+def test_segmenter_ema_anchor_resists_transient_bright_prop_poisoning():
+    cfg = ExtractConfig(coarse_step=2)
+    h, w = 96, 640
+    dark_bg = _make_blank_roi(h, w, (24, 28, 32))
+    clean_cue = _draw_outlined_cue(dark_bg, "STEADY CUE", org_x=60)
+
+    # Transient huge white outlined prop passing on the right side for 2 frames (would poison anchor_fg!)
+    poisoned_cue = clean_cue.copy()
+    poisoned_cue[10:86, 400:610] = (8, 8, 8)
+    poisoned_cue[16:80, 406:604] = (248, 248, 248)
+
+    stream = [
+        FrameSlice(i, i * 40, poisoned_cue if i in (8, 9) else clean_cue)
+        for i in range(24)
+    ]
+    segs = segment_roi_frames(stream, cfg)
+    assert len(segs) == 1
+    assert segs[0].start_ms == 0
+    assert segs[0].end_ms == 960
+    # Peak selection must pick a clean frame without the right-side bright prop
+    assert float(segs[0].peak_bgr[20:76, 410:600].mean()) < 60.0
+
+
+def test_segmenter_partial_glare_continuation_preserves_single_cue_and_clean_peak():
+    cfg = ExtractConfig(coarse_step=2)
+    h, w = 96, 640
+    dark_bg = _make_blank_roi(h, w, (24, 28, 32))
+    full_cue = _draw_outlined_cue(dark_bg, "FULL LINE TEXT", org_x=40)
+
+    # Localized bright glare washes out left half of the cue for several frames
+    glared_cue = full_cue.copy()
+    glared_cue[:, 0:260] = (248, 248, 248)
+
+    stream = [
+        FrameSlice(i, i * 40, glared_cue if 8 <= i < 14 else full_cue)
+        for i in range(24)
+    ]
+    segs = segment_roi_frames(stream, cfg)
+    assert len(segs) == 1
+    assert segs[0].start_ms == 0
+    assert segs[0].end_ms == 960
+    # Chosen peak must be an un-glared full frame
+    assert float(segs[0].peak_bgr[:, 0:60].mean()) < 80.0

@@ -55,11 +55,13 @@ class ExtractConfig:
     split_iou_min: float = 0.55
     min_duration_ms: int = 120
     merge_gap_ms: int = 160
+    flash_bridge_max_ms: int = 320
     merge_similarity: float = 0.85
     conf_threshold: float = 0.85
     provider: str = "cpu"
-    ocr_model: str = "fast"
+    ocr_model: str = "accurate"
     filter_non_cjk_low_conf: bool = True
+    suppress_border_blobs: bool = True
 
 
 @dataclass(slots=True)
@@ -70,6 +72,7 @@ class RawSegment:
     end_ms: int
     peak_bgr: np.ndarray
     frame_index: int
+    stable_mask: np.ndarray | None = None
 
 
 @dataclass(slots=True)
@@ -94,6 +97,7 @@ class SubtitleEvent:
     confidence: float
     flagged: bool
     thumbnail_png: bytes
+    flag_reason: str = ""
 
 
 @dataclass(slots=True)

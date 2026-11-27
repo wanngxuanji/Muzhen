@@ -30,26 +30,24 @@ def test_ocr_engine_reexported_from_core_package():
     assert ReexportedOcrEngine is OcrEngine
 
 
-def test_recognize_roi_pads_and_upscales_only_when_height_below_48():
-    seen_shapes: list[tuple[int, int, int]] = []
+def test_prepare_roi_for_ocr_normalizes_scale_without_synthetic_borders():
+    from transapp.core.ocr_engine import _prepare_roi_for_ocr
 
-    def fake_ocr(img: np.ndarray):
-        seen_shapes.append(img.shape)
-        return ([[[[0, 0], [50, 0], [50, 20], [0, 20]], "测试", 0.95]], [0.01])
+    small_roi = _make_bgr(28, 160, color=(200, 180, 160))
+    prep_small = _prepare_roi_for_ocr(small_roi)
+    # Upscaled to >= 56 height without adding black top/bottom borders
+    assert prep_small.shape[0] == 56
+    assert prep_small.shape[1] == 320
+    assert int(prep_small[0, 0, 0]) == 200
 
-    engine = OcrEngine(ocr_callable=fake_ocr)
+    normal_roi = _make_bgr(64, 160, color=(120, 120, 120))
+    prep_norm = _prepare_roi_for_ocr(normal_roi)
+    assert prep_norm.shape == (64, 160, 3)
 
-    small_roi = _make_bgr(28, 160)
-    text_small, conf_small = engine.recognize_roi(small_roi)
-    assert (text_small, conf_small) == ("测试", pytest.approx(0.95))
-    # Upscaled to >= 48 height plus 10px border on top and bottom (>= 68)
-    assert seen_shapes[0][0] >= 68
-    assert seen_shapes[0][1] > 160
-
-    normal_roi = _make_bgr(64, 160)
-    text_norm, conf_norm = engine.recognize_roi(normal_roi)
-    assert (text_norm, conf_norm) == ("测试", pytest.approx(0.95))
-    assert seen_shapes[1] == (64, 160, 3)
+    wide_roi = _make_bgr(170, 1536, color=(80, 80, 80))
+    prep_wide = _prepare_roi_for_ocr(wide_roi)
+    assert prep_wide.shape[1] == 960
+    assert prep_wide.shape[0] == 106
 
 
 def test_recognize_roi_sorts_multiline_boxes_and_uses_min_confidence():
@@ -232,11 +230,13 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
     assert (text, conf) == ("回退成功", pytest.approx(0.92))
     assert len(init_params) == 1
     assert init_params[0]["Global.use_cls"] is False
-    assert init_params[0]["Global.use_vertical_padding"] is True
-    assert init_params[0]["Global.width_height_ratio"] == 4
-    assert init_params[0]["Det.ocr_version"] == rapidocr.OCRVersion.PPOCRV6
-    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SMALL
-    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SMALL
+    assert init_params[0]["Global.use_vertical_padding"] is False
+    assert init_params[0]["Global.width_height_ratio"] == -1
+    assert init_params[0]["Det.ocr_version"] == rapidocr.OCRVersion.PPOCRV5
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SERVER
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SERVER
+    assert init_params[0]["Det.lang_type"] == rapidocr.LangDet.CH
+    assert init_params[0]["Rec.lang_type"] == rapidocr.LangRec.CH
     assert init_params[0]["Det.limit_type"] == "max"
     assert init_params[0]["Det.limit_side_len"] == 960
     assert "EngineConfig.onnxruntime.use_dml" not in init_params[0]
@@ -250,24 +250,24 @@ def test_available_providers_and_directml_fallback(monkeypatch, caplog):
         "get_available_providers",
         lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
     )
-    engine2 = OcrEngine(provider="directml", ocr_model="accurate")
+    engine2 = OcrEngine(provider="directml", ocr_model="fast")
     text2, conf2 = engine2.recognize_roi(_make_bgr(64, 160))
     assert (text2, conf2) == ("回退成功", pytest.approx(0.92))
     assert len(init_params) == 2
     assert init_params[0]["EngineConfig.onnxruntime.use_dml"] is True
-    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.MEDIUM
-    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.MEDIUM
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.MOBILE
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.MOBILE
     assert "EngineConfig.onnxruntime.use_dml" not in init_params[1]
-    assert init_params[1]["Det.model_type"] == rapidocr.ModelType.MEDIUM
+    assert init_params[1]["Det.model_type"] == rapidocr.ModelType.MOBILE
     assert any("directml" in rec.message.lower() for rec in caplog.records)
 
-    # Default CPU provider passes PP-OCRv6 small params with use_cls disabled
+    # Default CPU provider passes ch_PP-OCRv5 server params with use_cls disabled
     init_params.clear()
-    cpu_engine = OcrEngine(provider="cpu", ocr_model="fast")
+    cpu_engine = OcrEngine(provider="cpu", ocr_model="accurate")
     assert cpu_engine.recognize_roi(_make_bgr(64, 160)) == ("回退成功", pytest.approx(0.92))
     assert len(init_params) == 1
-    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SMALL
-    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SMALL
+    assert init_params[0]["Det.model_type"] == rapidocr.ModelType.SERVER
+    assert init_params[0]["Rec.model_type"] == rapidocr.ModelType.SERVER
     assert "EngineConfig.onnxruntime.use_dml" not in init_params[0]
 
 
@@ -286,3 +286,41 @@ def test_real_rapidocr_recognizes_sample_fixtures(fixture_name: str, expected_te
 
     assert text == expected_text
     assert conf >= 0.80
+
+
+def test_group_boxes_drops_detached_low_conf_non_hanzi_noise_and_keeps_grid_mapping():
+    # Wall inscription "1X1- TO X1-" (0.76) beside strong Hanzi subtitle "停下来了" (0.99) -> dropped
+    def fake_noisy(_img: np.ndarray):
+        items = [
+            [[[120.0, 20.0], [240.0, 20.0], [240.0, 50.0], [120.0, 50.0]], "停下来了", 0.99],
+            [[[360.0, 22.0], [490.0, 22.0], [490.0, 50.0], [360.0, 50.0]], "1X1- TO X1-", 0.76],
+        ]
+        return (items, [0.01])
+
+    engine = OcrEngine(ocr_callable=fake_noisy)
+    text, conf = engine.recognize_roi(_make_bgr(76, 512))
+    assert text == "停下来了"
+    assert conf == pytest.approx(0.99)
+
+    # Grid detection batch maps boxes back to their respective cell indices
+    class FakeDetGrid:
+        def __call__(self, canvas: np.ndarray):
+            class _DetOut:
+                # Cell 0 occupies y in [20, 84], cell 2 occupies y in [188, 252]
+                boxes = np.array(
+                    [
+                        [[50.0, 28.0], [250.0, 28.0], [250.0, 68.0], [50.0, 68.0]],
+                        [[80.0, 190.0], [300.0, 190.0], [300.0, 226.0], [80.0, 226.0]],
+                    ],
+                    dtype=np.float32,
+                )
+
+            return _DetOut()
+
+    det_only_engine = OcrEngine(det_callable=FakeDetGrid())
+    rois = [_make_bgr(64, 400) for _ in range(3)]
+    mapped = det_only_engine.detect_grid_batch(rois)
+    assert len(mapped) == 3
+    assert len(mapped[0]) == 1
+    assert mapped[1] == []
+    assert len(mapped[2]) == 1

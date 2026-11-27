@@ -162,7 +162,10 @@ def test_postprocess_drops_low_conf_non_cjk_garbage_keeps_low_conf_cjk_and_high_
     segs = [
         OcrSegment(0, 280, "VNY", 0.654, b"collar"),          # non-CJK low-conf artifact -> dropped
         OcrSegment(400, 900, "II / -", 0.78, b"noise"),        # non-CJK low-conf artifact -> dropped
-        OcrSegment(1000, 1800, "大家都怎么样了", 0.72, b"cjk"),  # CJK low-conf -> kept & flagged
+        OcrSegment(900, 1100, "マ", 0.99, b"kana_ghost"),       # single Katakana ghost -> dropped
+        OcrSegment(1120, 1280, "バハ", 0.53, b"kana_low"),      # pure Katakana low-conf -> dropped
+        OcrSegment(1290, 1450, "》", 0.92, b"punct_only"),      # punctuation-only ghost -> dropped
+        OcrSegment(1500, 1800, "大家都怎么样了", 0.72, b"cjk"),  # CJK low-conf -> kept & flagged
         OcrSegment(2000, 2800, "Episode 01", 0.96, b"title"),  # non-CJK high-conf -> kept
     ]
 
@@ -173,5 +176,58 @@ def test_postprocess_drops_low_conf_non_cjk_garbage_keeps_low_conf_cjk_and_high_
     ]
 
     unfiltered = postprocess_segments(segs, ExtractConfig(conf_threshold=0.85, filter_non_cjk_low_conf=False))
-    assert [e.text for e in unfiltered] == ["VNY", "II / -", "大家都怎么样了", "Episode 01"]
+    assert [e.text for e in unfiltered] == ["VNY", "II / -", "マ", "バハ", "》", "大家都怎么样了", "Episode 01"]
     assert unfiltered[0].flagged is True
+
+
+def test_postprocess_two_tier_smart_merge_containment_and_guards():
+    cfg = ExtractConfig(
+        min_duration_ms=120,
+        merge_gap_ms=160,
+        flash_bridge_max_ms=320,
+        merge_similarity=0.85,
+        conf_threshold=0.85,
+    )
+    segs = [
+        # Tier-2 containment across 280ms flash gap (#61/#62): fuller clean text wins even if slightly lower conf
+        OcrSegment(2000, 2640, "个蕴藏着神秘力量的", 0.99, b"clipped"),
+        OcrSegment(2920, 3400, "一个蕴藏着神秘力量的", 0.97, b"full"),
+        # Guard 1: 1-char substitution ("你的" vs "他的", sim=0.857) across 220ms (> 160ms) MUST NOT merge
+        OcrSegment(5000, 5600, "我不会放过你的", 0.96, b"you"),
+        OcrSegment(5820, 6400, "我不会放过他的", 0.96, b"him"),
+        # Guard 2: genuine repeated short cue ("快跑!") across 240ms (> 160ms) MUST NOT merge
+        OcrSegment(8000, 8400, "快跑！", 0.98, b"run1"),
+        OcrSegment(8640, 9000, "快跑！", 0.98, b"run2"),
+        # Leading 80ms fragment (< min_duration_ms) + 800ms main cue (gap=40ms) merges BEFORE duration filter
+        OcrSegment(10000, 10080, "战斗开始", 0.91, b"frag"),
+        OcrSegment(10120, 10920, "战斗开始", 0.99, b"main"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert [(e.start_ms, e.end_ms, e.text) for e in events] == [
+        (2000, 3400, "一个蕴藏着神秘力量的"),
+        (5000, 5600, "我不会放过你的"),
+        (5820, 6400, "我不会放过他的"),
+        (8000, 8400, "快跑！"),
+        (8640, 9000, "快跑！"),
+        (10000, 10920, "战斗开始"),
+    ]
+    assert events[0].thumbnail_png == b"full"
+
+
+def test_postprocess_similarity_ignores_punctuation_and_extended_whitelist_with_flag_reason():
+    assert text_similarity("你好世界", "你好，世界！") == 1.0
+    assert normalize_cjk_text("等一下―真的吗") == "等一下—真的吗"
+
+    cfg = ExtractConfig(conf_threshold=0.85)
+    segs = [
+        OcrSegment(0, 500, "发行许可证：（粤）动审字[2013]第054号 ~ ♪", 0.98, b"ok"),
+        OcrSegment(1000, 1500, "停下来了", 0.72, b"low"),
+        OcrSegment(2000, 2500, "大家|怎么^样", 0.95, b"noise"),
+    ]
+    events = postprocess_segments(segs, cfg)
+    assert events[0].flagged is False
+    assert events[0].flag_reason == ""
+    assert events[1].flagged is True
+    assert "0.72" in events[1].flag_reason
+    assert events[2].flagged is True
+    assert "|" in events[2].flag_reason

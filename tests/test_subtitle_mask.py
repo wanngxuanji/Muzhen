@@ -169,3 +169,91 @@ def test_empty_and_zero_size_inputs_and_helper_functions():
     sharp_img = _draw_outlined_text(np.zeros((100, 500, 3), dtype=np.uint8), "SHARP")
     blurred_img = cv2.GaussianBlur(sharp_img, (9, 9), 2.5)
     assert frame_sharpness(sharp_img) > frame_sharpness(blurred_img) > 0.0
+
+
+def test_scale_invariance_480p_1080p_4k_and_wide_roi_short_cue():
+    from transapp.core.subtitle_mask import (
+        effective_dilate_px,
+        effective_min_blob_px,
+        fg_pixel_thresholds,
+    )
+
+    cfg = ExtractConfig(min_blob_px=12)
+    assert effective_min_blob_px(cfg, frame_h=480) == 6
+    assert effective_min_blob_px(cfg, frame_h=1080) == 12
+    assert effective_min_blob_px(cfg, frame_h=2160) == 48
+
+    assert effective_dilate_px(frame_h=480) == 1
+    assert effective_dilate_px(frame_h=1080) == 1
+    assert effective_dilate_px(frame_h=2160) == 2
+
+    # Wide 1080p ROI (1536x216): ratio-only would require ~1327px and drop 1-2 char cues;
+    # frame-scaled threshold keeps it around ~466px regardless of ROI width.
+    fg_min_wide, fg_edge_wide = fg_pixel_thresholds(216, 1536, cfg, frame_h=1080)
+    assert 300 <= fg_min_wide <= 600
+    assert fg_edge_wide < fg_min_wide
+
+
+def test_top_border_claw_prop_suppressed_while_tight_roi_glyphs_preserved():
+    cfg = ExtractConfig(suppress_border_blobs=True)
+    h, w = 96, 640
+
+    # Synthetic #285 claw: white paw hanging from y=0 on blue sky with 3 dark claw tips ONLY at bottom
+    claw_roi = np.full((h, w, 3), (225, 175, 55), dtype=np.uint8)  # bright sky BGR
+    claw_roi[0:44, 280:330] = (242, 242, 242)
+    claw_roi[36:56, 284:296] = (18, 22, 28)
+    claw_roi[38:58, 300:312] = (18, 22, 28)
+    claw_roi[36:56, 316:328] = (18, 22, 28)
+    claw_mask = build_stroke_mask(claw_roi, cfg)
+    assert mask_fg_ratio(claw_mask) == 0.0
+
+    # Tightly cropped real glyph touching y=0 with dark outline on BOTH left & right flanks must survive
+    tight_roi = np.full((48, 240, 3), (40, 110, 190), dtype=np.uint8)
+    glyph = np.zeros((48, 240), dtype=np.uint8)
+    glyph[0:38, 60:68] = 255
+    glyph[0:38, 100:108] = 255
+    glyph[0:38, 140:148] = 255
+    border = cv2.dilate(glyph, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    tight_roi[border > 0] = (10, 10, 10)
+    tight_roi[glyph > 0] = (250, 250, 250)
+    tight_mask = build_stroke_mask(tight_roi, cfg)
+    assert np.count_nonzero(tight_mask) >= 3 * 30 * 8
+
+
+def test_temporal_stable_mask_suppresses_moving_prop_and_scores_clean_bg_higher():
+    from transapp.core.subtitle_mask import (
+        build_temporal_stable_mask,
+        score_candidate_frame,
+    )
+
+    cfg = ExtractConfig()
+    h, w = 96, 640
+    clean_bg = np.full((h, w, 3), (35, 40, 45), dtype=np.uint8)
+
+    # Busy noisy checkerboard background (high full-ROI Laplacian variance!)
+    busy_bg = clean_bg.copy()
+    yy, xx = np.indices((h, w))
+    busy_bg[((yy // 3 + xx // 3) % 2) == 0] = (180, 190, 200)
+
+    clean_frame = _draw_outlined_text(clean_bg, "STABLE LINE")
+    busy_frame = _draw_outlined_text(busy_bg, "STABLE LINE")
+
+    # Add a transient outlined prop on frame 0 only (should be removed by temporal consensus)
+    prop_frame = clean_frame.copy()
+    prop_frame[20:54, 520:560] = (10, 10, 10)
+    prop_frame[24:50, 524:556] = (248, 248, 248)
+
+    frames = [prop_frame, clean_frame, clean_frame, clean_frame, busy_frame]
+    masks = [build_stroke_mask(f, cfg) for f in frames]
+    stable = build_temporal_stable_mask(frames, masks, cfg)
+
+    # Prop on the right side (x >= 520) only appeared in 1/5 frames -> suppressed
+    assert int(np.count_nonzero(stable[:, 515:])) == 0
+    # Main subtitle text survived
+    assert int(np.count_nonzero(stable[:, :460])) > 100
+
+    # New scorer must prefer clean background over busy checkerboard (opposite of raw Laplacian!)
+    assert frame_sharpness(busy_frame) > frame_sharpness(clean_frame)
+    score_clean = score_candidate_frame(clean_frame, masks[1], stable)
+    score_busy = score_candidate_frame(busy_frame, masks[4], stable)
+    assert score_clean > score_busy

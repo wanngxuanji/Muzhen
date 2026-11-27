@@ -325,10 +325,11 @@ class MainWindow(QMainWindow):
         lbl_model = QLabel("Model OCR")
         lbl_model.setProperty("role", "fieldLabel")
         self.ocr_model_combo = QComboBox()
-        self.ocr_model_combo.addItem("PP-OCRv6 Nhanh (Small)", "fast")
-        self.ocr_model_combo.addItem("PP-OCRv6 Chuẩn xác (Medium)", "accurate")
+        self.ocr_model_combo.addItem("PP-OCRv5 Chuẩn xác (Server)", "accurate")
+        self.ocr_model_combo.addItem("PP-OCRv5 Nhanh (Mobile)", "fast")
         self.ocr_model_combo.setToolTip(
-            "Small: có sẵn offline, tốc độ cao. Medium: chính xác hơn (tự tải model lần đầu)."
+            "Server (mặc định): chuyên tiếng Trung, chính xác tối đa + bầu chọn đa frame. "
+            "Mobile: nhanh hơn, nhẹ hơn."
         )
 
         lbl_conf = QLabel("Ngưỡng nghi ngờ")
@@ -814,7 +815,7 @@ class MainWindow(QMainWindow):
     def build_config(self) -> ExtractConfig:
         """Build an ExtractConfig from the current UI controls."""
         provider = self.provider_combo.currentData() or "cpu"
-        ocr_model = self.ocr_model_combo.currentData() or "fast"
+        ocr_model = self.ocr_model_combo.currentData() or "accurate"
         return ExtractConfig(
             conf_threshold=float(self.spin_conf.value()),
             provider=str(provider),

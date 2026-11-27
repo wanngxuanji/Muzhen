@@ -379,7 +379,7 @@ def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path)
         )
     )
     progress_calls: list[tuple[str, int, int]] = []
-    pipeline.run(
+    result = pipeline.run(
         video_path,
         RoiRect(0.10, 0.74, 0.80, 0.20),
         ExtractConfig(coarse_step=1),
@@ -393,6 +393,10 @@ def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path)
     assert scan_calls[-1][1] > 0
     assert all(0 <= cur <= tot for _, cur, tot in scan_calls)
     assert [cur for _, cur, _ in scan_calls] == sorted(cur for _, cur, _ in scan_calls)
+    # Exported event timestamps must also be normalized relative to start_pts_ms (aligning with Preview).
+    assert len(result.events) == 1
+    assert 0 <= result.events[0].start_ms <= 200
+    assert result.events[0].end_ms <= 600
 
 
 def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):

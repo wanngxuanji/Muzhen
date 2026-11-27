@@ -9,6 +9,10 @@ import time
 
 import numpy as np
 
+from transapp.core.deep_extractor import (
+    detect_subtitle_spans,
+    recognize_spans_with_voting,
+)
 from transapp.core.models import (
     ExtractConfig,
     ExtractionCancelled,
@@ -18,7 +22,6 @@ from transapp.core.models import (
 )
 from transapp.core.ocr_engine import OcrEngine
 from transapp.core.postprocess import normalize_cjk_text, postprocess_segments
-from transapp.core.segmenter import segment_roi_frames
 from transapp.core.subtitle_mask import build_stroke_mask
 from transapp.core.video_reader import VideoReader
 
@@ -45,12 +48,12 @@ class ExtractionPipeline:
         if self._injected_ocr_engine is not None:
             return self._injected_ocr_engine
         requested_provider = (config.provider or "cpu").strip().lower()
-        requested_model = (config.ocr_model or "fast").strip().lower()
+        requested_model = (config.ocr_model or "accurate").strip().lower()
         with self._engine_lock:
             if (
                 self._cached_ocr_engine is None
                 or self._cached_ocr_engine.provider != requested_provider
-                or getattr(self._cached_ocr_engine, "ocr_model", "fast") != requested_model
+                or getattr(self._cached_ocr_engine, "ocr_model", "accurate") != requested_model
             ):
                 self._cached_ocr_engine = OcrEngine(
                     provider=requested_provider,
@@ -71,7 +74,7 @@ class ExtractionPipeline:
         x1, y1, x2, y2 = roi.to_pixels(width, height)
         bgr_roi = np.ascontiguousarray(full_bgr[y1:y2, x1:x2])
 
-        mask = build_stroke_mask(bgr_roi, config)
+        mask = build_stroke_mask(bgr_roi, config, frame_h=height)
         ocr = self._resolve_ocr_engine(config)
         raw_text, confidence = ocr.recognize_roi(bgr_roi)
         text = normalize_cjk_text(raw_text)
@@ -109,6 +112,7 @@ class ExtractionPipeline:
         t0 = time.perf_counter()
         _check_cancelled(cancel_check)
 
+        ocr = self._resolve_ocr_engine(config)
         source_path = Path(video_path)
         with VideoReader(source_path) as reader:
             meta = reader.metadata
@@ -125,31 +129,29 @@ class ExtractionPipeline:
                 if progress_cb is not None
                 else None
             )
-            raw_segments = segment_roi_frames(
+            detected_spans, step_ms = detect_subtitle_spans(
                 reader.iter_roi_frames(roi),
+                meta.fps,
+                start_pts_ms,
+                ocr,
                 config,
-                on_frame_progress=scan_progress,
+                scan_progress_cb=scan_progress,
                 cancel_check=cancel_check,
             )
 
         _check_cancelled(cancel_check)
 
-        # Skip OCR for segments shorter than min_duration_ms; postprocess drops them unconditionally.
-        eligible_segments = [
-            seg
-            for seg in raw_segments
-            if (seg.end_ms - seg.start_ms) >= config.min_duration_ms
-        ]
-
-        ocr = self._resolve_ocr_engine(config)
         ocr_progress = (
             (lambda current, total: progress_cb("ocr", current, total))
             if progress_cb is not None
             else None
         )
-        ocr_segments = ocr.process_segments(
-            eligible_segments,
-            progress_cb=ocr_progress,
+        ocr_segments = recognize_spans_with_voting(
+            detected_spans,
+            step_ms,
+            ocr,
+            config,
+            ocr_progress_cb=ocr_progress,
             cancel_check=cancel_check,
         )
 
