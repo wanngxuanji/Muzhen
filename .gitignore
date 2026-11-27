@@ -10,6 +10,9 @@ build/
 # SDD / Superpowers scratch
 .superpowers/
 
+# Local Windows shortcut files
+*.lnk
+
 # Large video assets & generated subtitle outputs
 assets/*.mp4
 assets/*.mkv

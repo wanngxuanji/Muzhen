@@ -977,6 +977,7 @@ def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monk
 
 def test_studio_theme_icons_and_video_meta_badge(qtbot, tmp_path: Path):
     from PySide6.QtWidgets import QApplication
+    from transapp.app import load_app_icon
     from transapp.ui.icons import ICON_NAMES, make_icon
     from transapp.ui.main_window import MainWindow
     from transapp.ui.theme import STUDIO_DARK_QSS, apply_studio_theme
@@ -986,6 +987,10 @@ def test_studio_theme_icons_and_video_meta_badge(qtbot, tmp_path: Path):
     assert len(STUDIO_DARK_QSS.strip()) > 200
     apply_studio_theme(app)
     assert "QMainWindow" in app.styleSheet()
+
+    app_icon = load_app_icon()
+    assert not app_icon.isNull()
+    assert not app_icon.pixmap(32, 32).isNull()
 
     for name in ICON_NAMES:
         icon = make_icon(name)

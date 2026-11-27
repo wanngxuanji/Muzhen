@@ -24,14 +24,14 @@ dev = [
     "pytest-qt>=4.4",
 ]
 
-[project.scripts]
+[project.gui-scripts]
 transapp = "transapp.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-transapp = ["ui/assets/*.svg"]
+transapp = ["ui/assets/*.svg", "ui/assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
