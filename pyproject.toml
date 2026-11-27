@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muzhen"
-version = "2.1.0"
+version = "2.2.0"
 description = "Windows desktop app for extracting hardcoded Chinese/CJK subtitles from video into ASS/SRT"
 readme = "README.md"
 license = "MIT"

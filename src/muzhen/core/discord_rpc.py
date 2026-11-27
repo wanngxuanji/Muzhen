@@ -188,7 +188,7 @@ def build_activity_payload(
     *,
     hide_filename: bool = True,
     show_github_button: bool = True,
-    app_version: str = "2.1.0",
+    app_version: str = "2.2.0",
 ) -> dict[str, Any]:
     """Build a Discord ``SET_ACTIVITY`` activity object from ``presence`` and privacy settings."""
     mode = presence.mode.strip().lower()
@@ -266,7 +266,7 @@ class DiscordRpcClient:
         self,
         *,
         client_id: str | None = None,
-        app_version: str = "2.1.0",
+        app_version: str = "2.2.0",
         enabled: bool = True,
         hide_filename: bool = True,
         show_github_button: bool = True,

@@ -15,7 +15,7 @@
 
 <br>
 
-![Muzhen v2.1.0 Premiere/AE Workbench](docs/screenshots/muzhen-v2-workbench.png)
+![Muzhen v2.2.0 Premiere/AE Workbench](docs/screenshots/muzhen-v2-workbench.png)
 
 </div>
 
@@ -33,7 +33,7 @@ Generic OCR scripts routinely drift on NTSC frame rates (`23.976` / `29.97 fps`)
 
 ### Option 1 — Windows Portable Release (Recommended, No Python Required)
 
-1. Download **`Muzhen-v2.1.0-win64-portable.zip`** (and optional `SHA256SUMS.txt`) from [**GitHub Releases**](https://github.com/wanngxuanji/Muzhen/releases).
+1. Download **`Muzhen-v2.2.0-win64-portable.zip`** (and optional `SHA256SUMS.txt`) from [**GitHub Releases**](https://github.com/wanngxuanji/Muzhen/releases).
 2. Extract to any writable directory (for example `D:\Tools\Muzhen\`).
 3. Double-click **`Muzhen.exe`**.
 
@@ -84,10 +84,10 @@ powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 - **Automatic DirectML GPU Acceleration:** Uses `onnxruntime-directml` on Windows GPUs with eager Stage 1 + Stage 2 session verification and seamless CPU fallback.
 
 ### Premiere Pro / After Effects Chrome-Free Workbench
-- **3-Pane Horizontal Dock (`Settings | Program Monitor | Subtitles`):** Neutral graphite palette (`#111111` / `#161616` / `#1D1D1D`), zero wasted top-bar chrome (`Muzhen - V2.1.0`), collapsible Settings panel toggled right below the monitor, Premiere-blue active-panel focus outline (`#2D8CEB`), and blue Program Monitor timecode + frame index (`0:06:55.56 / 0:24:00.60 · #10389`).
-- **Streamlined Settings & Live 3-Language UI:** Auto-detected **GPU / CPU** Render Method, branded **Precision / Turbo** OCR models, inline ROI Presets, 4 format chips (`.ass`, `.srt`, `.vtt`, `.txt`), conditional **Custom** output folder, live **English / Tiếng Việt / 中文 (简体)** switching, and built-in GitHub Release update checker.
-- **Interactive Preview & OP/ED Trim:** Click or drag-and-drop directly onto Program Monitor to open episodes, sequential `Play / Pause` (`Space`), hold-to-repeat stepping (`<` / `>`, `←` / `→`, `,` / `.`), VFR-safe single-frame step-back, and `In` / `Out` (`I` / `O`) OP/ED trim preserving original absolute episode timestamps.
-- **Pro-Subber Review Table & QA Inspector:** Video↔Table Start/End sync (`Alt+S` / `Alt+E`), snap-to-playhead (`Ctrl+[` / `Ctrl+]`), exact `frame_pts_ms` `±1f` nudge (zero NTSC rounding drift), `flag_reason` QA banner with auto-clear on edit (`Ctrl+D`), multi-row delete, Merge (`Ctrl+M`), Split (`Ctrl+K`), 50-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`), and Find & Replace (`Ctrl+F` / `Ctrl+H`).
+- **3-Pane Horizontal Dock (`Settings | Program Monitor | Subtitles`):** Neutral graphite palette (`#111111` / `#161616` / `#1D1D1D`), zero wasted top-bar chrome (`Muzhen - V2.2.0`), collapsible Settings panel toggled right below the monitor, Premiere-blue active-panel focus outline (`#2D8CEB`), and blue Program Monitor timecode + frame index (`0:06:55.56 / 0:24:00.60 · #10389`).
+- **Streamlined Settings, Live 3-Language UI & Discord RPC:** Auto-detected **GPU / CPU** Render Method, branded **Precision / Turbo** OCR models, inline ROI Presets, 4 format chips (`.ass`, `.srt`, `.vtt`, `.txt`), conditional **Custom** output folder, live **English / Tiếng Việt / 中文 (简体)** switching, built-in **Discord Rich Presence** with privacy controls (`Hide file name`, `Show GitHub button`), and GitHub Release update checker.
+- **Interactive Preview with Synchronized Audio & OP/ED Trim:** Click or drag-and-drop directly onto Program Monitor to open episodes, synchronized audio/video `Play / Pause` (`Space`) with live Mute (`M`), hold-to-repeat stepping (`<` / `>`, `←` / `→`, `,` / `.`), VFR-safe single-frame step-back, and `In` / `Out` (`I` / `O`) OP/ED trim preserving original absolute episode timestamps.
+- **Pro-Subber Review Table & QA Inspector:** Click-to-seek subtitle rows straight to Program Monitor, Video↔Table Start/End sync (`Alt+S` / `Alt+E`), snap-to-playhead (`Ctrl+[` / `Ctrl+]`), exact `frame_pts_ms` `±1f` nudge (zero NTSC rounding drift), `flag_reason` QA banner with auto-clear on edit (`Ctrl+D`), multi-row delete, Merge (`Ctrl+M`), Split (`Ctrl+K`), 50-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`), and Find & Replace (`Ctrl+F` / `Ctrl+H`).
 
 ### Multi-Format Export (`.ass`, `.srt`, `.vtt`, `.txt`)
 - **Aegisub & Premiere Parity:** Inter-frame midpoint centisecond snapping verified against libass rendering semantics so exported `.ass` cues never start 1 frame late or bleed across hard cuts, plus strict non-overlap clamping across `.ass`, `.srt`, and `.vtt`.

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-11-28
+
+### Added
+- **Discord Rich Presence (`Discord RPC`)**: Zero-dependency pure-Python local IPC client over Windows Named Pipe / Unix socket displaying live workbench activity (`Idle`, `Previewing video`, `Extracting subtitles` with progress & elapsed timer, and `Editing subtitles` with cue/flagged counts), 15-second progress throttling, and silent auto-reconnect.
+- **Discord RPC Settings & Privacy Controls**: Segmented **`On` / `Off`** toggle (enabled by default) inside **Settings**, plus conditional **`Hide file name`** (enabled by default) and **`Show GitHub button`** checkboxes persisted in `update_prefs.json` and localized across **EN / VI / ZH**.
+- **Module Entry Point (`python -m muzhen`)**: Added `src/muzhen/__main__.py` for direct module execution.
+
+### Changed
+- Updated the Settings footer GitHub Star button label to **`★ Muzhen`** (with `wanngxuanji/Muzhen` tooltip) and bumped the native window title to `Muzhen - V2.2.0`.
+
 ## [2.1.0] - 2026-11-28
 
 ### Added
