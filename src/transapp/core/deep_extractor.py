@@ -28,8 +28,8 @@ _DET_BATCH_SIZE = 8
 _RECT_SIMILARITY_TOL = 0.08
 _SIG_W = 64
 _SIG_H = 16
-_ROI_GRAY_W = 320
-_ROI_GRAY_H = 48
+_ROI_GRAY_W = 640
+_ROI_GRAY_H = 64
 _PROGRESS_INTERVAL_SEC = 0.08
 _PROGRESS_UNTHROTTLED_FRAMES = 16
 _HANZI_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -159,6 +159,24 @@ def _rects_similar(
     return abs(w1 - w2) <= max(0.06, tol * 2.0 * max_w) and abs(cx1 - cx2) <= tol * 1.25
 
 
+def _boundary_rects_compatible(
+    r1: tuple[float, float, float, float],
+    r2: tuple[float, float, float, float],
+) -> bool:
+    """Return True when two boxes spatially overlap in the same subtitle band."""
+    x_inter = max(0.0, min(r1[2], r2[2]) - max(r1[0], r2[0]))
+    if x_inter <= 0.0:
+        return False
+    y_inter = max(0.0, min(r1[3], r2[3]) - max(r1[1], r2[1]))
+    min_h = max(1e-3, min(r1[3] - r1[1], r2[3] - r2[1]))
+    y_overlap = min(1.0, y_inter / min_h)
+    if y_overlap < 0.45:
+        return False
+    w1 = max(1e-3, r1[2] - r1[0])
+    w2 = max(1e-3, r2[2] - r2[0])
+    return 0.45 <= (w1 / w2) <= 2.2
+
+
 def _extract_patch_features(
     gray_img: np.ndarray,
     rect: tuple[float, float, float, float],
@@ -240,18 +258,23 @@ def _compute_tight_signature(
     else:
         full_gray = bgr_roi if bgr_roi.ndim == 2 else bgr_roi[:, :, 0]
 
-    roi_gray = (
-        cv2.resize(full_gray, (_ROI_GRAY_W, _ROI_GRAY_H), interpolation=cv2.INTER_AREA)
-        if full_gray.shape[:2] != (_ROI_GRAY_H, _ROI_GRAY_W)
-        else full_gray.copy()
-    )
-    edge_mask, luma = _extract_patch_features(full_gray, union_rect, pad_px=2)
+    if full_gray.shape[:2] == (_ROI_GRAY_H, _ROI_GRAY_W):
+        roi_gray = full_gray.copy()
+    else:
+        interp = (
+            cv2.INTER_LINEAR
+            if full_gray.shape[1] < _ROI_GRAY_W or full_gray.shape[0] < _ROI_GRAY_H
+            else cv2.INTER_AREA
+        )
+        roi_gray = cv2.resize(full_gray, (_ROI_GRAY_W, _ROI_GRAY_H), interpolation=interp)
 
+    # _compare_tight_visual extracts shared-rect features directly from roi_gray when both
+    # signatures retain roi_gray, so skip redundant full-res patch extraction here.
     return TightSignature(
         boxes=list(boxes),
         union_rect=union_rect,
-        edge_mask=edge_mask,
-        luma_patch=luma,
+        edge_mask=np.zeros((_SIG_H, _SIG_W), dtype=np.uint8),
+        luma_patch=np.zeros((_SIG_H, _SIG_W), dtype=np.float32),
         roi_gray=roi_gray,
     )
 
@@ -279,10 +302,18 @@ def _compare_tight_visual(
         ea = ea_u8 > 0
         eb = eb_u8 > 0
     else:
-        ea = sig_a.edge_mask > 0
-        eb = sig_b.edge_mask > 0
-        la = sig_a.luma_patch
-        lb = sig_b.luma_patch
+        if sig_a.roi_gray is not None:
+            ea_u8, la = _extract_patch_features(sig_a.roi_gray, sig_a.union_rect, pad_px=1)
+            ea = ea_u8 > 0
+        else:
+            ea = sig_a.edge_mask > 0
+            la = sig_a.luma_patch
+        if sig_b.roi_gray is not None:
+            eb_u8, lb = _extract_patch_features(sig_b.roi_gray, sig_b.union_rect, pad_px=1)
+            eb = eb_u8 > 0
+        else:
+            eb = sig_b.edge_mask > 0
+            lb = sig_b.luma_patch
 
     a_flat = (not bool(ea.any())) and float(np.linalg.norm(la)) <= 1e-3
     b_flat = (not bool(eb.any())) and float(np.linalg.norm(lb)) <= 1e-3
@@ -756,9 +787,13 @@ def detect_subtitle_spans(
                                 break
                             m_rel_ms, m_bgr = frame_buf[i]
                             m_sig = _compute_tight_signature(m_bgr, m_boxes)
-                            if _tight_signatures_same_cue(m_sig, onset_sig):
+                            same_visual = _tight_signatures_same_cue(m_sig, onset_sig)
+                            if same_visual or _boundary_rects_compatible(
+                                m_sig.union_rect, onset_sig.union_rect
+                            ):
                                 start_idx = i
-                                onset_sig = m_sig
+                                if same_visual:
+                                    onset_sig = m_sig
                                 onset_frames_rev.append((i, m_rel_ms, m_bgr))
                             else:
                                 break
@@ -785,12 +820,20 @@ def detect_subtitle_spans(
                                 break
                             m_rel_ms, m_bgr = frame_buf[i]
                             m_sig = _compute_tight_signature(m_bgr, m_boxes)
-                            if active.last_sig is None or _tight_signatures_same_cue(
-                                active.last_sig, m_sig
+                            same_visual = (
+                                active.last_sig is None
+                                or _tight_signatures_same_cue(active.last_sig, m_sig)
+                            )
+                            if same_visual or (
+                                active.last_sig is not None
+                                and _boundary_rects_compatible(
+                                    active.last_sig.union_rect, m_sig.union_rect
+                                )
                             ):
                                 active.end_idx = i
                                 active.end_ms = m_rel_ms
-                                active.last_sig = m_sig
+                                if same_visual:
+                                    active.last_sig = m_sig
                                 active.add_sample(i, m_rel_ms, m_bgr)
                             else:
                                 break

@@ -901,3 +901,152 @@ def test_adjacent_one_frame_spans_are_kept_while_isolated_40ms_flash_is_dropped(
     for sp in spans:
         covered.update(range(sp.start_idx, sp.end_idx + 1))
     assert covered == set(range(20, 28))
+
+
+def test_compute_tight_signature_skips_unused_fullres_patch_and_uses_640x64_roi_gray(monkeypatch):
+    """_compute_tight_signature must skip redundant full-res _extract_patch_features, build a
+    640x64 roi_gray with appropriate interpolation, and preserve 1080p 2-char discrimination."""
+    import transapp.core.deep_extractor as de
+
+    h, w = 108, 1536
+    short_box = (0.45, 0.20, 0.55, 0.82)
+
+    def _draw_1080p_two_char_roi(variant: int, bg_shift: int) -> np.ndarray:
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        for x in range(0, w, 32):
+            c = 180 if ((x + bg_shift) // 32) % 2 == 0 else 42
+            cv2.rectangle(img, (x, 0), (min(w, x + 16), h), (c, 95, 210 - c // 2), -1)
+        x0 = int(short_box[0] * w) + 12
+        y0 = int(short_box[1] * h) + 8
+        for idx in range(2):
+            cx = x0 + idx * 64
+            for thick, color in ((7, (0, 0, 0)), (3, (255, 255, 255))):
+                if variant == 0:
+                    if idx == 0:
+                        cv2.line(img, (cx + 4, y0 + 6), (cx + 48, y0 + 6), color, thick)
+                        cv2.line(img, (cx + 26, y0 + 6), (cx + 26, y0 + 48), color, thick)
+                        cv2.line(img, (cx + 26, y0 + 18), (cx + 6, y0 + 42), color, thick)
+                        cv2.line(img, (cx + 26, y0 + 18), (cx + 46, y0 + 42), color, thick)
+                    else:
+                        cv2.rectangle(img, (cx + 12, y0 + 10), (cx + 48, y0 + 38), color, thick)
+                        cv2.line(img, (cx + 4, y0 + 46), (cx + 50, y0 + 46), color, thick)
+                else:
+                    if idx == 0:
+                        cv2.circle(img, (cx + 26, y0 + 28), 18, color, thick)
+                    else:
+                        cv2.line(img, (cx + 6, y0 + 48), (cx + 26, y0 + 6), color, thick)
+                        cv2.line(img, (cx + 26, y0 + 6), (cx + 48, y0 + 48), color, thick)
+        return img
+
+    roi_a1 = _draw_1080p_two_char_roi(variant=0, bg_shift=0)
+    roi_a2 = _draw_1080p_two_char_roi(variant=0, bg_shift=19)
+    roi_b = _draw_1080p_two_char_roi(variant=1, bg_shift=0)
+
+    extract_calls = {"count": 0}
+    orig_extract = de._extract_patch_features
+
+    def _spy_extract(*args, **kwargs):
+        extract_calls["count"] += 1
+        return orig_extract(*args, **kwargs)
+
+    resize_interps: list[int] = []
+    orig_resize = de.cv2.resize
+
+    def _spy_resize(src, dsize, *args, **kwargs):
+        if "interpolation" in kwargs:
+            resize_interps.append(int(kwargs["interpolation"]))
+        elif len(args) >= 3:
+            resize_interps.append(int(args[2]))
+        return orig_resize(src, dsize, *args, **kwargs)
+
+    monkeypatch.setattr(de, "_extract_patch_features", _spy_extract)
+    monkeypatch.setattr(de.cv2, "resize", _spy_resize)
+
+    sig_a = _compute_tight_signature(roi_a1, [short_box])
+    assert extract_calls["count"] == 0
+    assert sig_a.roi_gray is not None
+    assert sig_a.roi_gray.shape == (64, 640)
+    assert resize_interps[-1] == cv2.INTER_AREA
+
+    # Small ROI upscaling must use INTER_LINEAR instead of INTER_AREA
+    small_roi = _solid_roi(7, h=40, w=320)
+    sig_small = _compute_tight_signature(small_roi, [short_box])
+    assert extract_calls["count"] == 0
+    assert sig_small.roi_gray is not None
+    assert sig_small.roi_gray.shape == (64, 640)
+    assert resize_interps[-1] == cv2.INTER_LINEAR
+
+    # Jittered 1080p 2-char cue still matches; distinct 2-char cue still splits
+    jittered_box = (
+        short_box[0] + 0.015,
+        short_box[1] - 0.05,
+        short_box[2] + 0.015,
+        short_box[3] - 0.05,
+    )
+    sig_a_jit = _compute_tight_signature(roi_a2, [jittered_box])
+    sig_b = _compute_tight_signature(roi_b, [short_box])
+    assert _tight_signatures_same_cue(sig_a, sig_a_jit) is True
+    assert _tight_signatures_same_cue(sig_a, sig_b) is False
+
+
+def test_onset_and_offset_refinement_retains_faded_boundary_frames_with_overlapping_box():
+    """Faded onset/offset frames with overlapping subtitle box must be retained during
+    EMPTY <-> TEXT refinement, while detached side false-positive boxes still stop refinement."""
+    faded_box = (0.21, 0.25, 0.79, 0.77)
+    detached_box = (0.02, 0.24, 0.14, 0.76)
+
+    def _make_faded_roi(frame_idx: int) -> np.ndarray:
+        # Very low-contrast faded frame (fails strict stroke IoU/NCC against crisp text)
+        img = np.full((76, 480, 3), (78, 82, 86), dtype=np.uint8)
+        cv2.line(img, (110, 38), (370, 38), (94, 98, 102), 2)
+        img[0, 0] = (frame_idx & 0xFF, (frame_idx >> 8) & 0xFF, 0)
+        return img
+
+    def _make_side_fp_roi(frame_idx: int) -> np.ndarray:
+        img = np.full((76, 480, 3), (30, 30, 30), dtype=np.uint8)
+        cv2.rectangle(img, (12, 20), (62, 54), (245, 245, 245), 2)
+        img[0, 0] = (frame_idx & 0xFF, (frame_idx >> 8) & 0xFF, 0)
+        return img
+
+    # Sanity-check that the faded boundary frame genuinely fails strict visual matching
+    crisp_ref = _make_patterned_roi(5, 0, moving_bg=False)
+    faded_sample = _make_faded_roi(4)
+    assert (
+        _tight_signatures_same_cue(
+            _compute_tight_signature(faded_sample, [faded_box]),
+            _compute_tight_signature(crisp_ref, [_FIXED_BOX]),
+        )
+        is False
+    )
+
+    # 25fps, coarse_step=3 -> coarse indices: 0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36
+    # Cue 1: faded onset at 4, crisp [5..18], faded offset at 19, detached side FP at 20
+    # Cue 2: detached side FP at 25, faded onset at 26, crisp [27..33]
+    frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    frames: list[FrameSlice] = []
+    for i in range(37):
+        if i in (4, 19, 26):
+            frame_boxes[i] = [faded_box]
+            roi = _make_faded_roi(i)
+        elif i in (20, 25):
+            frame_boxes[i] = [detached_box]
+            roi = _make_side_fp_roi(i)
+        elif 5 <= i <= 18:
+            frame_boxes[i] = [_FIXED_BOX]
+            roi = _make_patterned_roi(i, 0, moving_bg=False)
+        elif 27 <= i <= 33:
+            frame_boxes[i] = [_FIXED_BOX]
+            roi = _make_patterned_roi(i, 1, moving_bg=False)
+        else:
+            roi = _make_patterned_roi(i, None, moving_bg=False)
+        frames.append(FrameSlice(i, i * 40, roi))
+
+    eng = _BoxLookupEngine(frame_boxes)
+    cfg = ExtractConfig(coarse_step=3, min_duration_ms=120)
+    spans, _ = detect_subtitle_spans(frames, fps=25.0, start_pts_ms=0, ocr_engine=eng, config=cfg)
+
+    assert len(spans) == 2
+    assert spans[0].start_idx == 4
+    assert spans[0].end_idx == 19
+    assert spans[1].start_idx == 26
+    assert spans[1].end_idx == 33
