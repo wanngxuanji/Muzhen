@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
-_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-_CHEVRON_DOWN_URL = (_ASSETS_DIR / "chevron_down.svg").as_posix()
-_CHEVRON_UP_URL = (_ASSETS_DIR / "chevron_up.svg").as_posix()
-_CHECK_URL = (_ASSETS_DIR / "check.svg").as_posix()
+from transapp.core import paths as runtime_paths
 
 PALETTE_TOKENS: dict[str, str] = {
     "bg_root": "#0E1014",
@@ -35,7 +30,7 @@ PALETTE_TOKENS: dict[str, str] = {
 
 MONO_FONT_FAMILY = "Cascadia Mono, Consolas, Courier New, monospace"
 
-STUDIO_DARK_QSS = """
+_STUDIO_DARK_QSS_TEMPLATE = """
 /* === Base Canvas & Typography === */
 QMainWindow, QDialog {
     background-color: #0E1014;
@@ -694,9 +689,21 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
     background: none;
     width: 0px;
 }
-""".replace("__CHEVRON_DOWN__", _CHEVRON_DOWN_URL).replace(
-    "__CHEVRON_UP__", _CHEVRON_UP_URL
-).replace("__CHECK__", _CHECK_URL)
+"""
+
+
+def build_studio_dark_qss() -> str:
+    assets_dir = runtime_paths.get_ui_assets_dir()
+    return (
+        _STUDIO_DARK_QSS_TEMPLATE.replace(
+            "__CHEVRON_DOWN__", (assets_dir / "chevron_down.svg").as_posix()
+        )
+        .replace("__CHEVRON_UP__", (assets_dir / "chevron_up.svg").as_posix())
+        .replace("__CHECK__", (assets_dir / "check.svg").as_posix())
+    )
+
+
+STUDIO_DARK_QSS = build_studio_dark_qss()
 
 
 def build_studio_palette() -> QPalette:
@@ -739,4 +746,4 @@ def apply_studio_theme(app: QApplication) -> None:
     font = QFont("Segoe UI")
     font.setPointSizeF(9.5)
     app.setFont(font)
-    app.setStyleSheet(STUDIO_DARK_QSS)
+    app.setStyleSheet(build_studio_dark_qss())

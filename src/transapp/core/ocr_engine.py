@@ -12,6 +12,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from transapp.core import paths as runtime_paths
 from transapp.core.models import ExtractionCancelled, OcrSegment, RawSegment
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,13 @@ def _build_rapidocr_params(ocr_model: str, *, use_dml: bool) -> dict[str, Any]:
     }
     if use_dml:
         params["EngineConfig.onnxruntime.use_dml"] = True
+    models_dir = runtime_paths.get_models_dir()
+    if models_dir is not None:
+        models_dir_str = str(models_dir)
+        params["Global.model_root_dir"] = models_dir_str
+        params["Det.model_root_dir"] = models_dir_str
+        if params.get("Global.use_rec"):
+            params["Rec.model_root_dir"] = models_dir_str
     return params
 
 
@@ -220,6 +228,13 @@ def _build_det_mobile_params(*, use_dml: bool) -> dict[str, Any]:
     }
     if use_dml:
         params["EngineConfig.onnxruntime.use_dml"] = True
+    models_dir = runtime_paths.get_models_dir()
+    if models_dir is not None:
+        models_dir_str = str(models_dir)
+        params["Global.model_root_dir"] = models_dir_str
+        params["Det.model_root_dir"] = models_dir_str
+        if params.get("Global.use_rec"):
+            params["Rec.model_root_dir"] = models_dir_str
     return params
 
 

@@ -1,5 +1,3 @@
-"""Application entry point for launching the TransApp desktop GUI."""
-
 from __future__ import annotations
 
 import ctypes
@@ -12,10 +10,9 @@ import traceback
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from transapp.core import paths as runtime_paths
 from transapp.ui.main_window import MainWindow
 from transapp.ui.theme import apply_studio_theme
-
-_APP_ICON_PATH = Path(__file__).resolve().parent / "ui" / "assets" / "transapp.ico"
 
 
 def _crash_log_path() -> Path:
@@ -47,22 +44,26 @@ def _set_windows_app_id() -> None:
 
 
 def load_app_icon() -> QIcon:
-    """Load the bundled multi-resolution TransApp window/taskbar icon."""
-    if _APP_ICON_PATH.is_file():
-        return QIcon(str(_APP_ICON_PATH))
+    icon_path = runtime_paths.get_ui_assets_dir() / "transapp.ico"
+    if icon_path.is_file():
+        return QIcon(str(icon_path))
     return QIcon()
 
 
-def main() -> int:
-    """Create or reuse QApplication, apply Studio Dark theme, open MainWindow, and run."""
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    smoke_test = "--smoke-test" in args
     app: QApplication | None = None
     try:
+        if smoke_test:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         _set_windows_app_id()
         existing = QApplication.instance()
         if isinstance(existing, QApplication):
             app = existing
         else:
-            app = QApplication(sys.argv)
+            qt_argv = [sys.argv[0], *args] if argv is not None else sys.argv
+            app = QApplication(qt_argv)
         app.setApplicationName("TransApp")
         app.setOrganizationName("TransApp")
         apply_studio_theme(app)
@@ -70,6 +71,19 @@ def main() -> int:
         icon = load_app_icon()
         if not icon.isNull():
             app.setWindowIcon(icon)
+
+        if smoke_test:
+            assets_dir = runtime_paths.get_ui_assets_dir()
+            if not assets_dir.is_dir():
+                raise RuntimeError(f"UI assets directory not found: {assets_dir}")
+            runtime_paths.get_models_dir()
+            window = MainWindow()
+            if not icon.isNull():
+                window.setWindowIcon(icon)
+            if not app.styleSheet().strip():
+                raise RuntimeError("Application stylesheet is empty")
+            window.close()
+            return 0
 
         window = MainWindow()
         if not icon.isNull():
@@ -79,6 +93,9 @@ def main() -> int:
     except Exception as exc:
         tb_text = traceback.format_exc()
         log_path = _write_startup_crash_log(tb_text)
+        if smoke_test:
+            sys.stderr.write(tb_text)
+            return 1
         try:
             if app is None:
                 existing = QApplication.instance()
