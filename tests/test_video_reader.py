@@ -403,6 +403,14 @@ def test_video_reader_signed_origin_pts_negative_edit_list_and_missing_stream_st
         assert p0 == -83
         assert p1 == -83 + 40
 
+        # Negative edit-list targets must seek cleanly without clamping to 0.
+        idx_neg0, pts_neg0, _ = reader.read_frame_at_ms(-83)
+        idx_neg1, pts_neg1, _ = reader.read_frame_at_ms(-43)
+        assert idx_neg0 == 0
+        assert pts_neg0 == -83
+        assert idx_neg1 == 1
+        assert pts_neg1 == -43
+
     # Case B: stream.start_time is None while first decoded frame is at 12000ms.
     shifted_frames = [_FakeFrame(pts=12000 + i * 40, dts=12000 + i * 40, tb=tb_ms) for i in range(101)]
     shifted_stream = _FakeStream(start_time=None, time_base=tb_ms, rate=Fraction(25, 1))
@@ -587,3 +595,133 @@ def test_video_reader_iter_roi_frames_trim_window_preserves_absolute_rel_ms(tmp_
 
         # Inverted window yields empty.
         assert list(reader.iter_roi_frames(roi, start_ms=900, end_ms=400)) == []
+
+
+def test_video_reader_missing_pts_after_seek_ntsc_zero_drift_and_demux_origin(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: post-seek missing PTS uses rational anchor (0ms NTSC drift), pre-roll real PTS
+    does not clamp against synthetic guess, and demux duration does not inflate when origin is unknown."""
+    dummy_file = tmp_path / "synthetic_seek_pts.mp4"
+    _make_synthetic_vfr_mp4(dummy_file, width=320, height=180, pts_ms_list=(0, 40))
+
+    class _FakeFrame:
+        def __init__(self, pts, dts, tb, width=320, height=180):
+            self.pts = pts
+            self.dts = dts
+            self.time_base = tb
+            self.width = width
+            self.height = height
+
+        def to_ndarray(self, format="bgr24"):
+            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+    class _FakePacket:
+        def __init__(self, pts, duration, tb):
+            self.pts = pts
+            self.dts = pts
+            self.duration = duration
+            self.time_base = tb
+
+    class _FakeStream:
+        def __init__(self, *, start_time, time_base, rate, duration=10_000):
+            self.start_time = start_time
+            self.time_base = time_base
+            self.average_rate = rate
+            self.guessed_rate = rate
+            self.base_rate = rate
+            self.duration = duration
+            self.frames = 0
+            self.width = 320
+            self.height = 180
+            self.thread_type = "AUTO"
+
+            class _Codec:
+                width = 320
+                height = 180
+
+            self.codec_context = _Codec()
+
+    class _FakeContainer:
+        def __init__(self, stream, init_frames, seek_frames=None, packets=None, duration=10_000_000):
+            self._init_frames = init_frames
+            self._seek_frames = seek_frames if seek_frames is not None else init_frames
+            self._packets = packets or []
+            self.duration = duration
+            self._after_seek = False
+
+            class _Streams:
+                def __init__(self, vs):
+                    self.video = [vs]
+
+            self.streams = _Streams(stream)
+
+        def seek(self, offset, *args, **kwargs):
+            self._after_seek = offset > 0
+
+        def decode(self, _stream):
+            yield from (self._seek_frames if self._after_seek else self._init_frames)
+
+        def demux(self, _stream):
+            yield from self._packets
+
+        def close(self):
+            pass
+
+    roi = RoiRect(0.1, 0.8, 0.8, 0.15)
+    ntsc_rate = Fraction(24000, 1001)
+    tb_ms = Fraction(1, 1000)
+
+    # Subtest A: Post-seek consecutive missing-PTS frames on 24000/1001 keep 0ms drift and anchor at target_raw_ms.
+    init_ntsc = [_FakeFrame(pts=0, dts=0, tb=tb_ms)]
+    missing_ntsc = [_FakeFrame(pts=None, dts=9999 - i, tb=tb_ms) for i in range(101)]
+    stream_ntsc = _FakeStream(start_time=0, time_base=tb_ms, rate=ntsc_rate)
+    cont_ntsc = _FakeContainer(stream_ntsc, init_ntsc, seek_frames=missing_ntsc)
+
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont_ntsc)
+    with VideoReader(dummy_file) as reader:
+        slices = list(reader.iter_roi_frames(roi, start_ms=1000, end_ms=6000))
+        assert len(slices) == 101
+        assert slices[0].pts_ms == 1000
+        assert slices[0].rel_ms == 1000
+        expected_100 = 1000 + int(round(Fraction(100 * 1000) / ntsc_rate))
+        assert expected_100 == 5171
+        assert slices[100].pts_ms == expected_100
+        assert slices[100].rel_ms == expected_100
+
+        # _decode_near_ms (via read_frame_at_ms) also anchors post-seek missing PTS at seek_ms (not origin 0).
+        _idx, got_pts, _bgr = reader.read_frame_at_ms(1200)
+        assert got_pts == 1200
+
+    # Subtest B: Real pre-roll frame.pts < target_raw_ms arriving after a missing-PTS frame must NOT clamp forward.
+    init_preroll = [_FakeFrame(pts=500, dts=500, tb=tb_ms)]
+    seek_preroll = [
+        _FakeFrame(pts=None, dts=800, tb=tb_ms),  # synthesized as target_raw_ms=900 (guess)
+        _FakeFrame(pts=820, dts=820, tb=tb_ms),   # real pre-roll < 900 -> rel_ms=320, must be skipped
+        _FakeFrame(pts=None, dts=860, tb=tb_ms),  # synthesized from 820 -> 860 (rel_ms=360), skipped
+        _FakeFrame(pts=900, dts=900, tb=tb_ms),   # rel_ms=400 -> yielded
+        _FakeFrame(pts=940, dts=940, tb=tb_ms),   # rel_ms=440 -> yielded
+    ]
+    stream_preroll = _FakeStream(start_time=500, time_base=tb_ms, rate=Fraction(25, 1))
+    cont_preroll = _FakeContainer(stream_preroll, init_preroll, seek_frames=seek_preroll)
+
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont_preroll)
+    with VideoReader(dummy_file) as reader:
+        slices = list(reader.iter_roi_frames(roi, start_ms=400, end_ms=600))
+        # Frame 0 (unanchored guess=900) + frames 3 & 4 (real 900 & 940); pre-roll 820 & 860 skipped.
+        assert [sl.rel_ms for sl in slices] == [400, 400, 440]
+        assert [sl.pts_ms for sl in slices] == [900, 900, 940]
+
+    # Subtest C: Demux duration probe with unknown origin (frame 0 pts=None, stream.start_time=None)
+    # must anchor at min_pts_ms (12000), NOT inflate duration to 13000 via fallback 0.
+    init_unknown = [_FakeFrame(pts=None, dts=None, tb=tb_ms)]
+    packets_shifted = [_FakePacket(pts=12000 + i * 40, duration=40, tb=tb_ms) for i in range(25)]
+    stream_unknown = _FakeStream(start_time=None, time_base=tb_ms, rate=Fraction(25, 1), duration=None)
+    cont_unknown = _FakeContainer(
+        stream_unknown, init_unknown, packets=packets_shifted, duration=None
+    )
+
+    monkeypatch.setattr(av, "open", lambda *_a, **_kw: cont_unknown)
+    with VideoReader(dummy_file) as reader:
+        assert reader.metadata.start_pts_ms == 0
+        assert reader.metadata.duration_ms == 1000
