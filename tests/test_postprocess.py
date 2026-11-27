@@ -317,3 +317,43 @@ def test_postprocess_preserves_fuller_winner_confidence_without_masking_flag():
     assert events[0].flagged is True
     assert "0.81" in events[0].flag_reason
 
+
+def test_postprocess_non_overlap_runs_after_ghost_filter_and_guards_zero_duration_cues():
+    # 1) Overlapping ghost must NOT truncate or drop a valid preceding cue
+    cfg = ExtractConfig(min_duration_ms=120, conf_threshold=0.85, filter_non_cjk_low_conf=True)
+    ghost_overlap = [
+        OcrSegment(1000, 2000, "这是一句真实台词", 0.98, b"real"),
+        OcrSegment(1050, 1250, "生", 0.50, b"ghost"),
+    ]
+    events = postprocess_segments(ghost_overlap, cfg)
+    assert [(e.start_ms, e.end_ms, e.text) for e in events] == [
+        (1000, 2000, "这是一句真实台词"),
+    ]
+
+    # 2) Same-start_ms overlapping distinct cues (even with min_duration_ms=0) yield zero overlaps and zero 0ms cues
+    cfg_zero = ExtractConfig(min_duration_ms=0, conf_threshold=0.85, filter_non_cjk_low_conf=True)
+    same_start = [
+        OcrSegment(1000, 1500, "第一句", 0.95, b"a"),
+        OcrSegment(1000, 2000, "第二句", 0.95, b"b"),
+    ]
+    same_start_events = postprocess_segments(same_start, cfg_zero)
+    assert [(e.start_ms, e.end_ms, e.text) for e in same_start_events] == [
+        (1000, 2000, "第二句"),
+    ]
+    assert all(e.end_ms > e.start_ms for e in same_start_events)
+    assert all(
+        same_start_events[i].end_ms <= same_start_events[i + 1].start_ms
+        for i in range(len(same_start_events) - 1)
+    )
+
+    # 3) duration_ms=0 does not discard valid cues; 0ms cue is dropped even when min_duration_ms=0
+    zero_dur_segs = [
+        OcrSegment(1000, 1000, "好", 0.95, b"zero"),
+        OcrSegment(1200, 1800, "你好世界", 0.95, b"valid"),
+    ]
+    zero_dur_events = postprocess_segments(zero_dur_segs, cfg_zero, duration_ms=0)
+    assert [(e.index, e.start_ms, e.end_ms, e.text) for e in zero_dur_events] == [
+        (1, 1200, 1800, "你好世界"),
+    ]
+
+

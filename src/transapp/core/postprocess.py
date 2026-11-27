@@ -301,18 +301,30 @@ def postprocess_segments(
                 clamped.append(cue)
         merged = clamped
 
-    for i in range(len(merged) - 1):
-        prev_cue = merged[i]
-        next_cue = merged[i + 1]
-        if prev_cue.end_ms > next_cue.start_ms:
-            prev_cue.end_ms = max(prev_cue.start_ms + 1, next_cue.start_ms)
-
-    # Filter out cues that remain shorter than min_duration_ms AFTER merging so valid
+    # Filter out zero-duration cues and cues shorter than min_duration_ms AFTER merging so valid
     # leading/trailing fragments attached to a real cue are not discarded prematurely.
-    merged = [cue for cue in merged if (cue.end_ms - cue.start_ms) >= config.min_duration_ms]
+    merged = [
+        cue
+        for cue in merged
+        if cue.end_ms > cue.start_ms and (cue.end_ms - cue.start_ms) >= config.min_duration_ms
+    ]
 
     if config.filter_non_cjk_low_conf:
         merged = [cue for cue in merged if not _is_ghost_cue(cue, config)]
+
+    # Clamp overlaps AFTER duration and ghost filtering so discarded ghosts cannot truncate valid cues.
+    non_overlapping: list[_MergedCue] = []
+    for cue in merged:
+        while non_overlapping and non_overlapping[-1].end_ms > cue.start_ms:
+            prev_cue = non_overlapping[-1]
+            prev_cue.end_ms = cue.start_ms
+            if prev_cue.end_ms <= prev_cue.start_ms:
+                non_overlapping.pop()
+            else:
+                break
+        if cue.end_ms > cue.start_ms:
+            non_overlapping.append(cue)
+    merged = non_overlapping
 
     events: list[SubtitleEvent] = []
     for idx, cue in enumerate(merged, start=1):
