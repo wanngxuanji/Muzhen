@@ -10,7 +10,8 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from transapp.core.models import RoiRect
+from muzhen.core import paths as runtime_paths
+from muzhen.core.models import RoiRect
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,7 @@ class RoiPreset:
 
 
 def _default_config_dir() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return Path(local_app_data) / "TransApp"
-    return Path.home() / ".transapp"
+    return runtime_paths.get_app_data_dir(create=False)
 
 
 class PresetStore:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from transapp.core.models import (
+from muzhen.core.models import (
     ExtractConfig,
     ExtractResult,
     FrameTestResult,
@@ -11,7 +11,7 @@ from transapp.core.models import (
     RoiRect,
     SubtitleEvent,
 )
-from transapp.core.presets import PresetStore, RoiPreset
+from muzhen.core.presets import PresetStore, RoiPreset
 
 
 def test_roi_rect_clamps_and_converts_across_resolutions():
@@ -113,18 +113,19 @@ def test_preset_store_utf8_update_and_missing_cases(tmp_path: Path, monkeypatch)
     assert store.load("国漫底部") == updated
     assert store.list_names() == ["国漫底部"]
 
+    monkeypatch.delenv("MUZHEN_DATA_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppDataLocal"))
     default_store = PresetStore()
-    assert default_store.config_dir == tmp_path / "AppDataLocal" / "TransApp"
+    assert default_store.config_dir == tmp_path / "AppDataLocal" / "Muzhen"
 
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     fallback_store = PresetStore()
-    assert fallback_store.config_dir == Path.home() / ".transapp"
+    assert fallback_store.config_dir == Path.home() / ".muzhen"
 
 
 def test_preset_store_corrupt_json_malformed_entries_and_atomic_write(tmp_path: Path, monkeypatch):
     import os
-    import transapp.core.presets as presets_mod
+    import muzhen.core.presets as presets_mod
 
     store = PresetStore(config_dir=tmp_path)
 

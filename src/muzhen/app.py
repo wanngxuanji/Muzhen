@@ -10,16 +10,13 @@ import traceback
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from transapp.core import paths as runtime_paths
-from transapp.ui.main_window import MainWindow
-from transapp.ui.theme import apply_studio_theme
+from muzhen.core import paths as runtime_paths
+from muzhen.ui.main_window import MainWindow
+from muzhen.ui.theme import apply_studio_theme
 
 
 def _crash_log_path() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return Path(local_app_data) / "TransApp" / "crash.log"
-    return Path.home() / ".transapp" / "crash.log"
+    return runtime_paths.get_app_data_dir() / "crash.log"
 
 
 def _write_startup_crash_log(tb_text: str) -> Path | None:
@@ -28,7 +25,7 @@ def _write_startup_crash_log(tb_text: str) -> Path | None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"=== TransApp startup crash ({timestamp}) ===\n{tb_text}\n")
+            fh.write(f"=== Muzhen startup crash ({timestamp}) ===\n{tb_text}\n")
         return log_path
     except Exception:
         return None
@@ -38,13 +35,13 @@ def _set_windows_app_id() -> None:
     if sys.platform != "win32":
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TransApp.Desktop.1")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Muzhen.Desktop.App")
     except Exception:
         pass
 
 
 def load_app_icon() -> QIcon:
-    icon_path = runtime_paths.get_ui_assets_dir() / "transapp.ico"
+    icon_path = runtime_paths.get_ui_assets_dir() / "muzhen.ico"
     if icon_path.is_file():
         return QIcon(str(icon_path))
     return QIcon()
@@ -64,8 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             qt_argv = [sys.argv[0], *args] if argv is not None else sys.argv
             app = QApplication(qt_argv)
-        app.setApplicationName("TransApp")
-        app.setOrganizationName("TransApp")
+        app.setApplicationName("Muzhen")
+        app.setOrganizationName("Muzhen")
         apply_studio_theme(app)
 
         icon = load_app_icon()
@@ -103,8 +100,8 @@ def main(argv: list[str] | None = None) -> int:
             log_note = f"\n\nChi tiết lỗi đã lưu tại:\n{log_path}" if log_path is not None else ""
             QMessageBox.critical(
                 None,
-                "TransApp - Lỗi khởi động",
-                f"Không thể khởi động TransApp:\n{exc}{log_note}",
+                "Muzhen - Lỗi khởi động",
+                f"Không thể khởi động Muzhen:\n{exc}{log_note}",
             )
         except Exception:
             pass

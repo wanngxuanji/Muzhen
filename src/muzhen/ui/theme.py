@@ -1,11 +1,11 @@
-"""Adobe Premiere Pro / After Effects neutral graphite dark theme for TransApp."""
+"""Adobe Premiere Pro / After Effects neutral graphite dark theme for Muzhen."""
 
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
-from transapp.core import paths as runtime_paths
+from muzhen.core import paths as runtime_paths
 
 PALETTE_TOKENS: dict[str, str] = {
     "bg_gutter": "#111111",
@@ -778,7 +778,7 @@ STUDIO_DARK_QSS = build_studio_dark_qss()
 
 
 def build_studio_palette() -> QPalette:
-    """Create a neutral graphite QPalette matching TransApp's Premiere/AE tokens."""
+    """Create a neutral graphite QPalette matching Muzhen's Premiere/AE tokens."""
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#161616"))
     palette.setColor(QPalette.ColorRole.WindowText, QColor("#E6E6E6"))

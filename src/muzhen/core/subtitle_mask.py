@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from transapp.core.models import ExtractConfig
+from muzhen.core.models import ExtractConfig
 
 _MIN_OUTLINE_RATIO = 0.12
 _GIANT_BLOB_HEIGHT_RATIO = 0.85

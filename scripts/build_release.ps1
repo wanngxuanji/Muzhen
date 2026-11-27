@@ -37,15 +37,15 @@ try {
         $pyinstallerExe = $cmd.Source
     }
 
-    $specPath = Join-Path $repoRoot "build\transapp.spec"
+    $specPath = Join-Path $repoRoot "build\muzhen.spec"
     if (-not (Test-Path -LiteralPath $specPath)) {
         throw "PyInstaller spec file not found at $specPath"
     }
 
     $workPath = Join-Path $repoRoot "build\pyinstaller"
     $distRoot = Join-Path $repoRoot "dist"
-    $distDir = Join-Path $distRoot "TransApp"
-    $exePath = Join-Path $distDir "TransApp.exe"
+    $distDir = Join-Path $distRoot "Muzhen"
+    $exePath = Join-Path $distDir "Muzhen.exe"
 
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -111,7 +111,7 @@ try {
             $smokeProc = Start-Process -FilePath $exePath -ArgumentList "--smoke-test" -WorkingDirectory $distDir -Wait -PassThru
             if ($smokeProc.ExitCode -ne 0) {
                 if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-                    $crashLogPath = Join-Path $env:LOCALAPPDATA "TransApp\crash.log"
+                    $crashLogPath = Join-Path $env:LOCALAPPDATA "Muzhen\crash.log"
                     if (Test-Path -LiteralPath $crashLogPath) {
                         Write-Output "Recent crash.log lines ($crashLogPath):"
                         Get-Content -LiteralPath $crashLogPath -Tail 80 -Encoding UTF8 | ForEach-Object { Write-Output $_ }
@@ -131,7 +131,7 @@ try {
     $releaseDir = Join-Path $repoRoot "release"
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
-    $zipName = "TransApp-v$Version-win64-portable.zip"
+    $zipName = "Muzhen-v$Version-win64-portable.zip"
     $zipPath = Join-Path $releaseDir $zipName
     if (Test-Path -LiteralPath $zipPath) {
         Remove-Item -LiteralPath $zipPath -Force

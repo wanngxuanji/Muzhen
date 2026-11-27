@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from transapp.core.models import ExtractConfig, OcrSegment, SubtitleEvent
+from muzhen.core.models import ExtractConfig, OcrSegment, SubtitleEvent
 
 _HORIZONTAL_WS_RE = re.compile(r"[ \t\f\v\u00a0\u3000]+")
 _ALL_WS_RE = re.compile(r"\s+")

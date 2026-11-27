@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import pytest
 
-from transapp.core.models import (
+from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
     ExtractResult,
@@ -16,10 +16,10 @@ from transapp.core.models import (
     RoiRect,
     SubtitleEvent,
 )
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.subtitle_mask import mask_fg_ratio
-from transapp.core.video_reader import VideoReader
-from transapp.exporters import export_ass, export_srt
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.subtitle_mask import mask_fg_ratio
+from muzhen.core.video_reader import VideoReader
+from muzhen.exporters import export_ass, export_srt
 
 
 def _load_cjk_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -99,11 +99,11 @@ def _make_synthetic_subtitle_mp4(
 
 
 def test_pipeline_and_cancellation_reexports():
-    from transapp.core import (
+    from muzhen.core import (
         ExtractionCancelled as CoreCancelled,
         ExtractionPipeline as CorePipeline,
     )
-    from transapp.core.pipeline import (
+    from muzhen.core.pipeline import (
         ExtractionCancelled as PipeCancelled,
         ExtractionPipeline as PipePipeline,
     )
@@ -114,7 +114,7 @@ def test_pipeline_and_cancellation_reexports():
 
 
 def test_single_frame_computes_mask_and_normalizes_ocr_text(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "single_frame_测试.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=1.5, cues=((200, 1200, "测试字幕"),))
@@ -145,7 +145,7 @@ def test_single_frame_computes_mask_and_normalizes_ocr_text(tmp_path: Path):
 
 
 def test_pipeline_end_to_end_synthetic_mp4_and_exporters(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "synthetic_3s_字幕.mp4"
     _make_synthetic_subtitle_mp4(
@@ -224,8 +224,8 @@ def test_pipeline_end_to_end_synthetic_mp4_and_exporters(tmp_path: Path):
 
 
 def test_pipeline_cancellation_raises_and_closes_video_reader(tmp_path: Path, monkeypatch):
-    import transapp.core.pipeline as pipeline_mod
-    from transapp.core.pipeline import ExtractionPipeline
+    import muzhen.core.pipeline as pipeline_mod
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "cancel_test.mp4"
     _make_synthetic_subtitle_mp4(
@@ -304,7 +304,7 @@ def test_pipeline_cancellation_raises_and_closes_video_reader(tmp_path: Path, mo
 
 
 def test_pipeline_empty_video_produces_zero_events_and_closes_reader(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "empty_subtitles.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=1.0, cues=())
@@ -331,7 +331,7 @@ def test_pipeline_empty_video_produces_zero_events_and_closes_reader(tmp_path: P
 
 
 def test_pipeline_skips_ocr_for_segments_below_min_duration(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "short_flash.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=0.6, cues=((200, 230, "闪"),))
@@ -355,7 +355,7 @@ def test_pipeline_skips_ocr_for_segments_below_min_duration(tmp_path: Path):
 
 
 def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "nonzero_start_pts.mp4"
     _make_synthetic_subtitle_mp4(
@@ -395,8 +395,8 @@ def test_pipeline_scan_progress_normalized_for_nonzero_start_pts(tmp_path: Path)
 def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
     import threading
     import time
-    import transapp.core.pipeline as pipeline_mod
-    from transapp.core.pipeline import ExtractionPipeline
+    import muzhen.core.pipeline as pipeline_mod
+    from muzhen.core.pipeline import ExtractionPipeline
 
     full_bgr = np.zeros((360, 640, 3), dtype=np.uint8)
     roi = RoiRect(0.10, 0.74, 0.80, 0.20)
@@ -462,9 +462,9 @@ def test_pipeline_test_frame_bgr_and_engine_lock(monkeypatch):
 
 
 def test_pipeline_run_clamps_event_end_ms_to_video_duration(tmp_path: Path, monkeypatch):
-    import transapp.core.pipeline as pipeline_mod
-    from transapp.core.models import OcrSegment
-    from transapp.core.pipeline import ExtractionPipeline
+    import muzhen.core.pipeline as pipeline_mod
+    from muzhen.core.models import OcrSegment
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "clamp_duration.mp4"
     _make_synthetic_subtitle_mp4(
@@ -508,7 +508,7 @@ def test_pipeline_run_clamps_event_end_ms_to_video_duration(tmp_path: Path, monk
 
 
 def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_path: Path):
-    from transapp.core.pipeline import ExtractionPipeline
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "trim_op_ed.mp4"
     _make_synthetic_subtitle_mp4(
@@ -582,8 +582,8 @@ def test_pipeline_trim_in_out_skips_op_ed_and_preserves_absolute_timestamps(tmp_
 
 
 def test_test_single_frame_uses_zero_based_rel_ms_on_nonzero_start_pts(tmp_path: Path, monkeypatch):
-    import transapp.core.pipeline as pipeline_mod
-    from transapp.core.pipeline import ExtractionPipeline
+    import muzhen.core.pipeline as pipeline_mod
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "nonzero_single_frame.mp4"
     _make_synthetic_subtitle_mp4(
@@ -624,9 +624,9 @@ def test_pipeline_rejects_trim_start_at_or_beyond_duration_and_preserves_tail_ov
     tmp_path: Path, monkeypatch
 ):
     from dataclasses import replace as dc_replace
-    import transapp.core.pipeline as pipeline_mod
-    from transapp.core.models import OcrSegment
-    from transapp.core.pipeline import ExtractionPipeline
+    import muzhen.core.pipeline as pipeline_mod
+    from muzhen.core.models import OcrSegment
+    from muzhen.core.pipeline import ExtractionPipeline
 
     video_path = tmp_path / "trim_and_tail.mp4"
     _make_synthetic_subtitle_mp4(

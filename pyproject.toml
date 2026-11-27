@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "transapp"
+name = "muzhen"
 version = "2.0.0"
 description = "Windows desktop app for extracting hardcoded Chinese/CJK subtitles from video into ASS/SRT"
 readme = "README.md"
@@ -31,10 +31,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/wanngxuanji/Trans-APP"
-Repository = "https://github.com/wanngxuanji/Trans-APP"
-Issues = "https://github.com/wanngxuanji/Trans-APP/issues"
-Changelog = "https://github.com/wanngxuanji/Trans-APP/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/wanngxuanji/Muzhen"
+Repository = "https://github.com/wanngxuanji/Muzhen"
+Issues = "https://github.com/wanngxuanji/Muzhen/issues"
+Changelog = "https://github.com/wanngxuanji/Muzhen/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -47,13 +47,13 @@ build = [
 ]
 
 [project.gui-scripts]
-transapp = "transapp.app:main"
+muzhen = "muzhen.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-transapp = ["ui/assets/*.svg", "ui/assets/*.ico"]
+muzhen = ["ui/assets/*.svg", "ui/assets/*.ico", "ui/assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

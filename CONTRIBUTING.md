@@ -1,6 +1,6 @@
-# Contributing to TransApp
+# Contributing to Muzhen
 
-Thank you for contributing to TransApp. This guide covers local Windows setup, testing, building portable releases, and pull request conventions.
+Thank you for contributing to Muzhen. This guide covers local Windows setup, testing, building portable releases, and pull request conventions.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Thank you for contributing to TransApp. This guide covers local Windows setup, t
 
 ## Development Setup
 
-Create a virtual environment and install TransApp in editable mode with development dependencies:
+Create a virtual environment and install Muzhen in editable mode with development dependencies:
 
 ```powershell
 python -m venv .venv
@@ -21,7 +21,7 @@ python -m venv .venv
 Launch the desktop app from source:
 
 ```powershell
-.venv\Scripts\python -m transapp.app
+.venv\Scripts\python -m muzhen.app
 ```
 
 ## Running Tests
@@ -46,10 +46,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 Optional flags for `scripts\build_release.ps1`:
 
 - `-Version 2.0.0`: override the version read from `pyproject.toml`.
-- `-BundleModels`: copy cached `.onnx` OCR models from `.venv` into `dist\TransApp\models\` for offline portable archives.
-- `-SkipSmokeTest`: skip the headless `TransApp.exe --smoke-test` verification step.
+- `-BundleModels`: copy cached `.onnx` OCR models from `.venv` into `dist\Muzhen\models\` for offline portable archives.
+- `-SkipSmokeTest`: skip the headless `Muzhen.exe --smoke-test` verification step.
 
-Artifacts are written to `release\TransApp-v<version>-win64-portable.zip` and `release\SHA256SUMS.txt`.
+Artifacts are written to `release\Muzhen-v<version>-win64-portable.zip` and `release\SHA256SUMS.txt`.
 
 ## Pull Request Conventions
 

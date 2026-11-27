@@ -7,7 +7,7 @@ __pycache__/
 dist/
 release/
 build/*
-!build/transapp.spec
+!build/muzhen.spec
 
 # SDD / Superpowers scratch & internal planning docs
 .superpowers/

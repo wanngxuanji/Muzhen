@@ -12,7 +12,7 @@ import av
 import av.error
 import numpy as np
 
-from transapp.core.models import RoiRect
+from muzhen.core.models import RoiRect
 
 _SEEK_BACKWARD_MARGIN_MS = 500
 _PREV_FRAME_SEEK_BACKOFFS_MS: tuple[int | None, ...] = (500, 2000, 5000, None)

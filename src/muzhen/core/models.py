@@ -1,4 +1,4 @@
-"""Core domain dataclasses for TransApp."""
+"""Core domain dataclasses for Muzhen."""
 
 from __future__ import annotations
 

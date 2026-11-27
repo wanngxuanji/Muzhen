@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from transapp.core import (
+from muzhen.core import (
     normalize_cjk_text as core_normalize_cjk_text,
     postprocess_segments as core_postprocess_segments,
     text_similarity as core_text_similarity,
 )
-from transapp.core.models import ExtractConfig, OcrSegment
-from transapp.core.postprocess import (
+from muzhen.core.models import ExtractConfig, OcrSegment
+from muzhen.core.postprocess import (
     normalize_cjk_text,
     postprocess_segments,
     text_similarity,

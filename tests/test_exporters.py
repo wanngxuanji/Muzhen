@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from transapp.core.models import SubtitleEvent
-from transapp.exporters import (
+from muzhen.core.models import SubtitleEvent
+from muzhen.exporters import (
     export_ass as pkg_export_ass,
     export_srt as pkg_export_srt,
     format_ass_time as pkg_format_ass_time,
@@ -15,9 +15,9 @@ from transapp.exporters import (
     prepare_export_cues as pkg_prepare_export_cues,
     snap_ass_centiseconds as pkg_snap_ass_centiseconds,
 )
-from transapp.exporters.ass_exporter import export_ass, format_ass_time, list_ass_template_styles
-from transapp.exporters.sanitize import prepare_export_cues, snap_ass_centiseconds, write_text_atomic
-from transapp.exporters.srt_exporter import export_srt, format_srt_time
+from muzhen.exporters.ass_exporter import export_ass, format_ass_time, list_ass_template_styles
+from muzhen.exporters.sanitize import prepare_export_cues, snap_ass_centiseconds, write_text_atomic
+from muzhen.exporters.srt_exporter import export_srt, format_srt_time
 
 
 def _event(
@@ -746,7 +746,7 @@ def test_ass_template_styles_after_events_empty_styles_and_utf16_bom(tmp_path: P
 def test_write_text_atomic_cleans_temp_file_and_preserves_target_on_error(
     tmp_path: Path, monkeypatch
 ):
-    import transapp.exporters.sanitize as sanitize_mod
+    import muzhen.exporters.sanitize as sanitize_mod
 
     target = tmp_path / "existing.ass"
     target.write_text("ORIGINAL CONTENT\n", encoding="utf-8")

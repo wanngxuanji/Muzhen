@@ -9,21 +9,21 @@ import time
 
 import numpy as np
 
-from transapp.core.deep_extractor import (
+from muzhen.core.deep_extractor import (
     detect_subtitle_spans,
     recognize_spans_with_voting,
 )
-from transapp.core.models import (
+from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
     ExtractResult,
     FrameTestResult,
     RoiRect,
 )
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.postprocess import normalize_cjk_text, postprocess_segments
-from transapp.core.subtitle_mask import build_stroke_mask
-from transapp.core.video_reader import VideoReader
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.postprocess import normalize_cjk_text, postprocess_segments
+from muzhen.core.subtitle_mask import build_stroke_mask
+from muzhen.core.video_reader import VideoReader
 
 __all__ = [
     "ExtractionCancelled",

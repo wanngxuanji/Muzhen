@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from transapp.core.models import SubtitleEvent
+from muzhen.core.models import SubtitleEvent
 
 _ASS_ESCAPE_RE = re.compile(r"\\([Nnh])")
 

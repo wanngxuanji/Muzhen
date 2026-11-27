@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from transapp.core.models import SubtitleEvent
-from transapp.exporters.sanitize import (
+from muzhen.core.models import SubtitleEvent
+from muzhen.exporters.sanitize import (
     clamp_non_overlapping_intervals,
     prepare_export_cues,
     write_text_atomic,

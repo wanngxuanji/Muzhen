@@ -4,10 +4,10 @@ import cv2
 import numpy as np
 import pytest
 
-from transapp.core.models import ExtractConfig, ExtractionCancelled
-from transapp.core.segmenter import segment_roi_frames
-from transapp.core.subtitle_mask import build_stroke_mask, frame_sharpness, mask_fg_ratio
-from transapp.core.video_reader import FrameSlice
+from muzhen.core.models import ExtractConfig, ExtractionCancelled
+from muzhen.core.segmenter import segment_roi_frames
+from muzhen.core.subtitle_mask import build_stroke_mask, frame_sharpness, mask_fg_ratio
+from muzhen.core.video_reader import FrameSlice
 
 
 def _make_blank_roi(h: int = 96, w: int = 640, bg_bgr: tuple[int, int, int] = (24, 28, 32)) -> np.ndarray:

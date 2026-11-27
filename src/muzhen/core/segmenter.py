@@ -10,8 +10,8 @@ import statistics
 import cv2
 import numpy as np
 
-from transapp.core.models import ExtractConfig, ExtractionCancelled, RawSegment
-from transapp.core.subtitle_mask import (
+from muzhen.core.models import ExtractConfig, ExtractionCancelled, RawSegment
+from muzhen.core.subtitle_mask import (
     build_stroke_mask,
     build_temporal_stable_mask,
     effective_dilate_px,
@@ -21,7 +21,7 @@ from transapp.core.subtitle_mask import (
     precompute_score_regions,
     score_candidate_frame,
 )
-from transapp.core.video_reader import FrameSlice
+from muzhen.core.video_reader import FrameSlice
 
 _DEFAULT_FRAME_STEP_MS = 40
 _MAX_CANDIDATE_FRAMES = 64

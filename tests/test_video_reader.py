@@ -8,8 +8,8 @@ import av
 import numpy as np
 import pytest
 
-from transapp.core.models import ExtractResult, RoiRect
-from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
+from muzhen.core.models import ExtractResult, RoiRect
+from muzhen.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 
 
 def _make_synthetic_vfr_mp4(

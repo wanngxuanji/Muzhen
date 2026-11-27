@@ -13,15 +13,15 @@ import time
 import cv2
 import numpy as np
 
-from transapp.core.models import ExtractConfig, ExtractionCancelled, OcrSegment
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.postprocess import (
+from muzhen.core.models import ExtractConfig, ExtractionCancelled, OcrSegment
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.postprocess import (
     _has_suspicious_noise,
     _strip_for_similarity,
     normalize_cjk_text,
     text_similarity,
 )
-from transapp.core.video_reader import FrameSlice
+from muzhen.core.video_reader import FrameSlice
 
 _MAX_SPAN_SAMPLES = 24
 _DET_BATCH_SIZE = 8

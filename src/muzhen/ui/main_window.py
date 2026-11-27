@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
+    QPixmap,
     QRegion,
 )
 from PySide6.QtWidgets import (
@@ -53,27 +54,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from transapp.core.models import (
+from muzhen.core import paths as runtime_paths
+from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
     ExtractResult,
     FrameTestResult,
     RoiRect,
 )
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.pipeline import ExtractionPipeline
-from transapp.core.presets import PresetStore, RoiPreset
-from transapp.core.video_reader import VideoMetadata, VideoReader
-from transapp.exporters import (
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.pipeline import ExtractionPipeline
+from muzhen.core.presets import PresetStore, RoiPreset
+from muzhen.core.video_reader import VideoMetadata, VideoReader
+from muzhen.exporters import (
     export_ass,
     export_srt,
     format_ass_time,
     list_ass_template_styles,
     prepare_export_cues,
 )
-from transapp.ui.icons import make_icon
-from transapp.ui.review_table import ReviewTable
-from transapp.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
+from muzhen.ui.icons import make_icon
+from muzhen.ui.review_table import ReviewTable
+from muzhen.ui.roi_canvas import RoiCanvas, extract_dropped_video_path
 
 
 def _make_divider() -> QFrame:
@@ -318,7 +320,7 @@ class MainWindow(QMainWindow):
         self._focus_tracking_active: bool = False
 
         self.setAcceptDrops(True)
-        self.setWindowTitle("TransApp - Tách Sub Raw Tiếng Trung")
+        self.setWindowTitle("Muzhen - Tách Sub Raw Tiếng Trung")
         target_w, target_h = 1160, 680
         screen = self.screen()
         if screen is not None:
@@ -354,8 +356,21 @@ class MainWindow(QMainWindow):
         top_bar_layout.setSpacing(6)
 
         brand_icon = QLabel()
-        brand_icon.setPixmap(make_icon("film", color="#2D8CEB", size=16).pixmap(16, 16))
-        brand_title = QLabel("TransApp")
+        brand_icon.setFixedSize(20, 20)
+        brand_icon_path = runtime_paths.get_ui_assets_dir() / "muzhen_icon.png"
+        brand_pixmap = QPixmap(str(brand_icon_path)) if brand_icon_path.is_file() else QPixmap()
+        if not brand_pixmap.isNull():
+            brand_icon.setPixmap(
+                brand_pixmap.scaled(
+                    20,
+                    20,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        else:
+            brand_icon.setPixmap(make_icon("film", color="#2D8CEB", size=16).pixmap(16, 16))
+        brand_title = QLabel("Muzhen")
         brand_title.setObjectName("brandTitle")
         version_badge = QLabel("v2.0")
         version_badge.setObjectName("versionBadge")

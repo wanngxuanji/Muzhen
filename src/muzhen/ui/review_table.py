@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from transapp.core.models import SubtitleEvent
-from transapp.core.postprocess import text_similarity
-from transapp.exporters.srt_exporter import format_srt_time
-from transapp.ui.icons import make_icon
+from muzhen.core.models import SubtitleEvent
+from muzhen.core.postprocess import text_similarity
+from muzhen.exporters.srt_exporter import format_srt_time
+from muzhen.ui.icons import make_icon
 
 _COL_STT = 0
 _COL_START = 1

@@ -12,8 +12,8 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from transapp.core import paths as runtime_paths
-from transapp.core.models import ExtractionCancelled, OcrSegment, RawSegment
+from muzhen.core import paths as runtime_paths
+from muzhen.core.models import ExtractionCancelled, OcrSegment, RawSegment
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +323,7 @@ class OcrEngine:
 
     @staticmethod
     def available_providers() -> list[str]:
-        """Return supported TransApp OCR providers available in the current ONNX Runtime."""
+        """Return supported Muzhen OCR providers available in the current ONNX Runtime."""
         try:
             import onnxruntime
 
@@ -583,8 +583,8 @@ class OcrEngine:
             return []
 
         if self._injected_callable and not self._injected_det_callable:
-            from transapp.core.models import ExtractConfig
-            from transapp.core.subtitle_mask import build_stroke_mask, mask_fg_ratio
+            from muzhen.core.models import ExtractConfig
+            from muzhen.core.subtitle_mask import build_stroke_mask, mask_fg_ratio
 
             cfg = ExtractConfig()
             results: list[list[tuple[float, float, float, float]]] = []

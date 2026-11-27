@@ -4,8 +4,8 @@ import cv2
 import numpy as np
 import pytest
 
-from transapp.core.models import ExtractConfig
-from transapp.core.subtitle_mask import (
+from muzhen.core.models import ExtractConfig
+from muzhen.core.subtitle_mask import (
     build_stroke_mask,
     frame_sharpness,
     mask_fg_ratio,
@@ -163,7 +163,7 @@ def test_empty_and_zero_size_inputs_and_helper_functions():
 
 
 def test_scale_invariance_480p_1080p_4k_and_wide_roi_short_cue():
-    from transapp.core.subtitle_mask import (
+    from muzhen.core.subtitle_mask import (
         effective_dilate_px,
         effective_min_blob_px,
         fg_pixel_thresholds,
@@ -208,7 +208,7 @@ def test_top_border_claw_prop_suppressed_while_tight_roi_glyphs_preserved():
 
 
 def test_temporal_stable_mask_suppresses_moving_prop_and_scores_clean_bg_higher():
-    from transapp.core.subtitle_mask import (
+    from muzhen.core.subtitle_mask import (
         build_temporal_stable_mask,
         score_candidate_frame,
     )

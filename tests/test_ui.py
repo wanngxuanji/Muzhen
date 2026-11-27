@@ -13,11 +13,11 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
 
-from transapp.core.models import ExtractResult, RoiRect, SubtitleEvent
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.pipeline import ExtractionPipeline
-from transapp.core.presets import PresetStore, RoiPreset
-from transapp.exporters import export_ass, export_srt
+from muzhen.core.models import ExtractResult, RoiRect, SubtitleEvent
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.pipeline import ExtractionPipeline
+from muzhen.core.presets import PresetStore, RoiPreset
+from muzhen.exporters import export_ass, export_srt
 
 
 def _load_cjk_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -90,7 +90,7 @@ def _make_png_bytes(color_bgr: tuple[int, int, int] = (240, 240, 240)) -> bytes:
 
 
 def test_roi_canvas_drag_normalizes_clamps_and_handles_set_roi(qtbot):
-    from transapp.ui.roi_canvas import RoiCanvas
+    from muzhen.ui.roi_canvas import RoiCanvas
 
     canvas = RoiCanvas()
     qtbot.addWidget(canvas)
@@ -139,7 +139,7 @@ def test_roi_canvas_drag_normalizes_clamps_and_handles_set_roi(qtbot):
 
 
 def test_review_table_filtering_thumbnail_and_inline_edits(qtbot, tmp_path: Path):
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -207,7 +207,7 @@ def test_review_table_filtering_thumbnail_and_inline_edits(qtbot, tmp_path: Path
 
 
 def test_main_window_overwrite_guard_and_video_switch_clears_memory(qtbot, tmp_path: Path):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep1 = tmp_path / "ep01_测试.mp4"
     ep2 = tmp_path / "ep02_测试.mp4"
@@ -273,7 +273,7 @@ def test_main_window_overwrite_guard_and_video_switch_clears_memory(qtbot, tmp_p
 
 
 def test_main_window_presets_test_frame_and_worker_cancel(qtbot, tmp_path: Path):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     video_path = tmp_path / "cancel_ep.mp4"
     _make_synthetic_subtitle_mp4(
@@ -331,7 +331,7 @@ def test_main_window_presets_test_frame_and_worker_cancel(qtbot, tmp_path: Path)
 
 
 def test_roi_canvas_letterbox_move_and_handle_resize(qtbot):
-    from transapp.ui.roi_canvas import RoiCanvas
+    from muzhen.ui.roi_canvas import RoiCanvas
 
     canvas = RoiCanvas()
     qtbot.addWidget(canvas)
@@ -364,7 +364,7 @@ def test_roi_canvas_letterbox_move_and_handle_resize(qtbot):
 
 
 def test_review_table_readonly_cols_and_switch_back_to_all(qtbot):
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -386,8 +386,8 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QApplication
-    import transapp.app as app_mod
-    from transapp.ui.main_window import MainWindow
+    import muzhen.app as app_mod
+    from muzhen.ui.main_window import MainWindow
 
     video_path = tmp_path / "ep_tpl.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=1.2, cues=((200, 1000, "模板测试"),))
@@ -468,7 +468,7 @@ def test_main_window_custom_dir_ass_template_presets_scrubber_and_close_while_ru
         if w not in before_widgets and isinstance(w, MainWindow)
     ]
     assert len(created_windows) == 1
-    assert created_windows[0]._preset_store.config_dir == tmp_path / "isolated_appdata" / "TransApp"
+    assert created_windows[0]._preset_store.config_dir == tmp_path / "isolated_appdata" / "Muzhen"
     created_windows[0].close()
 
 
@@ -476,7 +476,7 @@ def test_main_window_load_video_during_active_extraction_stops_fast_and_ignores_
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QMessageBox
-    from transapp.ui.main_window import MainWindow, _ExtractionWorker
+    from muzhen.ui.main_window import MainWindow, _ExtractionWorker
 
     ep1 = tmp_path / "active_ep1.mp4"
     ep2 = tmp_path / "active_ep2.mp4"
@@ -551,8 +551,8 @@ def test_main_window_export_oserror_shows_warning_without_crashing(
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QMessageBox
-    import transapp.ui.main_window as mw_mod
-    from transapp.ui.main_window import MainWindow
+    import muzhen.ui.main_window as mw_mod
+    from muzhen.ui.main_window import MainWindow
 
     video_path = tmp_path / "locked_ep.mp4"
     _make_synthetic_subtitle_mp4(video_path, duration_sec=1.2, cues=((200, 900, "锁定测试"),))
@@ -592,7 +592,7 @@ def test_main_window_export_oserror_shows_warning_without_crashing(
 
 
 def test_review_table_rejects_inverted_start_end_and_rescales_preview_on_resize(qtbot):
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -650,8 +650,8 @@ def test_review_table_rejects_inverted_start_end_and_rescales_preview_on_resize(
 def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_decode(
     qtbot, tmp_path: Path, monkeypatch
 ):
-    from transapp.core.video_reader import VideoReader
-    from transapp.ui.main_window import MainWindow
+    from muzhen.core.video_reader import VideoReader
+    from muzhen.ui.main_window import MainWindow
 
     video_path = tmp_path / "nonzero_start.mp4"
     _make_synthetic_subtitle_mp4(
@@ -765,7 +765,7 @@ def test_main_window_nonzero_start_pts_scrubbing_slider_tracking_and_single_deco
 def test_main_window_retires_slow_qthread_and_waits_on_close(
     qtbot, tmp_path: Path, monkeypatch
 ):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep1 = tmp_path / "slow_ep1.mp4"
     ep2 = tmp_path / "slow_ep2.mp4"
@@ -859,7 +859,7 @@ def test_main_window_browse_buttons_screen_clamp_and_corrupt_presets(
 ):
     from PySide6.QtCore import QRect
     from PySide6.QtGui import QScreen
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     cfg_dir = tmp_path / "corrupt_cfg"
     cfg_dir.mkdir()
@@ -880,7 +880,7 @@ def test_main_window_browse_buttons_screen_clamp_and_corrupt_presets(
 
 
 def test_review_table_delete_selected_row_and_reindex_under_filter(qtbot, tmp_path: Path):
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -926,7 +926,7 @@ def test_review_table_delete_selected_row_and_reindex_under_filter(qtbot, tmp_pa
 
 
 def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monkeypatch):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     monkeypatch.setattr(OcrEngine, "available_providers", staticmethod(lambda: ["cpu", "directml"]))
     window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
@@ -953,10 +953,10 @@ def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monk
 
 def test_studio_theme_icons_and_video_meta_badge(qtbot, tmp_path: Path):
     from PySide6.QtWidgets import QApplication
-    from transapp.app import load_app_icon
-    from transapp.ui.icons import ICON_NAMES, make_icon
-    from transapp.ui.main_window import MainWindow
-    from transapp.ui.theme import STUDIO_DARK_QSS, apply_studio_theme
+    from muzhen.app import load_app_icon
+    from muzhen.ui.icons import ICON_NAMES, make_icon
+    from muzhen.ui.main_window import MainWindow
+    from muzhen.ui.theme import STUDIO_DARK_QSS, apply_studio_theme
 
     app = QApplication.instance()
     assert app is not None
@@ -992,8 +992,8 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QSlider
-    import transapp.ui.main_window as mw_mod
-    from transapp.ui.main_window import MainWindow, TrimRangeSlider
+    import muzhen.ui.main_window as mw_mod
+    from muzhen.ui.main_window import MainWindow, TrimRangeSlider
 
     ep1 = tmp_path / "trim_ep1.mp4"
     ep2 = tmp_path / "trim_ep2.mp4"
@@ -1149,7 +1149,7 @@ def test_main_window_trim_in_out_controls_and_reset_on_video_switch(
 
 
 def test_main_window_playback_autorepeat_and_keyboard_scrubbing(qtbot, tmp_path: Path):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "playback_test.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.6)
@@ -1232,7 +1232,7 @@ def test_main_window_playback_autorepeat_and_keyboard_scrubbing(qtbot, tmp_path:
 
 
 def test_review_table_jump_sync_nudge_and_flag_reason_auto_clear_in_place(qtbot):
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -1362,7 +1362,7 @@ def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
     from PySide6.QtCore import QMimeData, QPointF, QUrl
     from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
     from PySide6.QtWidgets import QMessageBox
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep1 = tmp_path / "guard_ep1.mp4"
     ep2 = tmp_path / "guard_ep2.mp4"
@@ -1530,7 +1530,7 @@ def test_main_window_unsaved_edits_guard_dynamic_export_and_drag_drop(
 def test_review_table_multi_delete_merge_split_and_undo_redo(qtbot):
     from PySide6.QtCore import QItemSelectionModel
     from PySide6.QtWidgets import QAbstractItemView
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -1670,9 +1670,9 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QAbstractItemView
-    import transapp.ui.main_window as mw_mod
-    from transapp.ui.main_window import MainWindow
-    from transapp.ui.review_table import ReviewTable
+    import muzhen.ui.main_window as mw_mod
+    from muzhen.ui.main_window import MainWindow
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -1858,7 +1858,7 @@ def test_review_table_find_replace_all_undoable_and_template_style_selector(
 
 def test_transport_and_trim_shortcuts_work_when_review_table_has_focus(qtbot, tmp_path: Path):
     from PySide6.QtWidgets import QAbstractItemView
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "focus_transport.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=2.0)
@@ -1985,7 +1985,7 @@ def test_transport_and_trim_shortcuts_work_when_review_table_has_focus(qtbot, tm
 
 
 def test_nudge_uses_exact_frame_pts_ms_and_exports_1_frame_step_on_ntsc(qtbot, tmp_path: Path):
-    from transapp.ui.review_table import ReviewTable, parse_subtitle_time
+    from muzhen.ui.review_table import ReviewTable, parse_subtitle_time
 
     frame_pts_ms = [int(round(i * 1000.0 * 1001.0 / 24000.0)) for i in range(60)]
 
@@ -2081,8 +2081,8 @@ def test_active_cell_editor_commits_cleanly_before_nofocus_toolbar_ops_and_close
     qtbot, tmp_path: Path
 ):
     from PySide6.QtWidgets import QAbstractItemView, QLineEdit
-    from transapp.ui.main_window import MainWindow
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.main_window import MainWindow
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -2193,7 +2193,7 @@ def test_active_cell_editor_commits_cleanly_before_nofocus_toolbar_ops_and_close
 def test_autorepeat_nudge_coalesces_into_single_undo_step_and_undo_to_clean_clears_dirty(
     qtbot, tmp_path: Path
 ):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "coalesce_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, duration_sec=1.4, cues=((200, 1000, "连按微调"),))
@@ -2251,7 +2251,7 @@ def test_autorepeat_nudge_coalesces_into_single_undo_step_and_undo_to_clean_clea
 
 def test_review_table_minor_polish_cloning_find_status_multiselection_and_overlap(qtbot):
     from PySide6.QtCore import QItemSelectionModel
-    from transapp.ui.review_table import ReviewTable
+    from muzhen.ui.review_table import ReviewTable
 
     table = ReviewTable()
     qtbot.addWidget(table)
@@ -2339,7 +2339,7 @@ def test_review_table_minor_polish_cloning_find_status_multiselection_and_overla
 def test_playback_and_step_handle_missing_video_file_gracefully(
     qtbot, tmp_path: Path, monkeypatch
 ):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "missing_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.8)
@@ -2375,8 +2375,8 @@ def test_playback_and_step_handle_missing_video_file_gracefully(
 def test_step_back_uses_read_prev_frame_before_ms_and_eof_step_fwd_does_not_double_decode(
     qtbot, tmp_path: Path, monkeypatch
 ):
-    from transapp.core.video_reader import VideoReader
-    from transapp.ui.main_window import MainWindow
+    from muzhen.core.video_reader import VideoReader
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "vfr_eof_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=0.4)
@@ -2444,7 +2444,7 @@ def test_step_back_uses_read_prev_frame_before_ms_and_eof_step_fwd_does_not_doub
 def test_roi_canvas_disabled_during_extraction_and_ass_style_preserved_across_radio_toggle(
     qtbot, tmp_path: Path, monkeypatch
 ):
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "lock_style_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.0)
@@ -2537,7 +2537,7 @@ def test_test_current_frame_runs_asynchronously_and_preset_oserror_warns(
     qtbot, tmp_path: Path, monkeypatch
 ):
     from PySide6.QtWidgets import QMessageBox
-    from transapp.ui.main_window import FrameTestWorker, MainWindow
+    from muzhen.ui.main_window import FrameTestWorker, MainWindow
 
     ep = tmp_path / "async_frame_ep.mp4"
     _make_synthetic_subtitle_mp4(
@@ -2639,8 +2639,8 @@ def test_test_current_frame_runs_asynchronously_and_preset_oserror_warns(
 
 
 def test_theme_uses_premiere_graphite_tokens_and_active_panel_selectors(qtbot):
-    from transapp.ui.icons import ICON_NAMES, make_icon
-    from transapp.ui.theme import PALETTE_TOKENS, STUDIO_DARK_QSS, build_studio_dark_qss
+    from muzhen.ui.icons import ICON_NAMES, make_icon
+    from muzhen.ui.theme import PALETTE_TOKENS, STUDIO_DARK_QSS, build_studio_dark_qss
 
     assert PALETTE_TOKENS["bg_gutter"] == "#111111"
     assert PALETTE_TOKENS["bg_root"] == "#161616"
@@ -2672,7 +2672,7 @@ def test_type_a_workbench_three_panes_collapsible_settings_and_active_panel_bord
     qtbot, tmp_path: Path
 ):
     from PySide6.QtWidgets import QSplitter
-    from transapp.ui.main_window import MainWindow
+    from muzhen.ui.main_window import MainWindow
 
     ep = tmp_path / "workbench_ep.mp4"
     _make_synthetic_subtitle_mp4(ep, width=640, height=360, fps=25, duration_sec=1.2)

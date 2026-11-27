@@ -1,6 +1,6 @@
 """Core data models, ROI presets, and extraction pipeline."""
 
-from transapp.core.models import (
+from muzhen.core.models import (
     ExtractConfig,
     ExtractionCancelled,
     ExtractResult,
@@ -10,22 +10,22 @@ from transapp.core.models import (
     RoiRect,
     SubtitleEvent,
 )
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.pipeline import ExtractionPipeline
-from transapp.core.postprocess import (
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.pipeline import ExtractionPipeline
+from muzhen.core.postprocess import (
     normalize_cjk_text,
     postprocess_segments,
     text_similarity,
 )
-from transapp.core.presets import PresetStore, RoiPreset
-from transapp.core.segmenter import segment_roi_frames
-from transapp.core.subtitle_mask import (
+from muzhen.core.presets import PresetStore, RoiPreset
+from muzhen.core.segmenter import segment_roi_frames
+from muzhen.core.subtitle_mask import (
     build_stroke_mask,
     frame_sharpness,
     mask_fg_ratio,
     mask_iou,
 )
-from transapp.core.video_reader import FrameSlice, VideoMetadata, VideoReader
+from muzhen.core.video_reader import FrameSlice, VideoMetadata, VideoReader
 
 __all__ = [
     "ExtractConfig",

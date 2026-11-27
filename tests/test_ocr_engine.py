@@ -7,8 +7,8 @@ import cv2
 import numpy as np
 import pytest
 
-from transapp.core.models import ExtractionCancelled, OcrSegment, RawSegment
-from transapp.core.ocr_engine import OcrEngine
+from muzhen.core.models import ExtractionCancelled, OcrSegment, RawSegment
+from muzhen.core.ocr_engine import OcrEngine
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -25,13 +25,13 @@ def _make_bgr(h: int, w: int, color: tuple[int, int, int] = (20, 20, 20)) -> np.
 
 
 def test_ocr_engine_reexported_from_core_package():
-    from transapp.core import OcrEngine as ReexportedOcrEngine
+    from muzhen.core import OcrEngine as ReexportedOcrEngine
 
     assert ReexportedOcrEngine is OcrEngine
 
 
 def test_prepare_roi_for_ocr_normalizes_scale_without_synthetic_borders():
-    from transapp.core.ocr_engine import _prepare_roi_for_ocr
+    from muzhen.core.ocr_engine import _prepare_roi_for_ocr
 
     small_roi = _make_bgr(28, 160, color=(200, 180, 160))
     prep_small = _prepare_roi_for_ocr(small_roi)
@@ -317,7 +317,7 @@ def test_group_boxes_drops_detached_low_conf_non_hanzi_noise_and_keeps_grid_mapp
 def test_det_mobile_params_and_batch_size(monkeypatch):
     import onnxruntime
     import rapidocr
-    from transapp.core.ocr_engine import _build_det_mobile_params
+    from muzhen.core.ocr_engine import _build_det_mobile_params
 
     cpu_params = _build_det_mobile_params(use_dml=False)
     assert cpu_params["Det.box_thresh"] == pytest.approx(0.55)
@@ -410,7 +410,7 @@ def test_detect_batch_4d_native_tensor_and_empty_map_short_circuit():
 
 
 def test_detect_batch_preserves_small_subtitle_in_tall_roi():
-    from transapp.core.ocr_engine import _polys_to_normalized_boxes
+    from muzhen.core.ocr_engine import _polys_to_normalized_boxes
 
     poly_3pct = np.array([[100.0, 900.0], [500.0, 900.0], [500.0, 930.0], [100.0, 930.0]], dtype=np.float32)
     poly_1pct = np.array([[100.0, 100.0], [500.0, 100.0], [500.0, 115.0], [100.0, 115.0]], dtype=np.float32)
@@ -772,7 +772,7 @@ def test_detect_native_4d_batch_preserves_min_64px_height_for_1080p_roi():
 
 
 def test_prepare_roi_for_ocr_single_resize_on_wide_1080p_roi(monkeypatch):
-    from transapp.core.ocr_engine import _prepare_roi_for_ocr
+    from muzhen.core.ocr_engine import _prepare_roi_for_ocr
 
     orig_resize = cv2.resize
     calls: list[tuple[tuple[int, int], int]] = []

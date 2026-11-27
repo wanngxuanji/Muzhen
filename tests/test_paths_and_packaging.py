@@ -9,8 +9,8 @@ import pytest
 def test_get_ui_assets_dir_resolves_dev_and_frozen_meipass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from transapp.core import paths
-    from transapp.ui.theme import build_studio_dark_qss
+    from muzhen.core import paths
+    from muzhen.ui.theme import build_studio_dark_qss
 
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
@@ -18,10 +18,16 @@ def test_get_ui_assets_dir_resolves_dev_and_frozen_meipass(
     assert paths.is_frozen() is False
     dev_dir = paths.get_ui_assets_dir()
     assert dev_dir.is_dir()
-    for asset_name in ("transapp.ico", "chevron_down.svg", "chevron_up.svg", "check.svg"):
+    for asset_name in (
+        "muzhen.ico",
+        "muzhen_icon.png",
+        "chevron_down.svg",
+        "chevron_up.svg",
+        "check.svg",
+    ):
         assert (dev_dir / asset_name).is_file()
 
-    frozen_assets = tmp_path / "transapp" / "ui" / "assets"
+    frozen_assets = tmp_path / "muzhen" / "ui" / "assets"
     frozen_assets.mkdir(parents=True)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
@@ -38,24 +44,45 @@ def test_get_ui_assets_dir_resolves_dev_and_frozen_meipass(
     assert paths.get_ui_assets_dir() == dev_dir
 
 
+def test_get_app_data_dir_env_override_localappdata_and_home_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from muzhen.core import paths
+
+    custom_dir = tmp_path / "custom_data"
+    monkeypatch.setenv("MUZHEN_DATA_DIR", str(custom_dir))
+    assert paths.get_app_data_dir() == custom_dir
+    assert custom_dir.is_dir()
+
+    monkeypatch.delenv("MUZHEN_DATA_DIR", raising=False)
+    local_dir = tmp_path / "local_appdata"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_dir))
+    assert paths.get_app_data_dir() == local_dir / "Muzhen"
+    assert (local_dir / "Muzhen").is_dir()
+
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert paths.get_app_data_dir(create=False) == Path.home() / ".muzhen"
+
+
 def test_get_models_dir_portable_beside_exe_fallback_and_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from transapp.core import paths
+    from muzhen.core import paths
 
-    monkeypatch.delenv("TRANSAPP_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MUZHEN_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MUZHEN_DATA_DIR", raising=False)
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert paths.get_models_dir() is None
 
     env_dir = tmp_path / "override_models"
-    monkeypatch.setenv("TRANSAPP_MODELS_DIR", str(env_dir))
+    monkeypatch.setenv("MUZHEN_MODELS_DIR", str(env_dir))
     assert paths.get_models_dir() == env_dir
     assert env_dir.is_dir()
 
-    monkeypatch.delenv("TRANSAPP_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MUZHEN_MODELS_DIR", raising=False)
     exe_dir = tmp_path / "portable_dist"
     exe_dir.mkdir()
-    fake_exe = exe_dir / "TransApp.exe"
+    fake_exe = exe_dir / "Muzhen.exe"
     fake_exe.write_bytes(b"")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(fake_exe))
@@ -67,7 +94,7 @@ def test_get_models_dir_portable_beside_exe_fallback_and_env_override(
 
     readonly_exe_dir = tmp_path / "program_files_app"
     readonly_exe_dir.mkdir()
-    readonly_exe = readonly_exe_dir / "TransApp.exe"
+    readonly_exe = readonly_exe_dir / "Muzhen.exe"
     readonly_exe.write_bytes(b"")
     local_appdata = tmp_path / "local_appdata"
     monkeypatch.setattr(sys, "executable", str(readonly_exe))
@@ -83,7 +110,7 @@ def test_get_models_dir_portable_beside_exe_fallback_and_env_override(
     monkeypatch.setattr(Path, "write_bytes", deny_program_files_write)
 
     fallback_models = paths.get_models_dir()
-    assert fallback_models == local_appdata / "TransApp" / "models"
+    assert fallback_models == local_appdata / "Muzhen" / "models"
     assert fallback_models.is_dir()
 
 
@@ -91,7 +118,7 @@ def test_ocr_params_include_model_root_dir_when_models_dir_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import rapidocr
-    from transapp.core import ocr_engine, paths
+    from muzhen.core import ocr_engine, paths
 
     monkeypatch.setattr(paths, "get_models_dir", lambda: None)
     dev_rec = ocr_engine._build_rapidocr_params("accurate", use_dml=False)
@@ -131,10 +158,11 @@ def test_app_smoke_test_flag_boots_and_exits_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from PySide6.QtWidgets import QApplication
-    import transapp.app as app_mod
+    import muzhen.app as app_mod
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "smoke_appdata"))
-    monkeypatch.delenv("TRANSAPP_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MUZHEN_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MUZHEN_DATA_DIR", raising=False)
 
     def fail_if_exec_called(_self: QApplication) -> int:
         raise AssertionError("QApplication.exec must not be called in --smoke-test mode")

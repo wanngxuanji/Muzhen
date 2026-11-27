@@ -24,7 +24,7 @@ rapidocr_datas = [
 ]
 
 datas = [
-    (str(ROOT / "src" / "transapp" / "ui" / "assets"), "transapp/ui/assets"),
+    (str(ROOT / "src" / "muzhen" / "ui" / "assets"), "muzhen/ui/assets"),
     *rapidocr_datas,
     *collect_data_files("onnxruntime"),
 ]
@@ -119,7 +119,7 @@ excludes = [
 ]
 
 a = Analysis(
-    [str(ROOT / "src" / "transapp" / "app.py")],
+    [str(ROOT / "src" / "muzhen" / "app.py")],
     pathex=[str(ROOT / "src")],
     binaries=binaries,
     datas=datas,
@@ -139,7 +139,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TransApp",
+    name="Muzhen",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -150,7 +150,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "src" / "transapp" / "ui" / "assets" / "transapp.ico"),
+    icon=str(ROOT / "src" / "muzhen" / "ui" / "assets" / "muzhen.ico"),
 )
 
 coll = COLLECT(
@@ -160,5 +160,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="TransApp",
+    name="Muzhen",
 )

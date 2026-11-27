@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Aegisub-aligned midpoint snapping and video-frame timing quantization for crisp subtitle boundaries.
 - OP/ED In/Out trim range controls on the Program Monitor to skip intros and outros during extraction.
 - ReviewTable power-user editing tools: search & replace, undo/redo history, merge/split/delete rows, QA confidence flagging, and `-1f`/`+1f` frame-accurate timing adjustments.
-- Portable Windows release packaging via `PyInstaller --onedir` (`build/transapp.spec`, `scripts/build_release.ps1`) producing `TransApp-v2.0.0-win64-portable.zip` and `SHA256SUMS.txt`.
+- Portable Windows release packaging via `PyInstaller --onedir` (`build/muzhen.spec`, `scripts/build_release.ps1`) producing `Muzhen-v2.0.0-win64-portable.zip` and `SHA256SUMS.txt`.
 - Frozen runtime asset and portable `models/` directory resolution plus `--smoke-test` startup verification flag.
 - GitHub Actions CI (`ci.yml`) and tag-triggered Release (`release.yml`) workflows, `LICENSE` (MIT), `CHANGELOG.md`, and `CONTRIBUTING.md`.
 
@@ -24,5 +24,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] - 2025-12-01
 
 ### Added
-- Initial Windows desktop release of TransApp for extracting hardcoded Chinese/CJK subtitles from video files.
+- Initial Windows desktop release of Muzhen for extracting hardcoded Chinese/CJK subtitles from video files.
 - Interactive ROI canvas, basic timeline scrubbing, RapidOCR integration, subtitle review table, and ASS/SRT export.

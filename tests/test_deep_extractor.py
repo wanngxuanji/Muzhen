@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from transapp.core.deep_extractor import (
+from muzhen.core.deep_extractor import (
     TightSignature,
     _DetectedSpan,
     _FrameVote,
@@ -19,9 +19,9 @@ from transapp.core.deep_extractor import (
     extract_subtitles_deep,
     recognize_spans_with_voting,
 )
-from transapp.core.models import ExtractConfig
-from transapp.core.ocr_engine import OcrEngine
-from transapp.core.video_reader import FrameSlice
+from muzhen.core.models import ExtractConfig
+from muzhen.core.ocr_engine import OcrEngine
+from muzhen.core.video_reader import FrameSlice
 
 
 def _solid_roi(tag: int, h: int = 76, w: int = 480) -> np.ndarray:
@@ -657,7 +657,7 @@ def test_stage2_glare_dodge_empty_early_exit_and_short_ghost_guard():
 
 
 def test_stage2_streams_pending_cluster_inline_and_honors_cancel_on_flush():
-    from transapp.core.models import ExtractionCancelled
+    from muzhen.core.models import ExtractionCancelled
 
     cfg = ExtractConfig(conf_threshold=0.85, min_duration_ms=120, flash_bridge_max_ms=200)
     frame_pts_ms = [i * 100 for i in range(40)]
@@ -870,7 +870,7 @@ def test_adjacent_one_frame_spans_are_kept_while_isolated_40ms_flash_is_dropped(
 def test_compute_tight_signature_skips_unused_fullres_patch_and_uses_640x64_roi_gray(monkeypatch):
     """_compute_tight_signature must skip redundant full-res _extract_patch_features, build a
     640x64 roi_gray with appropriate interpolation, and preserve 1080p 2-char discrimination."""
-    import transapp.core.deep_extractor as de
+    import muzhen.core.deep_extractor as de
 
     h, w = 108, 1536
     short_box = (0.45, 0.20, 0.55, 0.82)
