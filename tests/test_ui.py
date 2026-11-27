@@ -973,3 +973,35 @@ def test_main_window_prefers_directml_when_available(qtbot, tmp_path: Path, monk
     window.provider_combo.setCurrentIndex(cpu_idx)
     assert window.build_config().provider == "cpu"
     window.close()
+
+
+def test_studio_theme_icons_and_video_meta_badge(qtbot, tmp_path: Path):
+    from PySide6.QtWidgets import QApplication
+    from transapp.ui.icons import ICON_NAMES, make_icon
+    from transapp.ui.main_window import MainWindow
+    from transapp.ui.theme import STUDIO_DARK_QSS, apply_studio_theme
+
+    app = QApplication.instance()
+    assert app is not None
+    assert len(STUDIO_DARK_QSS.strip()) > 200
+    apply_studio_theme(app)
+    assert "QMainWindow" in app.styleSheet()
+
+    for name in ICON_NAMES:
+        icon = make_icon(name)
+        assert not icon.isNull()
+        pm = icon.pixmap(16, 16)
+        assert not pm.isNull()
+
+    video = tmp_path / "badge_test.mp4"
+    _make_synthetic_subtitle_mp4(video, width=640, height=360, fps=25, duration_sec=1.0)
+
+    window = MainWindow(preset_store=PresetStore(config_dir=tmp_path / "cfg"))
+    qtbot.addWidget(window)
+    assert window.video_meta_badge.isVisible() is False
+
+    window.load_video(video)
+    assert "640" in window.video_meta_badge.text()
+    assert "360" in window.video_meta_badge.text()
+    assert "25" in window.video_meta_badge.text()
+    window.close()

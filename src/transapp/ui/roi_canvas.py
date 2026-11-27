@@ -7,7 +7,16 @@ from typing import Literal
 import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from transapp.core.models import RoiRect
@@ -264,34 +273,52 @@ class RoiCanvas(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(20, 22, 26))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor(10, 12, 16))
 
         disp = self._display_rect()
-        if self._frame_pixmap is not None and not self._frame_pixmap.isNull():
+        has_frame = self._frame_pixmap is not None and not self._frame_pixmap.isNull()
+        if has_frame:
             painter.drawPixmap(disp, self._frame_pixmap, QRectF(self._frame_pixmap.rect()))
         else:
-            painter.setPen(QColor(150, 156, 168))
+            guide = QRectF(self.rect()).adjusted(14, 14, -14, -14)
+            dash_pen = QPen(QColor(38, 44, 56), 1.2, Qt.PenStyle.DashLine)
+            painter.setPen(dash_pen)
+            painter.drawRoundedRect(guide, 8, 8)
+            painter.setPen(QColor(138, 148, 166))
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "Chọn file video để xem trước và kéo vùng ROI",
+                "Chọn file video ở thanh trên để xem trước và kéo chọn vùng ROI",
             )
 
         roi_rect = self._roi_to_rect(self._roi, disp)
+
+        if has_frame:
+            # Subtle dim scrim outside active ROI so the subtitle strip stands out clearly
+            scrim = QPainterPath()
+            scrim.addRect(disp)
+            hole = QPainterPath()
+            hole.addRect(roi_rect)
+            painter.fillPath(scrim.subtracted(hole), QColor(0, 0, 0, 82))
 
         if self._mask_pixmap is not None and not self._mask_pixmap.isNull():
             target_rect = disp if self._mask_is_full_frame else roi_rect
             painter.drawPixmap(target_rect, self._mask_pixmap, QRectF(self._mask_pixmap.rect()))
 
-        # Subtle fill + bright border around active ROI
-        painter.fillRect(roi_rect, QColor(0, 229, 168, 28))
-        pen = QPen(QColor(0, 229, 168), 2)
+        # Subtle fill + crisp emerald border around active ROI
+        painter.fillRect(roi_rect, QColor(16, 185, 129, 24))
+        pen = QPen(QColor(16, 185, 129), 1.8)
         painter.setPen(pen)
         painter.drawRect(roi_rect)
 
         # Corner and edge resize handles
         half = _HANDLE_DRAW_PX * 0.5
-        painter.setBrush(QColor(0, 229, 168))
-        painter.setPen(QPen(QColor(15, 20, 24), 1))
+        painter.setBrush(QColor(16, 185, 129))
+        painter.setPen(QPen(QColor(10, 12, 16), 1.2))
         for pt in self._handle_points(roi_rect).values():
-            painter.drawRect(QRectF(pt.x() - half, pt.y() - half, _HANDLE_DRAW_PX, _HANDLE_DRAW_PX))
+            painter.drawRoundedRect(
+                QRectF(pt.x() - half, pt.y() - half, _HANDLE_DRAW_PX, _HANDLE_DRAW_PX),
+                1.5,
+                1.5,
+            )

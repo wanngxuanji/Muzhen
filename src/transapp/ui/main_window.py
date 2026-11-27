@@ -7,14 +7,16 @@ from pathlib import Path
 import threading
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
-    QGroupBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSlider,
     QSplitter,
     QVBoxLayout,
@@ -42,8 +45,21 @@ from transapp.core.pipeline import ExtractionPipeline
 from transapp.core.presets import PresetStore, RoiPreset
 from transapp.core.video_reader import VideoMetadata, VideoReader
 from transapp.exporters import export_ass, export_srt, format_ass_time
+from transapp.ui.icons import make_icon
 from transapp.ui.review_table import ReviewTable
 from transapp.ui.roi_canvas import RoiCanvas
+
+
+def _make_divider() -> QFrame:
+    line = QFrame()
+    line.setProperty("divider", True)
+    return line
+
+
+def _make_section_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setProperty("role", "sectionTitle")
+    return lbl
 
 
 class _ExtractionWorker(QObject):
@@ -146,25 +162,107 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
+        # === Top Studio Header Bar ===
+        top_bar = QFrame()
+        top_bar.setObjectName("topBar")
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(12, 7, 12, 7)
+        top_bar_layout.setSpacing(8)
+
+        brand_icon = QLabel()
+        brand_icon.setPixmap(make_icon("film", color="#3B82F6", size=18).pixmap(18, 18))
+        brand_title = QLabel("TransApp")
+        brand_title.setObjectName("brandTitle")
+        version_badge = QLabel("v1")
+        version_badge.setObjectName("versionBadge")
+        top_bar_layout.addWidget(brand_icon)
+        top_bar_layout.addWidget(brand_title)
+        top_bar_layout.addWidget(version_badge)
+        top_bar_layout.addSpacing(8)
+
+        self.video_path_edit = QLineEdit()
+        self.video_path_edit.setReadOnly(True)
+        self.video_path_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.video_path_edit.setPlaceholderText("Chưa chọn file video (.mp4, .mkv, .ts...)")
+        self.video_meta_badge = QLabel("")
+        self.video_meta_badge.setObjectName("metaBadge")
+        self.video_meta_badge.setVisible(False)
+        self.btn_browse_video = QPushButton("Chọn video")
+        self.btn_browse_video.setIcon(make_icon("folder", size=14))
+        self.btn_browse_video.setIconSize(QSize(14, 14))
+        self.btn_browse_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        top_bar_layout.addWidget(self.video_path_edit, 1)
+        top_bar_layout.addWidget(self.video_meta_badge)
+        top_bar_layout.addWidget(self.btn_browse_video)
+
+        v_sep = QFrame()
+        v_sep.setFixedWidth(1)
+        v_sep.setStyleSheet("background-color: #252A34; margin: 3px 2px;")
+        top_bar_layout.addWidget(v_sep)
+
+        preset_lbl = QLabel("Preset")
+        preset_lbl.setProperty("role", "fieldLabel")
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(145)
+        self.btn_save_preset = QPushButton()
+        self.btn_save_preset.setProperty("variant", "tool")
+        self.btn_save_preset.setIcon(make_icon("save", size=14))
+        self.btn_save_preset.setIconSize(QSize(14, 14))
+        self.btn_save_preset.setFixedSize(30, 28)
+        self.btn_save_preset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save_preset.setToolTip("Lưu Preset ROI hiện tại")
+
+        self.btn_delete_preset = QPushButton()
+        self.btn_delete_preset.setProperty("variant", "danger")
+        self.btn_delete_preset.setIcon(make_icon("trash", color="#FCA5A5", size=14))
+        self.btn_delete_preset.setIconSize(QSize(14, 14))
+        self.btn_delete_preset.setFixedSize(30, 28)
+        self.btn_delete_preset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_delete_preset.setToolTip("Xóa Preset đang chọn")
+
+        top_bar_layout.addWidget(preset_lbl)
+        top_bar_layout.addWidget(self.preset_combo)
+        top_bar_layout.addWidget(self.btn_save_preset)
+        top_bar_layout.addWidget(self.btn_delete_preset)
+        main_layout.addWidget(top_bar)
+
+        # === Main Workspace: Preview (Left) + Inspector (Right) ===
         top_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left panel: Frame preview, ROI canvas, scrubber
-        preview_group = QGroupBox("1. Xem trước & chọn vùng ROI")
-        preview_layout = QVBoxLayout(preview_group)
+        preview_card = QFrame()
+        preview_card.setProperty("card", True)
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(10, 10, 10, 10)
+        preview_layout.setSpacing(8)
+
         self.roi_canvas = RoiCanvas()
         preview_layout.addWidget(self.roi_canvas, 1)
 
         scrub_row = QHBoxLayout()
-        self.btn_seek_start = QPushButton("|<")
-        self.btn_step_back = QPushButton("-1f")
+        scrub_row.setSpacing(6)
+        self.btn_seek_start = QPushButton()
+        self.btn_seek_start.setIcon(make_icon("skip_back", size=14))
+        self.btn_seek_start.setToolTip("Về đầu video")
+        self.btn_step_back = QPushButton()
+        self.btn_step_back.setIcon(make_icon("step_back", size=14))
+        self.btn_step_back.setToolTip("Lùi 1 frame")
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setTracking(False)
         self.frame_slider.setRange(0, 0)
-        self.btn_step_fwd = QPushButton("+1f")
-        self.btn_seek_end = QPushButton(">|")
+        self.frame_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_step_fwd = QPushButton()
+        self.btn_step_fwd.setIcon(make_icon("step_fwd", size=14))
+        self.btn_step_fwd.setToolTip("Tiến 1 frame")
+        self.btn_seek_end = QPushButton()
+        self.btn_seek_end.setIcon(make_icon("skip_fwd", size=14))
+        self.btn_seek_end.setToolTip("Tới cuối video")
         for btn in (self.btn_seek_start, self.btn_step_back, self.btn_step_fwd, self.btn_seek_end):
-            btn.setFixedWidth(44)
+            btn.setProperty("variant", "tool")
+            btn.setIconSize(QSize(14, 14))
+            btn.setFixedSize(30, 28)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.time_label = QLabel("0:00:00.00 / 0:00:00.00")
+        self.time_label.setObjectName("timecodeBadge")
         scrub_row.addWidget(self.btn_seek_start)
         scrub_row.addWidget(self.btn_step_back)
         scrub_row.addWidget(self.frame_slider, 1)
@@ -173,154 +271,219 @@ class MainWindow(QMainWindow):
         scrub_row.addWidget(self.time_label)
         preview_layout.addLayout(scrub_row)
 
+        roi_bar = QHBoxLayout()
+        roi_bar.setSpacing(8)
         self.roi_label = QLabel()
-        preview_layout.addWidget(self.roi_label)
+        self.roi_label.setObjectName("roiPill")
+        self.test_result_label = QLabel("")
+        self.test_result_label.setObjectName("testResultLabel")
+        self.test_result_label.setWordWrap(False)
+        self.btn_test_frame = QPushButton("Test 1 frame")
+        self.btn_test_frame.setIcon(make_icon("scan", color="#10B981", size=14))
+        self.btn_test_frame.setIconSize(QSize(14, 14))
+        self.btn_test_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_frame.setToolTip("Chạy thử bộ lọc chữ & OCR trên khung hình hiện tại")
+        roi_bar.addWidget(self.roi_label)
+        roi_bar.addWidget(self.test_result_label, 1)
+        roi_bar.addWidget(self.btn_test_frame)
+        preview_layout.addLayout(roi_bar)
 
-        # Right panel: Config & run controls
-        config_group = QGroupBox("2. Cấu hình & chạy tập hiện tại")
-        config_layout = QVBoxLayout(config_group)
-        config_layout.setSpacing(8)
+        # Right panel: Flat Studio Inspector Card
+        inspector_card = QFrame()
+        inspector_card.setProperty("card", True)
+        inspector_card.setMinimumWidth(330)
+        inspector_outer = QVBoxLayout(inspector_card)
+        inspector_outer.setContentsMargins(12, 10, 12, 10)
+        inspector_outer.setSpacing(8)
 
-        # Video file picker
-        video_row = QHBoxLayout()
-        video_row.addWidget(QLabel("File video:"))
-        self.video_path_edit = QLineEdit()
-        self.video_path_edit.setReadOnly(True)
-        self.video_path_edit.setPlaceholderText("Chưa chọn file video...")
-        self.btn_browse_video = QPushButton("Chọn video...")
-        video_row.addWidget(self.video_path_edit, 1)
-        video_row.addWidget(self.btn_browse_video)
-        config_layout.addLayout(video_row)
+        scroll = QScrollArea()
+        scroll.setObjectName("inspectorScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # ROI Preset controls
-        preset_row = QHBoxLayout()
-        preset_row.addWidget(QLabel("Preset ROI:"))
-        self.preset_combo = QComboBox()
-        self.btn_save_preset = QPushButton("Lưu")
-        self.btn_delete_preset = QPushButton("Xóa")
-        preset_row.addWidget(self.preset_combo, 1)
-        preset_row.addWidget(self.btn_save_preset)
-        preset_row.addWidget(self.btn_delete_preset)
-        config_layout.addLayout(preset_row)
+        inspector_body = QWidget()
+        body_layout = QVBoxLayout(inspector_body)
+        body_layout.setContentsMargins(0, 0, 2, 0)
+        body_layout.setSpacing(6)
 
-        # Output directory
-        out_dir_group = QGroupBox("Thư mục xuất")
-        out_dir_layout = QVBoxLayout(out_dir_group)
-        self.radio_dir_same = QRadioButton("Cùng thư mục video")
-        self.radio_dir_same.setChecked(True)
-        self.radio_dir_custom = QRadioButton("Chọn thư mục khác")
-        custom_dir_row = QHBoxLayout()
-        self.custom_dir_edit = QLineEdit()
-        self.custom_dir_edit.setPlaceholderText("Đường dẫn thư mục xuất...")
-        self.btn_browse_out_dir = QPushButton("...")
-        self.btn_browse_out_dir.setFixedWidth(36)
-        custom_dir_row.addWidget(self.radio_dir_custom)
-        custom_dir_row.addWidget(self.custom_dir_edit, 1)
-        custom_dir_row.addWidget(self.btn_browse_out_dir)
-        out_dir_layout.addWidget(self.radio_dir_same)
-        out_dir_layout.addLayout(custom_dir_row)
-        config_layout.addWidget(out_dir_group)
+        # Section 1: OCR
+        body_layout.addWidget(_make_section_label("NHẬN DIỆN OCR"))
+        ocr_grid = QGridLayout()
+        ocr_grid.setContentsMargins(0, 0, 0, 0)
+        ocr_grid.setHorizontalSpacing(10)
+        ocr_grid.setVerticalSpacing(6)
 
-        # ASS Style
-        ass_group = QGroupBox("Style ASS")
-        ass_layout = QVBoxLayout(ass_group)
-        self.radio_ass_default = QRadioButton("Mặc định (theo độ phân giải video)")
-        self.radio_ass_default.setChecked(True)
-        self.radio_ass_template = QRadioButton("File mẫu (.ass)")
-        ass_tpl_row = QHBoxLayout()
-        self.ass_template_edit = QLineEdit()
-        self.ass_template_edit.setPlaceholderText("Đường dẫn file .ass mẫu...")
-        self.btn_browse_ass_template = QPushButton("Chọn...")
-        ass_tpl_row.addWidget(self.radio_ass_template)
-        ass_tpl_row.addWidget(self.ass_template_edit, 1)
-        ass_tpl_row.addWidget(self.btn_browse_ass_template)
-        ass_layout.addWidget(self.radio_ass_default)
-        ass_layout.addLayout(ass_tpl_row)
-        config_layout.addWidget(ass_group)
-
-        # Export formats + threshold + OCR provider
-        fmt_row = QHBoxLayout()
-        fmt_row.addWidget(QLabel("Xuất ra:"))
-        self.chk_ass = QCheckBox(".ass")
-        self.chk_ass.setChecked(True)
-        self.chk_srt = QCheckBox(".srt")
-        self.chk_srt.setChecked(True)
-        fmt_row.addWidget(self.chk_ass)
-        fmt_row.addWidget(self.chk_srt)
-        fmt_row.addSpacing(16)
-        fmt_row.addWidget(QLabel("Ngưỡng nghi ngờ OCR:"))
-        self.spin_conf = QDoubleSpinBox()
-        self.spin_conf.setRange(0.0, 1.0)
-        self.spin_conf.setSingleStep(0.05)
-        self.spin_conf.setDecimals(2)
-        self.spin_conf.setValue(0.85)
-        fmt_row.addWidget(self.spin_conf)
-        fmt_row.addStretch(1)
-        config_layout.addLayout(fmt_row)
-
-        provider_row = QHBoxLayout()
-        provider_row.addWidget(QLabel("OCR Backend:"))
+        lbl_backend = QLabel("Backend")
+        lbl_backend.setProperty("role", "fieldLabel")
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("CPU (ONNX Runtime)", "cpu")
         if "directml" in OcrEngine.available_providers():
             self.provider_combo.addItem("DirectML (GPU)", "directml")
             self.provider_combo.setCurrentIndex(1)
-        provider_row.addWidget(self.provider_combo)
-        provider_row.addStretch(1)
-        config_layout.addLayout(provider_row)
 
-        # Test 1 frame
-        test_row = QHBoxLayout()
-        self.btn_test_frame = QPushButton("Test thử 1 frame hiện tại")
-        self.test_result_label = QLabel("")
-        self.test_result_label.setWordWrap(True)
-        test_row.addWidget(self.btn_test_frame)
-        test_row.addWidget(self.test_result_label, 1)
-        config_layout.addLayout(test_row)
+        lbl_conf = QLabel("Ngưỡng nghi ngờ")
+        lbl_conf.setProperty("role", "fieldLabel")
+        self.spin_conf = QDoubleSpinBox()
+        self.spin_conf.setRange(0.0, 1.0)
+        self.spin_conf.setSingleStep(0.05)
+        self.spin_conf.setDecimals(2)
+        self.spin_conf.setValue(0.85)
 
-        # Run / Stop
+        ocr_grid.addWidget(lbl_backend, 0, 0)
+        ocr_grid.addWidget(self.provider_combo, 0, 1)
+        ocr_grid.addWidget(lbl_conf, 1, 0)
+        ocr_grid.addWidget(self.spin_conf, 1, 1)
+        ocr_grid.setColumnStretch(1, 1)
+        body_layout.addLayout(ocr_grid)
+
+        body_layout.addWidget(_make_divider())
+
+        # Section 2: Export settings
+        body_layout.addWidget(_make_section_label("XUẤT PHỤ ĐỀ"))
+        fmt_row = QHBoxLayout()
+        fmt_row.setSpacing(12)
+        lbl_fmt = QLabel("Định dạng")
+        lbl_fmt.setProperty("role", "fieldLabel")
+        self.chk_ass = QCheckBox(".ass (Aegisub)")
+        self.chk_ass.setChecked(True)
+        self.chk_ass.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chk_srt = QCheckBox(".srt (Premiere)")
+        self.chk_srt.setChecked(True)
+        self.chk_srt.setCursor(Qt.CursorShape.PointingHandCursor)
+        fmt_row.addWidget(lbl_fmt)
+        fmt_row.addWidget(self.chk_ass)
+        fmt_row.addWidget(self.chk_srt)
+        fmt_row.addStretch(1)
+        body_layout.addLayout(fmt_row)
+
+        dir_head = QHBoxLayout()
+        dir_head.setSpacing(10)
+        lbl_dir = QLabel("Thư mục")
+        lbl_dir.setProperty("role", "fieldLabel")
+        self.radio_dir_same = QRadioButton("Cùng video")
+        self.radio_dir_same.setChecked(True)
+        self.radio_dir_same.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_dir_custom = QRadioButton("Khác")
+        self.radio_dir_custom.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dir_radio_group = QButtonGroup(self)
+        self._dir_radio_group.addButton(self.radio_dir_same)
+        self._dir_radio_group.addButton(self.radio_dir_custom)
+        dir_head.addWidget(lbl_dir)
+        dir_head.addWidget(self.radio_dir_same)
+        dir_head.addWidget(self.radio_dir_custom)
+        dir_head.addStretch(1)
+        body_layout.addLayout(dir_head)
+
+        custom_dir_row = QHBoxLayout()
+        custom_dir_row.setSpacing(6)
+        self.custom_dir_edit = QLineEdit()
+        self.custom_dir_edit.setPlaceholderText("Đường dẫn thư mục xuất...")
+        self.btn_browse_out_dir = QPushButton()
+        self.btn_browse_out_dir.setProperty("variant", "tool")
+        self.btn_browse_out_dir.setIcon(make_icon("folder", size=14))
+        self.btn_browse_out_dir.setIconSize(QSize(14, 14))
+        self.btn_browse_out_dir.setFixedSize(28, 26)
+        self.btn_browse_out_dir.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_browse_out_dir.setToolTip("Chọn thư mục xuất")
+        custom_dir_row.addWidget(self.custom_dir_edit, 1)
+        custom_dir_row.addWidget(self.btn_browse_out_dir)
+        body_layout.addLayout(custom_dir_row)
+
+        ass_head = QHBoxLayout()
+        ass_head.setSpacing(10)
+        lbl_ass = QLabel("Style ASS")
+        lbl_ass.setProperty("role", "fieldLabel")
+        self.radio_ass_default = QRadioButton("Mặc định")
+        self.radio_ass_default.setChecked(True)
+        self.radio_ass_default.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_ass_template = QRadioButton("File mẫu")
+        self.radio_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ass_radio_group = QButtonGroup(self)
+        self._ass_radio_group.addButton(self.radio_ass_default)
+        self._ass_radio_group.addButton(self.radio_ass_template)
+        ass_head.addWidget(lbl_ass)
+        ass_head.addWidget(self.radio_ass_default)
+        ass_head.addWidget(self.radio_ass_template)
+        ass_head.addStretch(1)
+        body_layout.addLayout(ass_head)
+
+        ass_tpl_row = QHBoxLayout()
+        ass_tpl_row.setSpacing(6)
+        self.ass_template_edit = QLineEdit()
+        self.ass_template_edit.setPlaceholderText("Đường dẫn file .ass mẫu...")
+        self.btn_browse_ass_template = QPushButton()
+        self.btn_browse_ass_template.setProperty("variant", "tool")
+        self.btn_browse_ass_template.setIcon(make_icon("folder", size=14))
+        self.btn_browse_ass_template.setIconSize(QSize(14, 14))
+        self.btn_browse_ass_template.setFixedSize(28, 26)
+        self.btn_browse_ass_template.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_browse_ass_template.setToolTip("Chọn file .ass mẫu")
+        ass_tpl_row.addWidget(self.ass_template_edit, 1)
+        ass_tpl_row.addWidget(self.btn_browse_ass_template)
+        body_layout.addLayout(ass_tpl_row)
+
+        body_layout.addStretch(1)
+        scroll.setWidget(inspector_body)
+        inspector_outer.addWidget(scroll, 1)
+
+        # Anchored Run/Stop footer inside Inspector
+        inspector_outer.addWidget(_make_divider())
+
         run_row = QHBoxLayout()
-        self.btn_start = QPushButton("▶ Bắt đầu tách sub")
-        self.btn_stop = QPushButton("■ Dừng")
-        run_row.addWidget(self.btn_start, 2)
-        run_row.addWidget(self.btn_stop, 1)
-        config_layout.addLayout(run_row)
+        run_row.setSpacing(8)
+        self.btn_start = QPushButton("Bắt đầu tách sub")
+        self.btn_start.setProperty("variant", "primary")
+        self.btn_start.setIcon(make_icon("play", color="#FFFFFF", size=14))
+        self.btn_start.setIconSize(QSize(14, 14))
+        self.btn_start.setMinimumHeight(34)
+        self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        progress_row = QHBoxLayout()
+        self.btn_stop = QPushButton("Dừng")
+        self.btn_stop.setProperty("variant", "danger")
+        self.btn_stop.setIcon(make_icon("stop", color="#FCA5A5", size=13))
+        self.btn_stop.setIconSize(QSize(13, 13))
+        self.btn_stop.setMinimumHeight(34)
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        run_row.addWidget(self.btn_start, 3)
+        run_row.addWidget(self.btn_stop, 1)
+        inspector_outer.addLayout(run_row)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.status_label = QLabel("Sẵn sàng")
-        progress_row.addWidget(self.progress_bar, 1)
-        progress_row.addWidget(self.status_label)
-        config_layout.addLayout(progress_row)
-        config_layout.addStretch(1)
+        self.status_label.setObjectName("statusLabel")
+        inspector_outer.addWidget(self.progress_bar)
+        inspector_outer.addWidget(self.status_label)
 
-        top_splitter.addWidget(preview_group)
-        top_splitter.addWidget(config_group)
-        top_splitter.setStretchFactor(0, 3)
-        top_splitter.setStretchFactor(1, 2)
+        top_splitter.addWidget(preview_card)
+        top_splitter.addWidget(inspector_card)
+        top_splitter.setStretchFactor(0, 18)
+        top_splitter.setStretchFactor(1, 10)
 
-        # Bottom panel: Review table + export button
-        bottom_panel = QWidget()
-        bottom_layout = QVBoxLayout(bottom_panel)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(6)
+        # === Bottom Dock: Review Table + Primary Export Button ===
+        review_card = QFrame()
+        review_card.setProperty("card", True)
+        review_layout = QVBoxLayout(review_card)
+        review_layout.setContentsMargins(10, 8, 10, 8)
+        review_layout.setSpacing(0)
+
         self.review_table = ReviewTable()
-        bottom_layout.addWidget(self.review_table, 1)
-
-        export_row = QHBoxLayout()
-        export_row.addStretch(1)
         self.btn_export = QPushButton("Xuất .ass + .srt")
-        self.btn_export.setMinimumHeight(34)
-        export_row.addWidget(self.btn_export)
-        bottom_layout.addLayout(export_row)
+        self.btn_export.setProperty("variant", "primary")
+        self.btn_export.setIcon(make_icon("export", color="#FFFFFF", size=14))
+        self.btn_export.setIconSize(QSize(14, 14))
+        self.btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.review_table.add_header_widget(self.btn_export)
+        review_layout.addWidget(self.review_table, 1)
 
         vertical_splitter = QSplitter(Qt.Orientation.Vertical)
         vertical_splitter.addWidget(top_splitter)
-        vertical_splitter.addWidget(bottom_panel)
-        vertical_splitter.setStretchFactor(0, 3)
-        vertical_splitter.setStretchFactor(1, 2)
+        vertical_splitter.addWidget(review_card)
+        vertical_splitter.setStretchFactor(0, 13)
+        vertical_splitter.setStretchFactor(1, 10)
         main_layout.addWidget(vertical_splitter, 1)
 
     def _connect_signals(self) -> None:
@@ -352,8 +515,8 @@ class MainWindow(QMainWindow):
 
     def _update_roi_label(self, roi: RoiRect) -> None:
         self.roi_label.setText(
-            f"ROI: x={roi.x * 100:.1f}%  y={roi.y * 100:.1f}%  "
-            f"w={roi.w * 100:.1f}%  h={roi.h * 100:.1f}%"
+            f"ROI {roi.x * 100:.1f}%, {roi.y * 100:.1f}% · "
+            f"{roi.w * 100:.1f}×{roi.h * 100:.1f}%"
         )
 
     def _update_controls_state(self) -> None:
@@ -501,6 +664,8 @@ class MainWindow(QMainWindow):
             self._duration_ms = 0
             self._current_frame_ms = 0
             self.video_path_edit.clear()
+            self.video_meta_badge.clear()
+            self.video_meta_badge.setVisible(False)
             self.frame_slider.setRange(0, 0)
             self.time_label.setText("0:00:00.00 / 0:00:00.00")
             self.status_label.setText("Lỗi mở video")
@@ -517,6 +682,12 @@ class MainWindow(QMainWindow):
         self._current_frame_index = 0
 
         self.video_path_edit.setText(str(path))
+        fps_val = reader.metadata.fps
+        fps_str = f"{fps_val:.0f}" if abs(fps_val - round(fps_val)) < 0.05 else f"{fps_val:.2f}"
+        self.video_meta_badge.setText(
+            f"{reader.metadata.width}×{reader.metadata.height} · {fps_str} fps"
+        )
+        self.video_meta_badge.setVisible(True)
         self.frame_slider.blockSignals(True)
         try:
             self.frame_slider.setRange(0, self._duration_ms)

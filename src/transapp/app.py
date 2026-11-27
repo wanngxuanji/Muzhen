@@ -7,16 +7,17 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from transapp.ui.main_window import MainWindow
+from transapp.ui.theme import apply_studio_theme
 
 
 def main() -> int:
-    """Create or reuse QApplication, open MainWindow, and enter the Qt event loop."""
+    """Create or reuse QApplication, apply Studio Dark theme, open MainWindow, and run."""
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
     app.setApplicationName("TransApp")
     app.setOrganizationName("TransApp")
-    app.setStyle("Fusion")
+    apply_studio_theme(app)
 
     window = MainWindow()
     window.show()

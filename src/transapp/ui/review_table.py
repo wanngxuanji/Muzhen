@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPixmap, QResizeEvent
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 from transapp.core.models import SubtitleEvent
 from transapp.exporters.ass_exporter import format_ass_time
 from transapp.exporters.srt_exporter import format_srt_time
+from transapp.ui.icons import make_icon
 
 _COL_STT = 0
 _COL_START = 1
@@ -64,33 +66,61 @@ class ReviewTable(QWidget):
         self._populating: bool = False
         self._raw_pixmap: QPixmap | None = None
 
+        self._mono_font = QFont("Cascadia Mono")
+        self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
+        self._mono_font.setPointSizeF(9.0)
+
+        self._cjk_font = QFont("Microsoft YaHei UI")
+        self._cjk_font.setPointSizeF(10.0)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setSpacing(8)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("3. Rà soát & sửa nhanh")
-        title.setStyleSheet("font-weight: 600;")
+        header.setSpacing(10)
+        title = QLabel("RÀ SOÁT PHỤ ĐỀ")
+        title.setProperty("role", "sectionTitle")
         header.addWidget(title)
-        header.addSpacing(16)
-        header.addWidget(QLabel("Lọc:"))
+
+        filter_pill = QFrame()
+        filter_pill.setObjectName("filterPill")
+        pill_layout = QHBoxLayout(filter_pill)
+        pill_layout.setContentsMargins(2, 2, 2, 2)
+        pill_layout.setSpacing(2)
 
         self.radio_all = QRadioButton("Tất cả (0)")
         self.radio_all.setChecked(True)
+        self.radio_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.radio_flagged = QRadioButton("Chỉ dòng nghi ngờ (0)")
+        self.radio_flagged.setCursor(Qt.CursorShape.PointingHandCursor)
+        pill_layout.addWidget(self.radio_all)
+        pill_layout.addWidget(self.radio_flagged)
+        header.addWidget(filter_pill)
+
+        header.addStretch(1)
+
         self.btn_delete_row = QPushButton("Xóa dòng")
+        self.btn_delete_row.setProperty("variant", "danger")
+        self.btn_delete_row.setIcon(make_icon("trash", color="#FCA5A5", size=14))
+        self.btn_delete_row.setIconSize(QSize(14, 14))
+        self.btn_delete_row.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_delete_row.setToolTip("Xóa dòng đang chọn khỏi kết quả (Delete)")
         self.btn_delete_row.setEnabled(False)
-        header.addWidget(self.radio_all)
-        header.addWidget(self.radio_flagged)
-        header.addStretch(1)
         header.addWidget(self.btn_delete_row)
+
+        self._header_actions_layout = QHBoxLayout()
+        self._header_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._header_actions_layout.setSpacing(8)
+        header.addLayout(self._header_actions_layout)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["STT", "Start", "End", "Conf", "Text"])
+        self.table.setHorizontalHeaderLabels(["#", "Start", "End", "Conf", "Nội dung phụ đề"])
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(
@@ -99,7 +129,9 @@ class ReviewTable(QWidget):
             | QAbstractItemView.EditTrigger.AnyKeyPressed
         )
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(27)
         hdr = self.table.horizontalHeader()
+        hdr.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         hdr.setSectionResizeMode(_COL_STT, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_COL_START, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_COL_END, QHeaderView.ResizeMode.ResizeToContents)
@@ -109,25 +141,26 @@ class ReviewTable(QWidget):
         preview_panel = QWidget()
         preview_layout = QVBoxLayout(preview_panel)
         preview_layout.setContentsMargins(6, 0, 0, 0)
-        preview_layout.setSpacing(4)
-        preview_title = QLabel("Ảnh crop ROI dòng đang chọn")
-        preview_title.setStyleSheet("font-weight: 600;")
+        preview_layout.setSpacing(6)
+        preview_title = QLabel("ẢNH CẮT ROI ĐỐI CHIẾU")
+        preview_title.setProperty("role", "sectionTitle")
         preview_layout.addWidget(preview_title)
 
-        self.preview_label = QLabel("Chưa chọn dòng")
+        self.preview_label = QLabel("Chọn một dòng để xem ảnh cắt ROI")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(280, 120)
+        self.preview_label.setMinimumSize(260, 110)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.preview_label.setStyleSheet(
-            "background-color: #14161A; color: #9AA3B2; border: 1px solid #2E3440;"
+            "background-color: #0A0C10; color: #6E7789; "
+            "border: 1px solid #252A34; border-radius: 6px; padding: 6px;"
         )
         self.preview_label.installEventFilter(self)
         preview_layout.addWidget(self.preview_label, 1)
 
         splitter.addWidget(self.table)
         splitter.addWidget(preview_panel)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 16)
+        splitter.setStretchFactor(1, 9)
         root.addWidget(splitter, 1)
 
         self.radio_all.toggled.connect(self._on_filter_radio_toggled)
@@ -135,6 +168,10 @@ class ReviewTable(QWidget):
         self.table.installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemChanged.connect(self._on_item_changed)
+
+    def add_header_widget(self, widget: QWidget) -> None:
+        """Append an action widget to the right side of the review toolbar."""
+        self._header_actions_layout.addWidget(widget)
 
     def filter_mode(self) -> str:
         """Return active filter mode (``"all"`` or ``"flagged_only"``)."""
@@ -240,20 +277,27 @@ class ReviewTable(QWidget):
                 stt_item = QTableWidgetItem(stt_text)
                 stt_item.setData(Qt.ItemDataRole.UserRole, master_idx)
                 stt_item.setFlags(stt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                stt_item.setFont(self._mono_font)
 
                 start_item = QTableWidgetItem(_format_cell_time(ev.start_ms))
+                start_item.setFont(self._mono_font)
                 end_item = QTableWidgetItem(_format_cell_time(ev.end_ms))
+                end_item.setFont(self._mono_font)
 
                 conf_item = QTableWidgetItem(f"{ev.confidence:.2f}")
                 conf_item.setFlags(conf_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                conf_item.setFont(self._mono_font)
 
                 text_item = QTableWidgetItem(ev.text)
+                text_item.setFont(self._cjk_font)
 
                 row_items = (stt_item, start_item, end_item, conf_item, text_item)
                 for col_idx, cell in enumerate(row_items):
                     if ev.flagged:
-                        cell.setBackground(QColor(74, 56, 12))
-                        cell.setForeground(QColor(255, 229, 153))
+                        cell.setBackground(QColor(43, 33, 16))
+                        cell.setForeground(QColor(252, 211, 77))
+                    elif col_idx in (_COL_STT, _COL_CONF):
+                        cell.setForeground(QColor(155, 164, 181))
                     self.table.setItem(row_idx, col_idx, cell)
         finally:
             self._populating = False
