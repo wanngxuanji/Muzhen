@@ -28,6 +28,8 @@ _DET_BATCH_SIZE = 8
 _RECT_SIMILARITY_TOL = 0.08
 _SIG_W = 64
 _SIG_H = 16
+_ROI_GRAY_W = 320
+_ROI_GRAY_H = 48
 _PROGRESS_INTERVAL_SEC = 0.08
 _PROGRESS_UNTHROTTLED_FRAMES = 16
 _HANZI_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -47,6 +49,7 @@ class TightSignature:
     union_rect: tuple[float, float, float, float]
     edge_mask: np.ndarray
     luma_patch: np.ndarray
+    roi_gray: np.ndarray | None = None
 
 
 @dataclass(slots=True)
@@ -153,46 +156,32 @@ def _rects_similar(
     cx1 = 0.5 * (r1[0] + r1[2])
     cx2 = 0.5 * (r2[0] + r2[2])
     max_w = max(w1, w2)
-    return abs(w1 - w2) <= max(0.05, tol * 2.0 * max_w) and abs(cx1 - cx2) <= tol * 1.25
+    return abs(w1 - w2) <= max(0.06, tol * 2.0 * max_w) and abs(cx1 - cx2) <= tol * 1.25
 
 
-def _compute_tight_signature(
-    bgr_roi: np.ndarray,
-    boxes: list[tuple[float, float, float, float]],
-) -> TightSignature:
-    """Compute edge-stroke mask and normalized luma patch strictly inside the union text box."""
-    if not boxes:
-        return TightSignature(
-            boxes=[],
-            union_rect=(0.0, 0.0, 0.0, 0.0),
-            edge_mask=np.zeros((_SIG_H, _SIG_W), dtype=np.uint8),
-            luma_patch=np.zeros((_SIG_H, _SIG_W), dtype=np.float32),
-        )
-    union_rect = _merge_boxes_to_union_rect(boxes)
-    if bgr_roi is None or bgr_roi.size == 0 or bgr_roi.ndim < 2:
-        return TightSignature(
-            boxes=list(boxes),
-            union_rect=union_rect,
-            edge_mask=np.zeros((_SIG_H, _SIG_W), dtype=np.uint8),
-            luma_patch=np.zeros((_SIG_H, _SIG_W), dtype=np.float32),
-        )
+def _extract_patch_features(
+    gray_img: np.ndarray,
+    rect: tuple[float, float, float, float],
+    *,
+    pad_px: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute stroke edge mask and high-pass zero-mean luma patch inside normalized rect."""
+    h, w = gray_img.shape[:2]
+    nx1, ny1, nx2, ny2 = rect
+    x1 = max(0, min(w - 1, int(math.floor(nx1 * w)) - pad_px))
+    y1 = max(0, min(h - 1, int(math.floor(ny1 * h)) - pad_px))
+    x2 = max(x1 + 1, min(w, int(math.ceil(nx2 * w)) + pad_px))
+    y2 = max(y1 + 1, min(h, int(math.ceil(ny2 * h)) + pad_px))
 
-    h, w = bgr_roi.shape[:2]
-    nx1, ny1, nx2, ny2 = union_rect
-    x1 = max(0, min(w - 1, int(math.floor(nx1 * w)) - 2))
-    y1 = max(0, min(h - 1, int(math.floor(ny1 * h)) - 2))
-    x2 = max(x1 + 1, min(w, int(math.ceil(nx2 * w)) + 2))
-    y2 = max(y1 + 1, min(h, int(math.ceil(ny2 * h)) + 2))
-
-    crop = bgr_roi[y1:y2, x1:x2]
-    if crop.ndim == 3 and crop.shape[2] >= 3:
-        gray = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_BGR2GRAY)
-    else:
-        gray = crop if crop.ndim == 2 else crop[:, :, 0]
-
+    crop = gray_img[y1:y2, x1:x2]
+    interp = (
+        cv2.INTER_LINEAR
+        if crop.shape[1] < _SIG_W or crop.shape[0] < _SIG_H
+        else cv2.INTER_AREA
+    )
     # Compute strokes directly on the compact 64x16 grid so internal character holes stay crisp
     # instead of blurring into solid square blobs across distinct equal-width CJK sentences.
-    small = cv2.resize(gray, (_SIG_W, _SIG_H), interpolation=cv2.INTER_AREA).astype(np.float32)
+    small = cv2.resize(crop, (_SIG_W, _SIG_H), interpolation=interp).astype(np.float32)
     gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
     grad_mag = cv2.magnitude(gx, gy)
@@ -220,11 +209,50 @@ def _compute_tight_signature(
     else:
         luma.fill(0.0)
 
+    return (edge_mask, luma)
+
+
+def _compute_tight_signature(
+    bgr_roi: np.ndarray,
+    boxes: list[tuple[float, float, float, float]],
+) -> TightSignature:
+    """Compute edge-stroke mask and normalized luma patch strictly inside the union text box."""
+    if not boxes:
+        return TightSignature(
+            boxes=[],
+            union_rect=(0.0, 0.0, 0.0, 0.0),
+            edge_mask=np.zeros((_SIG_H, _SIG_W), dtype=np.uint8),
+            luma_patch=np.zeros((_SIG_H, _SIG_W), dtype=np.float32),
+            roi_gray=None,
+        )
+    union_rect = _merge_boxes_to_union_rect(boxes)
+    if bgr_roi is None or bgr_roi.size == 0 or bgr_roi.ndim < 2:
+        return TightSignature(
+            boxes=list(boxes),
+            union_rect=union_rect,
+            edge_mask=np.zeros((_SIG_H, _SIG_W), dtype=np.uint8),
+            luma_patch=np.zeros((_SIG_H, _SIG_W), dtype=np.float32),
+            roi_gray=None,
+        )
+
+    if bgr_roi.ndim == 3 and bgr_roi.shape[2] >= 3:
+        full_gray = cv2.cvtColor(bgr_roi[:, :, :3], cv2.COLOR_BGR2GRAY)
+    else:
+        full_gray = bgr_roi if bgr_roi.ndim == 2 else bgr_roi[:, :, 0]
+
+    roi_gray = (
+        cv2.resize(full_gray, (_ROI_GRAY_W, _ROI_GRAY_H), interpolation=cv2.INTER_AREA)
+        if full_gray.shape[:2] != (_ROI_GRAY_H, _ROI_GRAY_W)
+        else full_gray.copy()
+    )
+    edge_mask, luma = _extract_patch_features(full_gray, union_rect, pad_px=2)
+
     return TightSignature(
         boxes=list(boxes),
         union_rect=union_rect,
         edge_mask=edge_mask,
         luma_patch=luma,
+        roi_gray=roi_gray,
     )
 
 
@@ -232,11 +260,29 @@ def _compare_tight_visual(
     sig_a: TightSignature,
     sig_b: TightSignature,
 ) -> tuple[float, float, bool, bool]:
-    """Compare edge_mask IoU and luma_patch NCC at the best shared alignment shift on 64x16."""
-    ea = sig_a.edge_mask > 0
-    eb = sig_b.edge_mask > 0
-    la = sig_a.luma_patch
-    lb = sig_b.luma_patch
+    """Compare edge_mask IoU and luma_patch NCC at the best shared alignment shift on 64x16.
+
+    When both signatures retain compact ROI grayscale thumbnails, extract both patches from the
+    exact same shared ROI coordinate rectangle so stationary hardsubs remain pixel-aligned even
+    when DBNet's predicted bounding box jitters by +/-10-15px on moving backgrounds.
+    """
+    if sig_a.roi_gray is not None and sig_b.roi_gray is not None:
+        ra, rb = sig_a.union_rect, sig_b.union_rect
+        shared_rect = (
+            min(ra[0], rb[0]),
+            min(ra[1], rb[1]),
+            max(ra[2], rb[2]),
+            max(ra[3], rb[3]),
+        )
+        ea_u8, la = _extract_patch_features(sig_a.roi_gray, shared_rect, pad_px=1)
+        eb_u8, lb = _extract_patch_features(sig_b.roi_gray, shared_rect, pad_px=1)
+        ea = ea_u8 > 0
+        eb = eb_u8 > 0
+    else:
+        ea = sig_a.edge_mask > 0
+        eb = sig_b.edge_mask > 0
+        la = sig_a.luma_patch
+        lb = sig_b.luma_patch
 
     a_flat = (not bool(ea.any())) and float(np.linalg.norm(la)) <= 1e-3
     b_flat = (not bool(eb.any())) and float(np.linalg.norm(lb)) <= 1e-3
@@ -899,9 +945,9 @@ def detect_subtitle_spans(
         if dur >= config.min_duration_ms:
             eligible.append(sp)
             continue
-        # Drop isolated 1-frame artifacts (e.g. 40ms flash) below min_duration_ms
-        if sp.start_idx == sp.end_idx:
-            continue
+        # Keep short spans (including 1-frame 40ms boundary/jitter pieces) if adjacent to a
+        # neighboring span so Stage 2 + postprocess can merge real fragments and filter noise;
+        # drop only truly isolated sub-threshold flashes.
         near_prev = idx > 0 and (sp.start_ms - spans[idx - 1].end_ms) <= neighbor_gap
         near_next = idx + 1 < len(spans) and (spans[idx + 1].start_ms - sp.end_ms) <= neighbor_gap
         if near_prev or near_next:

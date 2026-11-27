@@ -814,3 +814,90 @@ def test_brightness_retry_cleaned_edge_rejects_severely_truncated_result():
     assert eng.called is True
     assert txt == "G我们是救世"
     assert conf == pytest.approx(0.78)
+
+
+def test_tight_signature_invariant_to_dbnet_box_jitter_on_short_two_char_cue():
+    """Stationary 2-char hardsub must match under +/-2% X / +/-6% Y DBNet box jitter,
+    while a different 2-char cue at the same box still splits."""
+    h, w = 92, 820
+    short_box = (0.44, 0.22, 0.56, 0.80)
+
+    def _draw_two_char_roi(variant: int, bg_shift: int) -> np.ndarray:
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        # Fast-moving high-contrast anime jacket / speed-line background
+        for x in range(0, w, 24):
+            c = 185 if ((x + bg_shift) // 24) % 2 == 0 else 45
+            cv2.rectangle(img, (x, 0), (min(w, x + 12), h), (c, 90, 210 - c // 2), -1)
+        x0 = int(short_box[0] * w) + 6
+        y0 = int(short_box[1] * h) + 6
+        for idx in range(2):
+            cx = x0 + idx * 44
+            for thick, color in ((6, (0, 0, 0)), (2, (255, 255, 255))):
+                if variant == 0:
+                    if idx == 0:
+                        cv2.line(img, (cx + 2, y0 + 6), (cx + 34, y0 + 6), color, thick)
+                        cv2.line(img, (cx + 18, y0 + 6), (cx + 18, y0 + 38), color, thick)
+                        cv2.line(img, (cx + 18, y0 + 14), (cx + 4, y0 + 32), color, thick)
+                        cv2.line(img, (cx + 18, y0 + 14), (cx + 32, y0 + 32), color, thick)
+                    else:
+                        cv2.rectangle(img, (cx + 10, y0 + 8), (cx + 34, y0 + 30), color, thick)
+                        cv2.line(img, (cx + 2, y0 + 36), (cx + 36, y0 + 36), color, thick)
+                else:
+                    if idx == 0:
+                        cv2.circle(img, (cx + 18, y0 + 22), 14, color, thick)
+                    else:
+                        cv2.line(img, (cx + 4, y0 + 38), (cx + 18, y0 + 4), color, thick)
+                        cv2.line(img, (cx + 18, y0 + 4), (cx + 34, y0 + 38), color, thick)
+        return img
+
+    roi_a1 = _draw_two_char_roi(variant=0, bg_shift=0)
+    roi_a2 = _draw_two_char_roi(variant=0, bg_shift=13)
+    roi_b = _draw_two_char_roi(variant=1, bg_shift=0)
+
+    sig_base = _compute_tight_signature(roi_a1, [short_box])
+    for dx in (-0.02, -0.015, 0.0, 0.015, 0.02):
+        for dy in (-0.06, 0.0, 0.06):
+            jittered = (
+                short_box[0] + dx,
+                max(0.0, short_box[1] + dy),
+                short_box[2] + dx,
+                min(1.0, short_box[3] + dy),
+            )
+            sig_jit = _compute_tight_signature(roi_a2, [jittered])
+            assert _tight_signatures_same_cue(sig_base, sig_jit), (
+                f"Expected same cue under box jitter dx={dx}, dy={dy}"
+            )
+
+    sig_other = _compute_tight_signature(roi_b, [short_box])
+    assert not _tight_signatures_same_cue(sig_base, sig_other)
+
+
+def test_adjacent_one_frame_spans_are_kept_while_isolated_40ms_flash_is_dropped():
+    """Adjacent 1-frame (40ms) spans from jitter/cuts must survive Stage 1 for Stage 2 merging,
+    while truly isolated 1-frame 40ms flashes are still dropped."""
+    frame_boxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    frames: list[FrameSlice] = []
+    # Isolated 1-frame flash at frame 2; shattered cue made of alternating 1-frame spans on [20..27]
+    for i in range(40):
+        if i == 2:
+            pat = 0
+            frame_boxes[i] = [_FIXED_BOX]
+        elif 20 <= i <= 27:
+            # Force distinct patterns on every frame so Stage 1 emits 1-frame spans with 0ms gaps
+            pat = i % 3
+            frame_boxes[i] = [_FIXED_BOX]
+        else:
+            pat = None
+        frames.append(FrameSlice(i, i * 40, _make_patterned_roi(i, pat)))
+
+    eng = _BoxLookupEngine(frame_boxes)
+    cfg = ExtractConfig(coarse_step=1, min_duration_ms=120, flash_bridge_max_ms=320)
+    spans, _pts = detect_subtitle_spans(frames, fps=25.0, start_pts_ms=0, ocr_engine=eng, config=cfg)
+
+    # Isolated frame 2 must be dropped
+    assert all(sp.start_idx != 2 for sp in spans)
+    # Every frame of the adjacent [20..27] sequence must be preserved (0 frames clipped/dropped)
+    covered = set()
+    for sp in spans:
+        covered.update(range(sp.start_idx, sp.end_idx + 1))
+    assert covered == set(range(20, 28))
