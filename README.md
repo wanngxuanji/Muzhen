@@ -5,7 +5,7 @@
 # Muzhen (`幕帧`)
 
 **Frame-accurate Simplified Chinese / CJK hardsub extractor for Windows**  
-*Adobe Premiere Pro / After Effects inspired workbench · 2-Stage `ch_PP-OCRv5` (DirectML GPU / CPU) · Aegisub `.ass` & Premiere Pro `.srt`*
+*Premiere-inspired NLE workbench · DirectML GPU / CPU `ch_PP-OCRv5` · `.ass`, `.srt`, `.vtt` & `.txt` export*
 
 [![CI](https://github.com/wanngxuanji/Muzhen/actions/workflows/ci.yml/badge.svg)](https://github.com/wanngxuanji/Muzhen/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/wanngxuanji/Muzhen?color=2D8CEB)](https://github.com/wanngxuanji/Muzhen/releases)
@@ -15,7 +15,7 @@
 
 <br>
 
-![Muzhen v2.2.0 Premiere/AE Workbench](docs/screenshots/muzhen-v2-workbench.png)
+![Muzhen v2.2.0 Workbench](docs/screenshots/muzhen-v2-workbench.png)
 
 </div>
 
@@ -23,84 +23,78 @@
 
 ## Overview
 
-**Muzhen (`幕帧` — *Subtitle · Frame*)** is a native Windows desktop workbench built with PySide6, PyAV, and RapidOCR (`ch_PP-OCRv5`) for fansubbers and video editors who need **frame-accurate hardcoded subtitle extraction** from anime, donghua, and CJK video episodes.
+**Muzhen (`幕帧` — *Subtitle · Frame*)** is a Windows desktop application for extracting **frame-accurate hardcoded subtitles** from anime, donghua, and CJK video episodes.
 
-Generic OCR scripts routinely drift on NTSC frame rates (`23.976` / `29.97 fps`), glue back-to-back dialogue cuts, or drop short 2-character cues over fast action scenes. Muzhen pairs a **native 4D ONNX-batched detector + single-pass ring-buffer boundary refiner** with **Aegisub/libass inter-frame midpoint centisecond snapping** inside a distraction-free, keyboard-first NLE workbench.
+Built around a keyboard-first, three-pane NLE layout (`Settings | Program Monitor | Subtitles`), Muzhen combines a two-stage `ch_PP-OCRv5` recognition pipeline with synchronized audio/video preview, an interactive review table, and Aegisub/Premiere-ready multi-format export.
 
 ---
 
 ## Download & Quick Start
 
-### Option 1 — Windows Portable Release (Recommended, No Python Required)
+### Option 1 — Windows Portable Release (Recommended)
+
+No Python installation required:
 
 1. Download **`Muzhen-v2.2.0-win64-portable.zip`** (and optional `SHA256SUMS.txt`) from [**GitHub Releases**](https://github.com/wanngxuanji/Muzhen/releases).
-2. Extract to any writable directory (for example `D:\Tools\Muzhen\`).
-3. Double-click **`Muzhen.exe`**.
+2. Extract to any writable folder (for example `D:\Tools\Muzhen\`).
+3. Run **`Muzhen.exe`**.
 
-> **First-run OCR models:** On your first extraction (or `Test Frame`), Muzhen automatically downloads the selected `ch_PP-OCRv5` ONNX weights into the portable `models/` directory next to `Muzhen.exe` (falling back to `%LOCALAPPDATA%\Muzhen\models` if extracted to a read-only location). Subsequent runs work 100% offline.
+> **First-run OCR models:** On the first extraction or **Test Frame**, Muzhen automatically downloads the required `ch_PP-OCRv5` ONNX weights into the portable `models/` folder next to `Muzhen.exe` (or `%LOCALAPPDATA%\Muzhen\models` if extracted to a read-only location). Subsequent runs work completely offline.
 
-> **Built-in Update Checker & Multi-Language UI:** Muzhen automatically detects your Windows language (**English / Tiếng Việt / 中文 (简体)**, switchable live in Settings) and checks GitHub Releases silently on startup, revealing a compact **Update** badge inside Settings with full release notes and **Update Now / Skip This Version / Later** controls.
-
-### Option 2 — Run From Source (Developers)
+### Option 2 — Run From Source
 
 ```powershell
 git clone https://github.com/wanngxuanji/Muzhen.git
 cd Muzhen
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\muzhen
+.venv\Scripts\python -m muzhen
 ```
 
-Create a clickable `Muzhen.lnk` Windows shortcut (no console window):
+Optionally create a console-free Windows shortcut (`Muzhen.lnk`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1
-# Or create directly on Desktop:
+# Or place it directly on the Desktop:
 powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 ```
 
 ---
 
-## System Requirements
+## Core Features
 
-| Component | Minimum | Recommended |
-| :--- | :--- | :--- |
-| **Operating System** | Windows 10 (1903+) 64-bit | Windows 10 / 11 64-bit |
-| **CPU** | 64-bit x86_64 quad-core | 6+ cores with AVX2 (for fast CPU fallback) |
-| **RAM** | 4 GB | 8 GB+ (1080p episodes) |
-| **GPU** | Optional (automatic CPU ONNX Runtime fallback) | Any DirectX 12 GPU (NVIDIA, AMD, Intel Arc/UHD) via **DirectML** |
-| **Storage** | ~450 MB extracted app + ~180 MB first-run OCR models | 1 GB+ free SSD space |
-| **Display** | 1280×720 | 1920×1080 or higher |
-| **Network** | Required once to download `ch_PP-OCRv5` weights (or use `-BundleModels`) | Optional (for automatic GitHub update checks) |
-| **Supported Media** | `.mp4`, `.mkv`, `.ts`, `.avi`, `.mov`, `.webm` (H.264, HEVC, VP9, AV1 via bundled PyAV/FFmpeg) | CFR, NTSC (`23.976` / `29.97 fps`), and VFR episodes |
+### Frame-Accurate Hardsub Extraction
+- **2-Stage `ch_PP-OCRv5` Pipeline:** Detects subtitle onset/offset spans to `±0–1 frame` across CFR, NTSC (`23.976` / `29.97 fps`), and VFR videos, then applies multi-frame consensus recognition to handle glare, motion, and back-to-back dialogue cuts.
+- **GPU & CPU Modes:** Automatically enables **DirectML GPU** acceleration on compatible Windows GPUs with seamless **CPU** fallback, plus selectable **Precision** (highest CJK accuracy) and **Turbo** (faster & lighter) models.
+- **Reusable ROI Presets & OP/ED Trim:** Save subtitle-area presets per series and set `In` / `Out` trim marks (`I` / `O`) to skip openings and endings while keeping original episode timestamps intact.
 
----
+### Interactive NLE Preview & Synchronized Audio
+- **Program Monitor:** Click directly on the empty monitor or drag-and-drop a video file to open it, drag the emerald ROI overlay around the subtitle region, and run **Test Frame** to verify OCR before scanning the full episode.
+- **Synchronized Audio Playback:** Preview episodes with synced container audio (`Space` to Play/Pause, `M` to Mute/Unmute), hold-to-repeat `±1` frame stepping, and VFR-safe single-frame step-back.
 
-## Key Features
+### Subtitle Review Table & Multi-Format Export
+- **Click-to-Seek Review:** Clicking or navigating any row in **Subtitles** automatically jumps **Program Monitor** to that cue's start frame and shows its cropped ROI thumbnail in **Inspector & Timing**.
+- **Power-User Editing & QA:** Inline text and timecode editing, low-confidence cue flagging (`Ctrl+D` to mark reviewed), playhead snapping (`Ctrl+[` / `Ctrl+]`), frame-exact `-1f` / `+1f` timing nudges, Merge (`Ctrl+M`), Split (`Ctrl+K`), multi-row Delete, 50-step Undo/Redo, and Find & Replace.
+- **4 Export Formats:** Export UTF-8 **`.ass`** (with Aegisub/libass-aligned inter-frame midpoint snapping), **`.srt`**, **`.vtt`** (WebVTT), and **`.txt`** (clean script ready for translation) in one click.
+- **Multi-Language UI & Update Checker:** Built-in **English**, **Tiếng Việt**, and **中文 (简体)** interface with automatic OS locale detection, live switching, and startup GitHub Releases update notifications.
 
-### 2-Stage `ch_PP-OCRv5` Precision Pipeline
-- **Stage 1 — Frame-Accurate Span Detection:** Native 4D ONNX batching (`[N, 3, H, W]`, `N=16` DirectML / `N=8` CPU) with `ch_PP-OCRv5 Det Mobile`, shared-coordinate `TightSignature` visual matching (immune to DBNet box jitter on fast-moving action backgrounds), and single-pass ring-buffer onset/offset refinement for `±0–1 frame` accuracy across CFR, NTSC, and VFR streams.
-- **Stage 2 — Consensus Recognition & Multi-Cue Splitting:** Borderless `ch_PP-OCRv5 Server` (default) or `Mobile` (`fast`) recognition with interior-first adaptive early exit, confidence-weighted & character-level consensus voting, selective glare/brightness retry, bounded-stack multi-cue binary-search splitting, and minimal-pair / numeric countdown protection.
-- **Automatic DirectML GPU Acceleration:** Uses `onnxruntime-directml` on Windows GPUs with eager Stage 1 + Stage 2 session verification and seamless CPU fallback.
+<details>
+<summary><strong>Technical details: 2-stage OCR & timing architecture</strong></summary>
 
-### Premiere Pro / After Effects Chrome-Free Workbench
-- **3-Pane Horizontal Dock (`Settings | Program Monitor | Subtitles`):** Neutral graphite palette (`#111111` / `#161616` / `#1D1D1D`), zero wasted top-bar chrome (`Muzhen - V2.2.0`), collapsible Settings panel toggled right below the monitor, Premiere-blue active-panel focus outline (`#2D8CEB`), and blue Program Monitor timecode + frame index (`0:06:55.56 / 0:24:00.60 · #10389`).
-- **Streamlined Settings, Live 3-Language UI & Discord RPC:** Auto-detected **GPU / CPU** Render Method, branded **Precision / Turbo** OCR models, inline ROI Presets, 4 format chips (`.ass`, `.srt`, `.vtt`, `.txt`), conditional **Custom** output folder, live **English / Tiếng Việt / 中文 (简体)** switching, built-in **Discord Rich Presence** with privacy controls (`Hide file name`, `Show GitHub button`), and GitHub Release update checker.
-- **Interactive Preview with Synchronized Audio & OP/ED Trim:** Click or drag-and-drop directly onto Program Monitor to open episodes, synchronized audio/video `Play / Pause` (`Space`) with live Mute (`M`), hold-to-repeat stepping (`<` / `>`, `←` / `→`, `,` / `.`), VFR-safe single-frame step-back, and `In` / `Out` (`I` / `O`) OP/ED trim preserving original absolute episode timestamps.
-- **Pro-Subber Review Table & QA Inspector:** Click-to-seek subtitle rows straight to Program Monitor, Video↔Table Start/End sync (`Alt+S` / `Alt+E`), snap-to-playhead (`Ctrl+[` / `Ctrl+]`), exact `frame_pts_ms` `±1f` nudge (zero NTSC rounding drift), `flag_reason` QA banner with auto-clear on edit (`Ctrl+D`), multi-row delete, Merge (`Ctrl+M`), Split (`Ctrl+K`), 50-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`), and Find & Replace (`Ctrl+F` / `Ctrl+H`).
+- **Stage 1 (Span Detection):** Native 4D ONNX batching (`ch_PP-OCRv5 Det Mobile`) with shared-coordinate visual signature matching to resist DBNet box jitter, paired with a single-pass ring-buffer boundary refiner.
+- **Stage 2 (Consensus OCR):** Borderless `ch_PP-OCRv5` recognition (`Server` in Precision mode, `Mobile` in Turbo mode) with interior-first adaptive early exit, character-level consensus voting, glare/brightness retry, and bounded binary-search splitting for back-to-back cues.
+- **ASS Timing Parity:** Inter-frame midpoint centisecond snapping matched to libass rendering semantics plus strict non-overlap clamping across `.ass`, `.srt`, and `.vtt`.
 
-### Multi-Format Export (`.ass`, `.srt`, `.vtt`, `.txt`)
-- **Aegisub & Premiere Parity:** Inter-frame midpoint centisecond snapping verified against libass rendering semantics so exported `.ass` cues never start 1 frame late or bleed across hard cuts, plus strict non-overlap clamping across `.ass`, `.srt`, and `.vtt`.
-- **Web & Translation Ready:** Export standards-compliant WebVTT (`.vtt`) for web players or clean single-line plain text (`.txt`) ready for translation workflows — all written atomically in UTF-8.
+</details>
 
 ---
 
-## Subbing Workflow
+## Workflow
 
-1. **Open & Frame ROI:** Drag and drop an episode onto **Program Monitor** (or click **Open Video**), scrub to a dialogue line, and drag the emerald ROI box around the subtitle area. Save show presets in the top bar for instant reuse.
-2. **Trim OP/ED (Optional):** Scrub to the end of the opening and press `I` (**In**), then to the start of the ending and press `O` (**Out**). Click **Test Frame** to verify OCR accuracy before scanning.
-3. **Extract:** Select **DirectML (GPU)** or **CPU** and **PP-OCRv5 Server (Accurate)** or **Mobile (Fast)**, then click **Extract Subtitles**.
-4. **Review & Export:** Collapse **Settings** for a wide 50/50 **Program Monitor + Subtitles** layout, filter flagged cues if any, fine-tune boundaries with `Alt+S` / `Alt+E` and `Ctrl+[` / `Ctrl+]`, and click **Export .ass + .srt**.
+1. **Open Video & Frame ROI:** Click **Program Monitor** (or drag and drop a video onto it), scrub to a line of dialogue, and drag the emerald ROI box over the subtitle region. Optionally save the region under **ROI Preset** in **Settings**.
+2. **Trim & Test (Optional):** Scrub to the end of the opening and press `I` (**In**), then to the start of the ending and press `O` (**Out**). Click **Test Frame** to check OCR accuracy on the current frame.
+3. **Extract:** Choose **Render Method** (`GPU` / `CPU`) and **Model** (`Precision` / `Turbo`) in **Settings**, then click **Extract**.
+4. **Review & Export:** Toggle **Settings** off for a wide Monitor + Subtitles workspace, click subtitle rows to jump directly to their frames, review any flagged lines, pick export formats (`.ass`, `.srt`, `.vtt`, `.txt`), and click **Export**.
 
 ---
 
@@ -108,13 +102,15 @@ powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 
 | Context | Shortcut | Action |
 | :--- | :--- | :--- |
-| **Transport (Global)** | `Space` | Play / Pause preview |
+| **Transport (Global)** | `Space` | Play / Pause preview (with audio) |
+| | `M` | Mute / Unmute preview audio |
 | | `←` / `→` · `,` / `.` · `<` / `>` | Step `±1` frame (hold to scrub) |
 | | `Shift+←` / `Shift+→` | Jump `±1` second |
 | | `Ctrl+←` / `Ctrl+→` | Jump `±5` seconds |
 | | `Home` / `End` | Jump to start / end of video |
 | | `I` / `O` | Set OP/ED trim `In` / `Out` point |
-| **Timing Sync & QA** | `Alt+S` / `Alt+E` | Seek video to selected cue Start / End |
+| **Timing Sync & QA** | Click row / `↑` `↓` | Auto-seek Program Monitor to cue Start |
+| | `Alt+S` / `Alt+E` | Seek video to selected cue Start / End |
 | | `Ctrl+[` / `Ctrl+]` | Snap selected cue Start / End to playhead |
 | | `Ctrl+D` | Mark selected cue reviewed (clear flag) |
 | **Subtitle Table** | `F2` / Double-click | Edit cell inline (`\N` for line breaks) |
@@ -126,19 +122,33 @@ powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Desktop
 
 ---
 
+## System Requirements
+
+| Component | Minimum | Recommended |
+| :--- | :--- | :--- |
+| **OS** | Windows 10 (1903+) 64-bit | Windows 10 / 11 64-bit |
+| **CPU** | 64-bit x86_64 quad-core | 6+ cores with AVX2 |
+| **RAM** | 4 GB | 8 GB+ (1080p episodes) |
+| **GPU** | Optional (automatic CPU fallback) | DirectX 12 GPU (NVIDIA, AMD, Intel) via **DirectML** |
+| **Storage** | ~450 MB extracted + ~180 MB OCR models | 1 GB+ free SSD space |
+| **Display** | 1280×720 | 1920×1080 or higher |
+| **Media** | `.mp4`, `.mkv`, `.ts`, `.avi`, `.mov`, `.webm` (bundled PyAV/FFmpeg) | CFR, NTSC (`23.976` / `29.97 fps`), and VFR |
+
+---
+
 ## Building the Windows Portable Release
 
 ```powershell
 .venv\Scripts\python -m pip install -e ".[dev,build]"
 
-# Standard portable zip (downloads OCR models on first run into ./models)
+# Portable zip (downloads OCR models on first run into ./models)
 powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1
 
-# Optional: bundle cached .onnx weights from your local environment for an offline zip
+# Optional: include cached local .onnx weights for a fully offline zip
 powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1 -BundleModels
 ```
 
-Outputs are written to `release/Muzhen-v<version>-win64-portable.zip` and `release/SHA256SUMS.txt` after automatically running `dist\Muzhen\Muzhen.exe --smoke-test`.
+Builds `release/Muzhen-v<version>-win64-portable.zip` and `release/SHA256SUMS.txt` after verifying `dist\Muzhen\Muzhen.exe --smoke-test`.
 
 ---
 
@@ -147,37 +157,39 @@ Outputs are written to `release/Muzhen-v<version>-win64-portable.zip` and `relea
 ```text
 Muzhen/
 ├── src/muzhen/
+│   ├── __main__.py             # Enables `python -m muzhen`
 │   ├── app.py                  # GUI entry point, --smoke-test, crash logging
 │   ├── core/
 │   │   ├── video_reader.py     # PTS-accurate PyAV reader, B-frame safe seeks, VFR step-back
+│   │   ├── audio_player.py     # Synchronized PyAV + QtMultimedia audio preview player
 │   │   ├── ocr_engine.py       # RapidOCR v3 (ch_PP-OCRv5), 4D ONNX batching, DirectML fallback
 │   │   ├── deep_extractor.py   # 2-stage ring-buffer detector & consensus voter
 │   │   ├── postprocess.py      # Normalization, merging, minimal-pair guard, QA flagging
 │   │   ├── pipeline.py         # End-to-end extraction orchestrator & trim bounds
-│   │   ├── updater.py          # GitHub Releases semver checker & atomic skip preferences
-│   │   ├── paths.py            # Dev vs PyInstaller frozen asset & portable models/ paths
+│   │   ├── updater.py          # GitHub Releases update checker & user preferences
+│   │   ├── paths.py            # Dev vs frozen asset & portable models/ path resolution
 │   │   ├── models.py           # Core dataclasses (RoiRect, ExtractConfig, SubtitleEvent)
-│   │   └── presets.py          # Atomic JSON preset persistence
+│   │   └── presets.py          # Atomic JSON ROI preset storage
 │   ├── exporters/
-│   │   ├── sanitize.py         # Libass midpoint snapping, escaping, atomic file writes
+│   │   ├── sanitize.py         # Libass midpoint snapping, escaping, atomic UTF-8 writes
 │   │   ├── ass_exporter.py     # Aegisub .ass exporter
-│   │   ├── srt_exporter.py     # Premiere Pro .srt exporter
+│   │   ├── srt_exporter.py     # SubRip .srt exporter
 │   │   ├── vtt_exporter.py     # WebVTT .vtt exporter
-│   │   └── txt_exporter.py     # Plain-text .txt script exporter
+│   │   └── txt_exporter.py     # Plain-text .txt exporter
 │   └── ui/
-│       ├── assets/             # Rounded muzhen.ico, muzhen_icon.png, crisp vector SVGs
+│       ├── assets/             # Rounded muzhen.ico, muzhen_icon.png, vector SVGs
 │       ├── i18n.py             # Live English / Vietnamese / Simplified Chinese translations
-│       ├── theme.py            # Adobe Premiere/AE graphite tokens & QSS
-│       ├── main_window.py      # Chrome-free 3-pane workbench, transport, async workers, UpdateDialog
+│       ├── theme.py            # Premiere/AE neutral graphite dark palette & QSS
+│       ├── main_window.py      # 3-pane workbench, transport, async workers, UpdateDialog
 │       ├── review_table.py     # Editable subtitle table, QA inspector, undo/redo, find/replace
-│       ├── roi_canvas.py       # Interactive ROI overlay & clickable drop monitor well
-│       └── icons.py            # Crisp 1.5px vector SVG icon renderer
-├── build/muzhen.spec           # PyInstaller --onedir build specification
+│       ├── roi_canvas.py       # Interactive ROI overlay & clickable drop monitor
+│       └── icons.py            # HiDPI vector SVG icon renderer
+├── build/muzhen.spec           # PyInstaller --onedir specification
 ├── scripts/
 │   ├── build_release.ps1       # Portable release builder + smoke test + SHA256
-│   └── create_shortcut.ps1     # One-click Windows Muzhen.lnk launcher generator
-├── tests/                      # Full pytest + pytest-qt suite (216 tests, -W error)
-└── .github/workflows/          # Windows CI (ci.yml) & tag-triggered GitHub Release (release.yml)
+│   └── create_shortcut.ps1     # Windows Muzhen.lnk launcher generator
+├── tests/                      # Automated pytest + pytest-qt suite (225 tests, -W error)
+└── .github/workflows/          # Windows CI (ci.yml) & tag-triggered Release (release.yml)
 ```
 
 ---
